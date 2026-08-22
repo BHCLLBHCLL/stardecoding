@@ -96,9 +96,17 @@ class StarMainWindow(QMainWindow):
         self.split_left = QSplitter()          # 树 | 属性（M1 填充）
         self.split_left.setOrientation(1)      # 垂直
 
-        # M0 占位：树/属性窗格（M1 替换为真实组件）
-        self.tree_pane = PaneFrame("Simulation Tree（M1）")
-        self.props_pane = PaneFrame("Properties（M1）")
+        # M1：仿真树 + 属性面板
+        from star_gui_panes import PropertiesPanel, SimulationTree
+        self.model = None
+        self.tree_widget = SimulationTree(icons=icons())
+        self.props_widget = PropertiesPanel()
+        self.tree_widget.object_selected.connect(self.on_object_selected)
+        self.props_widget.reference_activated.connect(self.on_object_selected)
+        self.tree_pane = PaneFrame("Simulation Tree")
+        self.tree_pane.set_body(self.tree_widget)
+        self.props_pane = PaneFrame("Properties")
+        self.props_pane.set_body(self.props_widget)
         self.split_left.addWidget(self.tree_pane)
         self.split_left.addWidget(self.props_pane)
         self.split_left.setSizes([420, 260])
@@ -238,8 +246,18 @@ class StarMainWindow(QMainWindow):
         self.on_file_loaded()   # M1+ 钩子
 
     def on_file_loaded(self):
-        """子类/后续里程碑扩展点（M1 建树、M2 建 3D）。"""
-        pass
+        """文件加载后的后续构建（M1 建树/属性，M2 起建 3D）。"""
+        from star_gui_model import StarSceneModel
+        self.model = StarSceneModel(self.sim)
+        self.tree_widget.set_model(self.model)
+        self.props_widget.set_model(self.model)
+        self.msg("仿真树已构建：%d 个顶层节点" % self.tree_widget.tree.topLevelItemCount())
+
+    def on_object_selected(self, obj):
+        self.props_widget.show_object(obj)
+        if obj is not None:
+            self.set_status("选中 %s %s (id %d, %s)" % (
+                obj.class_name or "?", obj.name or "", obj.id, obj.layer))
 
     def _on_failed(self, path, err):
         self._finish_thread()

@@ -14,7 +14,8 @@ import time
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
-    QToolButton, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 
@@ -132,3 +133,130 @@ class SummaryPane(QWidget):
 
     def show_summary(self, text):
         self.view.setPlainText(text)
+
+
+class SimulationTree(QWidget):
+    """M1 仿真树：对象图 → QTreeWidget，节点携带 obj_id（UserRole）。"""
+
+    object_selected = pyqtSignal(object)   # SimObject 或 None
+
+    def __init__(self, model=None, icons=None, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self._icons = icons
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Simulation Tree"])
+        self.tree.itemSelectionChanged.connect(self._on_selection)
+        lay.addWidget(self.tree)
+
+    def set_model(self, model):
+        self.model = model
+        self.rebuild()
+
+    def rebuild(self):
+        self.tree.clear()
+        if self.model is None:
+            return
+        from star_gui_model import Node
+        for root in self.model.tree_roots():
+            item = self._make_item(root)
+            self.tree.addTopLevelItem(item)
+        self.tree.expandToDepth(1)
+
+    def _make_item(self, node):
+        from PyQt5.QtWidgets import QTreeWidgetItem
+        item = QTreeWidgetItem([node.label])
+        item.setData(0, 32, node.obj_id)   # Qt.UserRole = 32
+        if node.obj_id is not None:
+            item.setData(0, 33, node.class_name or "")
+        if self._icons is not None:
+            item.setIcon(0, self._icons.get(self._icon_key(node)))
+        for child in node.children:
+            item.addChild(self._make_item(child))
+        return item
+
+    def _icon_key(self, node):
+        layer_map = {
+            "cad-geometry": "layer_geometry",
+            "meshing": "layer_meshing",
+            "physics": "layer_physics",
+            "visualization": "layer_visualization",
+            "post-processing": "layer_post",
+        }
+        return layer_map.get(node.layer, node.layer)
+
+    def _on_selection(self):
+        items = self.tree.selectedItems()
+        if not items:
+            self.object_selected.emit(None)
+            return
+        item = items[0]
+        oid = item.data(0, 32)
+        obj = self.model.object_by_id(oid) if (self.model and oid is not None) else None
+        self.object_selected.emit(obj)
+
+    def select_object(self, oid):
+        """按对象 id 递归查找并选中（供 3D 拾取联动）。"""
+        def walk(item):
+            if item.data(0, 32) == oid:
+                return item
+            for i in range(item.childCount()):
+                hit = walk(item.child(i))
+                if hit is not None:
+                    return hit
+            return None
+        for i in range(self.tree.topLevelItemCount()):
+            hit = walk(self.tree.topLevelItem(i))
+            if hit is not None:
+                self.tree.setCurrentItem(hit)
+                self.tree.scrollToItem(hit)
+                return
+
+
+class PropertiesPanel(QWidget):
+    """M1 属性面板：选中对象的属性表（名称/类型/值三列 + 引用跳转）。"""
+
+    reference_activated = pyqtSignal(object)
+
+    def __init__(self, model=None, parent=None):
+        super().__init__(parent)
+        self.model = model
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["属性", "类型", "值"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 150)
+        self.table.setColumnWidth(1, 110)
+        self.table.setEditTriggers(self.table.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(self._on_double)
+        lay.addWidget(self.table)
+        self._current = None
+
+    def set_model(self, model):
+        self.model = model
+
+    def show_object(self, obj):
+        self._current = obj
+        self.table.setRowCount(0)
+        if obj is None:
+            return
+        rows = self.model.properties(obj) if self.model else []
+        for attr, val, raw in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(attr))
+            self.table.setItem(row, 1, QTableWidgetItem(type(raw).__name__))
+            vitem = QTableWidgetItem(val)
+            vitem.setData(34, raw)   # Qt.UserRole+2：原始值
+            self.table.setItem(row, 2, vitem)
+
+    def _on_double(self, row, col):
+        if col != 2 or self.model is None:
+            return
+        item = self.table.item(row, 2)
+        raw = item.data(34) if item else None
+        if isinstance(raw, int) and raw in self.model.objmap:
+            self.reference_activated.emit(self.model.objmap[raw])
