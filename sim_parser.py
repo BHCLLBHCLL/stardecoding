@@ -894,6 +894,98 @@ class SimFile:
             return a["data"].decode("latin-1")
         return a["data"]
 
+    # ---- 网格抽取 ----
+    def mesh_metadata(self):
+        """对象图里的网格规模元数据：各 part 的 TriangleCount / VertexCount。"""
+        meta = {"TriangleCount": [], "VertexCount": [], "sources": []}
+        for o in self.objects:
+            for k in ("TriangleCount", "VertexCount"):
+                v = o.dict.get(k)
+                if isinstance(v, int):
+                    meta[k].append(v)
+                    meta["sources"].append((o.class_name, o.name, k, v))
+        return meta
+
+    def extract_mesh(self):
+        """从数组表抽取网格（点/面），并用对象图元数据交叉校验。
+
+        启发式:
+          - 面索引 = Unsigned4/Integer4 数组，count == 某 part 的 TriangleCount×3
+            （优先最大 part）；否则取最大的 count%3==0 的 U4/I4 数组。
+          - 顶点坐标 = Float8 数组，count/3 与面索引最大值吻合（1 基 => == max_index，
+            0 基 => == max_index+1）；否则取 count%3==0 且数值绝对值 >1 的最大
+            Float8 数组（法向量数组的值 ≤1，可区分）。
+        返回 dict: vertices(N,3), faces(M,3), meta, flags(推断置信度)。
+        """
+        if _np is None:
+            raise RuntimeError("网格抽取需要 numpy")
+        meta = self.mesh_metadata()
+        verts = faces = None
+        vflags = fflags = ""
+        # 面（按 part 的 TriangleCount×3 匹配，从大到小）
+        tris = sorted(meta["TriangleCount"], reverse=True)
+        for t in tris:
+            for i, a in enumerate(self.arrays):
+                if a["type"] in ("Unsigned4", "Integer4") and a["count"] == t * 3:
+                    faces = self.array_data(i).reshape(-1, 3).astype("int64")
+                    fflags = "part:%d" % t
+                    break
+            if faces is not None:
+                break
+        if faces is None:
+            cands2 = [(i, a) for i, a in enumerate(self.arrays)
+                      if a["type"] in ("Unsigned4", "Integer4") and a["count"] % 3 == 0]
+            if cands2:
+                i, a = max(cands2, key=lambda c: c[1]["count"])
+                faces = self.array_data(i).reshape(-1, 3).astype("int64")
+                fflags = "heuristic"
+        # 顶点（按面索引最大值确定规模）
+        cands = [(i, a) for i, a in enumerate(self.arrays) if a["type"] == "Float8"]
+        if faces is not None and faces.size:
+            mx = int(faces.max())
+            for want in (mx, mx + 1):
+                for i, a in cands:
+                    if a["count"] == want * 3:
+                        verts = self.array_data(i).reshape(-1, 3)
+                        vflags = "face-max:%d" % want
+                        break
+                if verts is not None:
+                    break
+        if verts is None:
+            big = [c for c in cands if c[1]["count"] % 3 == 0 and
+                   _np.abs(self.array_data(c[0])).max() > 1.0]
+            if big:
+                i, a = max(big, key=lambda c: c[1]["count"])
+                verts = self.array_data(i).reshape(-1, 3)
+                vflags = "heuristic"
+        res = {"vertices": verts, "faces": faces, "meta": meta,
+               "vertex_flag": vflags, "face_flag": fflags}
+        if verts is not None and faces is not None:
+            res["max_index"] = int(faces.max()) if faces.size else 0
+            res["n_vertices"] = int(verts.shape[0])
+            res["consistent"] = bool(res["max_index"] <= res["n_vertices"])
+        return res
+
+    def export_stl(self, out_path):
+        """把抽取出的网格写成 ASCII STL（三角形面片）。"""
+        m = self.extract_mesh()
+        if m["vertices"] is None or m["faces"] is None:
+            raise RuntimeError("无法抽取网格（缺少顶点/面数组）")
+        v, f = m["vertices"], m["faces"]
+        one_based = bool(f.size and int(f.min()) >= 1)
+        idx = f - 1 if one_based else f
+        idx = _np.clip(idx, 0, v.shape[0] - 1)
+        with open(out_path, "w", encoding="ascii") as fh:
+            fh.write("solid sim\n")
+            for tri in idx:
+                a, b, c = v[tri[0]], v[tri[1]], v[tri[2]]
+                fh.write("  facet normal 0 0 0\n    outer loop\n")
+                for p in (a, b, c):
+                    fh.write("      vertex %.9g %.9g %.9g\n" % tuple(p))
+                fh.write("    endloop\n  endfacet\n")
+            fh.write("endsolid sim\n")
+        return out_path
+
     # ---- 汇总 ----
     def summary(self):
         L = []
@@ -1015,6 +1107,8 @@ def main(argv=None):
     ap.add_argument("--layers", action="store_true", help="按语义层统计对象（几何/网格/物理/场景...）")
     ap.add_argument("--aliases", action="store_true", help="--objects 时同时显示类名别名解析结果")
     ap.add_argument("--validate", action="store_true", help="校验 ClassVersions 尾部统计与对象图一致性")
+    ap.add_argument("--mesh", action="store_true", help="抽取网格并输出统计（顶点/面）")
+    ap.add_argument("--mesh-export", metavar="STL", help="把抽取出的网格写为 ASCII STL")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     args = ap.parse_args(argv)
@@ -1023,7 +1117,8 @@ def main(argv=None):
 
     if args.summary or not any([args.sections, args.arrays, args.state,
                                 args.objects, args.tree, args.layers,
-                                args.validate, args.export]):
+                                args.validate, args.mesh, args.mesh_export,
+                                args.export]):
         print(sim.summary())
 
     if args.sections:
@@ -1097,6 +1192,25 @@ def main(argv=None):
         for r in sim.roots:
             if sim.children.get(r.id):
                 print_tree([r], sim.children)
+
+    if args.mesh:
+        m = sim.extract_mesh()
+        meta = m["meta"]
+        print("\n== 网格抽取 ==")
+        print("  各 part 三角数: %s" % sorted(meta["TriangleCount"], reverse=True))
+        print("  VertexCount 来源: %s" % meta["VertexCount"])
+        print("  元数据来源对象: %d 个" % len(meta["sources"]))
+        if m["vertices"] is not None:
+            print("  顶点: %d (来源=%s)" % (m["vertices"].shape[0], m["vertex_flag"]))
+        if m["faces"] is not None:
+            print("  面: %d (来源=%s)" % (m["faces"].shape[0], m["face_flag"]))
+        if m["vertices"] is not None and m["faces"] is not None:
+            print("  最大索引 %d vs 顶点数 %d -> %s" % (
+                m["max_index"], m["n_vertices"], "一致" if m["consistent"] else "不一致"))
+
+    if args.mesh_export:
+        out = sim.export_stl(args.mesh_export)
+        print("\nSTL 已导出到 %s" % out)
 
     if args.export:
         sim.export(args.export)

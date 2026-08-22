@@ -72,4 +72,12 @@ v = sim.validate_class_versions()
 assert v["status"] == "diagnostic" and v["expected_classes"] > 400
 print("classversions diagnostic:", v["expected_classes"], "classes,",
       v["matched"], "matched,", v["expected_total"], "/", v["actual_total"])
+
+# --- 改进②：网格抽取 ---
+m = sim.extract_mesh()
+assert m["faces"] is not None and m["faces"].shape[0] == 2824
+assert m["vertices"] is not None and m["vertices"].shape[0] == 1412
+assert m["consistent"] is True
+print("mesh:", m["faces"].shape[0], "faces,", m["vertices"].shape[0],
+      "vertices, flags:", m["face_flag"], "/", m["vertex_flag"])
 print("ALL CHECKS PASSED")
