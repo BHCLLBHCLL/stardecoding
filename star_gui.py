@@ -78,6 +78,8 @@ class StarMainWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        from star_gui_i18n import tr
+        self.tr = tr
         self.setWindowTitle("STAR-CCM+ .sim Viewer (star_gui)")
         self.resize(1280, 820)
         self.sim = None
