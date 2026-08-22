@@ -513,6 +513,14 @@ def cli_main(argv=None):
     return 0
 
 
+def _apply_theme(app):
+    """应用 QSS 深色主题（文件存在时加载，否则内嵌回退）。"""
+    qss = os.path.join(os.path.dirname(os.path.abspath(__file__)), "star_gui_theme.qss")
+    if os.path.exists(qss):
+        with open(qss, encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="STAR-CCM+ .sim 项目查看器")
@@ -528,6 +536,7 @@ def main(argv=None):
                         (["--stl", args.stl] if args.stl else []))
 
     app = QApplication(sys.argv)
+    _apply_theme(app)
     win = StarMainWindow()
     win.show()
     if args.file:

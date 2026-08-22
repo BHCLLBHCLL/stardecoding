@@ -3,7 +3,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\adjoint\\data\\adjointWing_start.sim",
   "size": 561418,
   "ok": true,
-  "secs": 0.22,
+  "secs": 0.29,
   "sections": 2112,
   "arrays": 33,
   "array_types": {
@@ -57,7 +57,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\aeroacoustics\\data\\cylinderBase.sim",
   "size": 441869,
   "ok": true,
-  "secs": 0.24,
+  "secs": 0.22,
   "sections": 2220,
   "arrays": 31,
   "array_types": {
@@ -139,7 +139,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\casting\\data\\basicGravitySandCastingGeo.sim",
   "size": 1021015,
   "ok": true,
-  "secs": 0.32,
+  "secs": 0.34,
   "sections": 1596,
   "arrays": 95,
   "array_types": {
@@ -202,7 +202,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\combustion\\data\\methaneOnPt.sim",
   "size": 1331352,
   "ok": true,
-  "secs": 0.45,
+  "secs": 0.44,
   "sections": 4107,
   "arrays": 153,
   "array_types": {
@@ -232,7 +232,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\compressibleFlow\\data\\airfoil_oversetParts.sim",
   "size": 256420,
   "ok": true,
-  "secs": 0.27,
+  "secs": 0.22,
   "sections": 832,
   "arrays": 80,
   "array_types": {
@@ -283,7 +283,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\CoSimAPI_spindleValve.sim",
   "size": 1146034,
   "ok": true,
-  "secs": 0.41,
+  "secs": 0.57,
   "sections": 4296,
   "arrays": 15,
   "array_types": {
@@ -336,7 +336,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\checkValve-AMESim.sim",
   "size": 789902,
   "ok": true,
-  "secs": 0.43,
+  "secs": 0.58,
   "sections": 2647,
   "arrays": 57,
   "array_types": {
@@ -390,7 +390,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\plate-cosim.sim",
   "size": 187729,
   "ok": true,
-  "secs": 0.15,
+  "secs": 0.11,
   "sections": 999,
   "arrays": 7,
   "array_types": {
@@ -418,7 +418,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\electromagnetism\\data\\AXMGeometry.sim",
   "size": 567069,
   "ok": true,
-  "secs": 0.42,
+  "secs": 0.43,
   "sections": 2395,
   "arrays": 11,
   "array_types": {
@@ -466,7 +466,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\incompressibleFlow\\data\\adjointWing_start.sim",
   "size": 561418,
   "ok": true,
-  "secs": 0.26,
+  "secs": 0.31,
   "sections": 2112,
   "arrays": 33,
   "array_types": {
@@ -520,7 +520,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\mesh\\data\\directedMeshCAD.sim",
   "size": 454592,
   "ok": true,
-  "secs": 0.35,
+  "secs": 0.4,
   "sections": 1749,
   "arrays": 81,
   "array_types": {
@@ -571,7 +571,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\mesh\\data\\surfaceRepairCAD.sim",
   "size": 8449069,
   "ok": true,
-  "secs": 1.8,
+  "secs": 1.87,
   "sections": 1313,
   "arrays": 155,
   "array_types": {
@@ -638,7 +638,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\genericHelicopter_start.sim",
   "size": 10064307,
   "ok": true,
-  "secs": 0.23,
+  "secs": 0.2,
   "sections": 1781,
   "arrays": 36,
   "array_types": {
@@ -666,7 +666,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\marineSelfPropulsion_start.sim",
   "size": 1067498,
   "ok": true,
-  "secs": 0.2,
+  "secs": 0.26,
   "sections": 1847,
   "arrays": 66,
   "array_types": {
@@ -720,7 +720,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\openWaterPropeller_start.sim",
   "size": 13359403,
   "ok": true,
-  "secs": 11.62,
+  "secs": 2.57,
   "sections": 7265,
   "arrays": 52,
   "array_types": {
@@ -786,7 +786,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\airfoil.sim",
   "size": 3153033,
   "ok": true,
-  "secs": 0.57,
+  "secs": 0.56,
   "sections": 5047,
   "arrays": 115,
   "array_types": {
@@ -859,7 +859,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\pipeBlockage.sim",
   "size": 3013921,
   "ok": true,
-  "secs": 0.37,
+  "secs": 0.4,
   "sections": 3842,
   "arrays": 89,
   "array_types": {
@@ -913,7 +913,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\pipeMixingBlockage.sim",
   "size": 3187077,
   "ok": true,
-  "secs": 0.45,
+  "secs": 0.55,
   "sections": 5000,
   "arrays": 103,
   "array_types": {
@@ -964,7 +964,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\solidStress\\data\\manifold_start.sim",
   "size": 6299798,
   "ok": true,
-  "secs": 1.88,
+  "secs": 1.95,
   "sections": 10462,
   "arrays": 64,
   "array_types": {

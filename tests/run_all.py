@@ -28,9 +28,10 @@ def main():
         out = (p.stdout or "") + (p.stderr or "")
         print(out.strip().splitlines()[-1] if out.strip() else "(no output)")
         # 注意：QVTK 在 headless 平台退出时会段错误（-1073741819），但测试本身
-        # 已全部通过——按 pytest 输出判定成败，而不是进程退出码。
-        ok = ("passed" in out and "failed" not in out and "error" not in out
-              and "no tests ran" not in out)
+        # 已全部通过——按 pytest 摘要行判定成败，而不是进程退出码。
+        import re as _re
+        ok = bool(_re.search(r"\d+ passed", out)) and not _re.search(
+            r"\d+ failed|\d+ error|no tests ran", out)
         if not ok:
             failed.append((f, p.returncode))
             print(out[-1500:])

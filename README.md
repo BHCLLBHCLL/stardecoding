@@ -20,6 +20,22 @@
 > 187KB–13MB）：容器/分区/数组/对象图全部可解析；状态表含 ASCII 与二进制两种编码变体，
 > 且存在嵌套 TRANSMIT 子块——详见 function_gap_analysis.md。
 
+## 图形界面 star_gui（GUI 查看器）
+
+安装依赖后即可运行：
+
+```bat
+pip install -r requirements-gui.txt
+python star_gui.py adjointWing_start.sim        :: 打开项目（仿真树/属性/3D 场景）
+python star_gui.py adjointWing_start.sim --cli --export-dir out --stl mesh.stl  :: 无窗口模式
+python tests/run_all.py                        :: GUI 测试（逐文件子进程）
+```
+
+功能：仿真树（Continua/Regions/Parts/Scenes/Plots/Monitors）· 属性面板（引用可跳转）·
+3D 场景标签页（分 Part 着色、边线、保存视图相机）· Part 显隐勾选 · Region/Boundary 高亮 ·
+消息/进度/状态栏 · 导出 STL/摘要/报告 · 深色主题。详见 star_gui_design.md 与
+star_gui_plan.md（M0–M6 已全部完成）。
+
 ## 快速上手
 
 ```bat
