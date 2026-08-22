@@ -107,6 +107,7 @@ class StarMainWindow(QMainWindow):
         self.tree_widget = SimulationTree(icons=icons())
         self.props_widget = PropertiesPanel()
         self.tree_widget.object_selected.connect(self.on_object_selected)
+        self.tree_widget.check_changed.connect(self.on_part_visibility)
         self.props_widget.reference_activated.connect(self.on_object_selected)
         self.tree_pane = PaneFrame("Simulation Tree")
         self.tree_pane.set_body(self.tree_widget)
@@ -174,6 +175,7 @@ class StarMainWindow(QMainWindow):
         self._add("Scene>Fit", "Fit View", self.cmd_fit, "fit")
         self._add("Scene>Reset", "Reset View", self.cmd_reset, "reset")
         self._add("Scene>Wireframe", "Wireframe / Solid", self.cmd_toggle_wire, "mesh")
+        self._add("Scene>Edges", "Edges Only", self.cmd_edges_only, "mesh")
         self._add("Help>About", "About", self.cmd_about, "info")
 
     def _add(self, key, label, slot, icon_key, shortcut=None):
@@ -325,6 +327,50 @@ class StarMainWindow(QMainWindow):
         if obj is not None:
             self.set_status("选中 %s %s (id %d, %s)" % (
                 obj.class_name or "?", obj.name or "", obj.id, obj.layer))
+        self._highlight_selection(obj)
+
+    def _highlight_selection(self, obj):
+        """选中 Region/Boundary → 高亮其所属 Part 的网格（边界→面片映射未做，
+        按 Region→Parts 链接高亮；其余 Part 降透明度）。"""
+        if obj is None or HEADLESS:
+            return
+        if obj.class_name not in ("star.common.Region", "star.common.Boundary"):
+            return
+        # Region → Parts 名称集合
+        names = set()
+        if obj.class_name == "star.common.Region":
+            rep = {"regions": [{"parts": []}]}
+            parts = self.sim.objmap.get(obj.dict.get("Parts")) if obj.dict.get("Parts") else None
+            plist = parts.dict.get("Keys") if parts is not None else []
+            for k in plist:
+                p = self.sim.objmap.get(k)
+                if p is not None and p.name:
+                    names.add(p.name)
+        else:  # Boundary：属于某 Region，高亮该 Region 的 Part
+            parent = self.sim.objmap.get(obj.dict.get("Parent") or -1)
+            if parent is not None and parent.class_name == "star.common.Region":
+                parts = self.sim.objmap.get(parent.dict.get("Parts") or -1)
+                for k in (parts.dict.get("Keys") or []) if parts else []:
+                    p = self.sim.objmap.get(k)
+                    if p is not None and p.name:
+                        names.add(p.name)
+        for key, name, pid, actor in self.viewport.actors:
+            visible = name in names
+            actor.SetVisibility(visible)
+        self.viewport.render()
+        self.msg("高亮 %d 个 Part（Region→Parts 链接；边界→面片映射未做）" % len(names))
+
+    def on_part_visibility(self, obj_id, checked):
+        """树勾选 Part → 显隐对应 3D actor。"""
+        if obj_id is None or HEADLESS:
+            return
+        obj = self.sim.objmap.get(obj_id)
+        if obj is None or not obj.name:
+            return
+        for key, name, pid, actor in self.viewport.actors:
+            if name == obj.name:
+                actor.SetVisibility(checked)
+        self.viewport.render()
 
     def _on_failed(self, path, err):
         self._finish_thread()
@@ -412,6 +458,16 @@ class StarMainWindow(QMainWindow):
         self._wire = not getattr(self, "_wire", False)
         if self.viewport:
             self.viewport.set_representation("wireframe" if self._wire else "solid")
+
+    def cmd_edges_only(self):
+        """边线模式：隐藏表面 actor，显示边线 actor。"""
+        if HEADLESS:
+            return
+        self._edges_only = not getattr(self, "_edges_only", False)
+        for key, name, pid, actor in self.viewport.actors:
+            is_edges = key.startswith("edges:")
+            actor.SetVisibility(is_edges if self._edges_only else True)
+        self.viewport.render()
 
     def cmd_validate(self):
         if not self.sim:

@@ -228,9 +228,13 @@ class SummaryPane(QWidget):
 
 
 class SimulationTree(QWidget):
-    """M1 仿真树：对象图 → QTreeWidget，节点携带 obj_id（UserRole）。"""
+    """M1 仿真树：对象图 → QTreeWidget，节点携带 obj_id（UserRole）。
+
+    M5 增加勾选显隐：有 obj_id 的节点带复选框，变更时发 check_changed(obj_id, checked)。
+    """
 
     object_selected = pyqtSignal(object)   # SimObject 或 None
+    check_changed = pyqtSignal(object, bool)  # (obj_id, checked)
 
     def __init__(self, model=None, icons=None, parent=None):
         super().__init__(parent)
@@ -241,6 +245,7 @@ class SimulationTree(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Simulation Tree"])
         self.tree.itemSelectionChanged.connect(self._on_selection)
+        self.tree.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self.tree)
 
     def set_model(self, model):
@@ -258,16 +263,28 @@ class SimulationTree(QWidget):
         self.tree.expandToDepth(1)
 
     def _make_item(self, node):
+        from PyQt5.QtCore import Qt
         from PyQt5.QtWidgets import QTreeWidgetItem
         item = QTreeWidgetItem([node.label])
         item.setData(0, 32, node.obj_id)   # Qt.UserRole = 32
         if node.obj_id is not None:
             item.setData(0, 33, node.class_name or "")
+        if node.obj_id is not None:
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.Checked)
         if self._icons is not None:
             item.setIcon(0, self._icons.get(self._icon_key(node)))
         for child in node.children:
             item.addChild(self._make_item(child))
         return item
+
+    def _on_item_changed(self, item, column):
+        if column != 0 or not (item.flags() & 2):   # ItemIsUserCheckable = 2
+            return
+        from PyQt5.QtCore import Qt
+        oid = item.data(0, 32)
+        if oid is not None:
+            self.check_changed.emit(oid, item.checkState(0) == Qt.Checked)
 
     def _icon_key(self, node):
         layer_map = {
