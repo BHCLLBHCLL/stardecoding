@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""star_gui.py — STAR-CCM+ .sim 项目查看器（M0 骨架版）。
+"""star_gui.py — STAR-CCM+ .sim 项目查看器。
 
-布局对齐 STAR-CCM+ 2025（Simulation tree / Graphics window / Properties /
-Output / Status bar），技术路线对齐 cabdecoding（PyQt5 + VTK + numpy）。
+布局对齐 STAR-CCM+ 20.02（模型树 / 图形窗口 / 属性 / 输出 / 状态栏），
+技术路线对齐 cabdecoding（PyQt5 + VTK + numpy）。
 
 用法:
     python star_gui.py                    # 空窗口
     python star_gui.py adjointWing_start.sim   # 打开 .sim
 
-里程碑（star_gui_plan.md）:
-    M0 骨架+打开+摘要  [本版本]   M1 树+属性   M2 3D 网格
-    M3 场景/视图      M4 导出+CLI  M5 几何     M6 主题/测试
+升级（star_gui_upgrade.md）:
+    U1 分组仿真树  U2 中文菜单/双行工具栏  U3 专业 3D 视口
+    U4 两列属性检查器  U5 文档/回归
 """
 
 import os

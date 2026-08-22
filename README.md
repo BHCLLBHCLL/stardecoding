@@ -11,7 +11,8 @@
 | `semantic_dict.py` | 对象图语义字典（包→语义层、别名表、属性引用方向） |
 | `README.md` | 本说明（格式逆向文档） |
 | `function_gap_analysis.md` | **功能完整性与深度差距分析**（21 文件实测，按节推进改进） |
-| `star_gui_design.md` / `star_gui_plan.md` | **GUI 查看器架构设计与开发计划**（star_gui.py，M0–M6） |
+| `star_gui_design.md` / `star_gui_plan.md` | GUI 查看器架构设计与 M0–M6 开发计划 |
+| `star_gui_upgrade.md` | **GUI 升级规划 U1–U5**（STAR-CCM+ 用户树 / 双行工具栏 / 专业 3D 视口） |
 | `self_test.py` / `batch_parse.py` / `mesh_validate.py` / `check_length_all.py` | 回归与校验工具 |
 | `starccm_dump_tree.java` / `resave_sim.java` | 官方 API 交叉验证 / 重存配对标例宏（需要 license） |
 | `adjointWing_start.sim` | 官方算例（本解析器的主要测试对象） |
@@ -31,10 +32,11 @@ python star_gui.py adjointWing_start.sim --cli --export-dir out --stl mesh.stl  
 python tests/run_all.py                        :: GUI 测试（逐文件子进程）
 ```
 
-功能：仿真树（Continua/Regions/Parts/Scenes/Plots/Monitors）· 属性面板（引用可跳转）·
-3D 场景标签页（分 Part 着色、边线、保存视图相机）· Part 显隐勾选 · Region/Boundary 高亮 ·
-消息/进度/状态栏 · 导出 STL/摘要/报告 · 深色主题。详见 star_gui_design.md 与
-star_gui_plan.md（M0–M6 已全部完成）。
+功能：STAR-CCM+ 风格仿真树（Geometry / Continua / Regions / Solvers / Scenes / Tools）·
+两列属性检查器（筛选、对象标题）· 3D 场景标签页（分 Part 着色、法向、左下方向指示器、
+六向/等轴测视图、保存相机）· Part 显隐勾选 · Region/Boundary 高亮 · 中文菜单与双行工具栏 ·
+消息/进度/状态栏 · 导出 STL/摘要/报告 · 深色主题。详见 `star_gui_upgrade.md`（U1–U5）
+与 `star_gui_plan.md`（M0–M6）。
 
 ## 快速上手
 

@@ -1,6 +1,6 @@
 # star_gui 升级规划（对照 STAR-CCM+ 20.02 / cabdecoding）
 
-> 日期：2026-08-22　状态：实施中（U1 起按功能点提交 GitHub）
+> 日期：2026-08-22　状态：U0–U5 已完成并推送 GitHub
 > 前序：M0–M6 已完成只读查看器骨架（见 `star_gui_plan.md`）。本轮是**界面同构升级**，
 > 不改解析层契约（`sim_parser` / 21 文件回归仍每里程碑必跑）。
 
@@ -66,12 +66,12 @@
 
 | 点 | 内容 | 产出 | 提交 |
 | --- | --- | --- | --- |
-| U0 | 本规划 | `star_gui_upgrade.md` | 本文 |
-| U1 | STAR-CCM+ 分组仿真树 | `StarSceneModel.sim_tree()` + 树标题 | 本轮 |
-| U2 | 双行工具栏 + 中文菜单 + 窗口菜单 + 当前视口 | `star_gui.py` / `star_gui_i18n.py` | 本轮 |
-| U3 | 专业 3D：方向指示器、六向/等轴测、法向、拾取同步 | `star_gui_vtk.py` / `Star3DViewport` | 本轮 |
-| U4 | 两列属性检查器 + 输出窗/状态栏打磨 | `star_gui_panes.py` | 本轮 |
-| U5 | 回归测试 + README | `tests/test_gui_u*.py` | 本轮 |
+| U0 | 本规划 | `star_gui_upgrade.md` | ✅ `c8d7001` |
+| U1 | STAR-CCM+ 分组仿真树 | `StarSceneModel.sim_tree()` + 树标题 | ✅ |
+| U2 | 双行工具栏 + 中文菜单 + 窗口菜单 + 当前视口 | `star_gui.py` / `star_gui_i18n.py` | ✅ |
+| U3 | 专业 3D：方向指示器、六向/等轴测、法向、拾取同步 | `star_gui_vtk.py` / `Star3DViewport` | ✅ |
+| U4 | 两列属性检查器 + 输出窗/状态栏打磨 | `star_gui_panes.py` | ✅ |
+| U5 | 回归测试 + README | `tests/test_gui_u*.py` | ✅ |
 
 每个功能点完成后 **git commit 并 push origin**。解析层 `self_test` 不回归。
 
