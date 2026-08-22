@@ -2,11 +2,12 @@
 """star_gui_model.py — StarSceneModel：SimFile 的只读 GUI 适配层（纯逻辑，无 Qt）。
 
 职责：
-- 仿真树节点生成（对象图 build_tree + 语义过滤，对齐 STAR-CCM+ 树形浏览）
+- 仿真树节点生成（对象图 build_tree + 语义过滤；U1 起另提供 STAR-CCM+ 用户树 sim_tree）
 - 属性表数据生成（SimObject.dict + 引用解析 + 别名）
 - 场景/显示器摘要（供 M3 使用）
 """
 
+import re
 from collections import defaultdict
 
 from semantic_dict import layer_of, resolve_class, LAYER_CN
@@ -45,6 +46,35 @@ def short_class(cn):
         return "?"
     parts = cn.split(".")
     return parts[-1]
+
+
+def friendly_name(obj):
+    """STAR-CCM+ 风格显示名：PresentationName 优先，否则驼峰拆词。"""
+    if obj is None:
+        return "?"
+    if obj.name:
+        return obj.name
+    short = short_class(obj.class_name)
+    for suf in ("Solver", "Model", "Function", "Monitor", "Displayer", "Option"):
+        if short.endswith(suf) and len(short) > len(suf):
+            short = short[: -len(suf)]
+            break
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", short).strip()
+    return spaced or short
+
+
+# STAR-CCM+ 用户树文件夹 → 语义层（图标）
+_FOLDER_LAYER = {
+    "Geometry": "cad-geometry",
+    "Continua": "physics",
+    "Regions": "core",
+    "Solvers": "solver",
+    "Reports": "post-processing",
+    "Plots": "post-processing",
+    "Monitors": "post-processing",
+    "Scenes": "visualization",
+    "Tools": "query",
+}
 
 
 def _is_container(cn):
@@ -108,8 +138,143 @@ class StarSceneModel:
         return "%s:%s" % (kind, oid)
 
     def _register(self, node):
-        self.nodes_by_id.setdefault(node.obj_id, node)
+        if node.obj_id is not None:
+            self.nodes_by_id.setdefault(node.obj_id, node)
         self._nodes_by_key[node.key] = node
+
+    # ---------------- STAR-CCM+ 用户树（U1） ----------------
+    def _manager(self, *suffixes):
+        """按类名短名精确匹配管理器（避免 SolverManager 误配 StoppingCriterionManager）。"""
+        for suf in suffixes:
+            for o in self.sim.objects:
+                short = (o.class_name or "").split(".")[-1]
+                if short == suf:
+                    return o
+        return None
+
+    def _keys(self, manager):
+        if manager is None:
+            return []
+        out = []
+        for k in manager.dict.get("Keys") or []:
+            o = self.objmap.get(k)
+            if o is not None:
+                out.append(o)
+        return out
+
+    def _obj_node(self, obj, children=None, label=None):
+        n = Node(self._key("obj", obj.id),
+                 label if label is not None else friendly_name(obj),
+                 obj.id, obj.class_name, children=children or [])
+        self._register(n)
+        return n
+
+    def _folder_node(self, key, label, children, layer=None):
+        n = Node(self._key("folder", key), label, obj_id=None,
+                 class_name="folder", layer=layer or _FOLDER_LAYER.get(key, "core"),
+                 children=children)
+        self._register(n)
+        return n
+
+    def _group_children(self, manager, child_builder=None):
+        kids = []
+        builder = child_builder or (lambda o: self._obj_node(o))
+        for o in self._keys(manager):
+            kids.append(builder(o))
+        return kids
+
+    def _part_node(self, obj):
+        surfaces = []
+        psm = self.objmap.get(obj.dict.get("PartSurfaces") or -1)
+        if psm is None:
+            psm = self.objmap.get(obj.dict.get("PartSurfaceManager") or -1)
+        for s in self._keys(psm):
+            if s.name:
+                surfaces.append(self._obj_node(s))
+        return self._obj_node(obj, children=surfaces)
+
+    def _region_node(self, obj):
+        bm = self.objmap.get(obj.dict.get("BoundaryManager") or -1)
+        bounds = [self._obj_node(b) for b in self._keys(bm)]
+        kids = []
+        if bounds:
+            kids.append(self._folder_node("Boundaries:%s" % obj.id, "Boundaries",
+                                          bounds, layer="core"))
+        return self._obj_node(obj, children=kids)
+
+    def _continuum_node(self, obj):
+        mm = self.objmap.get(obj.dict.get("ModelManager") or -1)
+        models = [self._obj_node(m) for m in self._keys(mm)]
+        return self._obj_node(obj, children=models)
+
+    def _scene_node(self, obj):
+        dm = self.objmap.get(obj.dict.get("DisplayerManager") or -1)
+        disp = [self._obj_node(d) for d in self._keys(dm)
+                if (d.class_name or "").startswith("star.vis")]
+        return self._obj_node(obj, children=disp)
+
+    def sim_tree(self):
+        """STAR-CCM+ 用户仿真树（Geometry / Regions / Scenes / …）。
+
+        数据源为各 *Manager.Keys，与官方客户端树及 semantic_report() 同源。
+        原 tree_roots()（对象图森林）保留供调试。
+        """
+        sim_obj = None
+        for o in self.sim.objects:
+            if o.class_name == "star.common.Simulation":
+                sim_obj = o
+                break
+        folders = [
+            self._folder_node("Geometry", "Geometry",
+                              self._group_children(
+                                  self._manager("SimulationPartManager", "PartManager"),
+                                  self._part_node)),
+            self._folder_node("Continua", "Continua",
+                              self._group_children(self._manager("ContinuumManager"),
+                                                   self._continuum_node)),
+            self._folder_node("Regions", "Regions",
+                              self._group_children(self._manager("RegionManager"),
+                                                   self._region_node)),
+            self._folder_node("Solvers", "Solvers",
+                              self._group_children(self._manager("SolverManager"))),
+            self._folder_node("Reports", "Reports",
+                              self._group_children(self._manager("ReportManager"))),
+            self._folder_node("Plots", "Plots",
+                              self._group_children(self._manager("PlotManager"))),
+            self._folder_node("Monitors", "Monitors",
+                              self._group_children(self._manager("MonitorManager"))),
+            self._folder_node("Scenes", "Scenes",
+                              self._group_children(self._manager("SceneManager"),
+                                                   self._scene_node)),
+            self._tools_folder(),
+        ]
+        if sim_obj is None:
+            return folders
+        root = self._obj_node(sim_obj, children=folders)
+        return [root]
+
+    def _tools_folder(self):
+        kids = []
+        ff = self._manager("FieldFunctionManager")
+        if ff is not None:
+            kids.append(self._folder_node("Field Functions", "Field Functions",
+                                          self._group_children(ff), layer="query"))
+        cs = self._manager("CoordinateSystemManager")
+        if cs is not None:
+            kids.append(self._folder_node("Coordinate Systems", "Coordinate Systems",
+                                          self._group_children(cs), layer="query"))
+        um = self._manager("UnitsManager")
+        if um is not None:
+            kids.append(self._obj_node(um, children=[], label="Units"))
+        tm = None
+        for o in self.sim.objects:
+            if o.class_name == "star.common.TableManager":
+                tm = o
+                break
+        if tm is not None:
+            kids.append(self._obj_node(tm, children=self._group_children(tm),
+                                       label="Tables"))
+        return self._folder_node("Tools", "Tools", kids)
 
     def node_by_id(self, oid):
         return self.nodes_by_id.get(oid)

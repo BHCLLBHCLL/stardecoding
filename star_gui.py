@@ -111,9 +111,9 @@ class StarMainWindow(QMainWindow):
         self.tree_widget.object_selected.connect(self.on_object_selected)
         self.tree_widget.check_changed.connect(self.on_part_visibility)
         self.props_widget.reference_activated.connect(self.on_object_selected)
-        self.tree_pane = PaneFrame("Simulation Tree")
+        self.tree_pane = PaneFrame("模型 / 场景/绘图")
         self.tree_pane.set_body(self.tree_widget)
-        self.props_pane = PaneFrame("Properties")
+        self.props_pane = PaneFrame("属性")
         self.props_pane.set_body(self.props_widget)
         self.split_left.addWidget(self.tree_pane)
         self.split_left.addWidget(self.props_pane)
@@ -134,7 +134,7 @@ class StarMainWindow(QMainWindow):
         else:
             self.viewport = Star3DViewport()
             self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
-        self.graphics_pane = PaneFrame("Graphics Window")
+        self.graphics_pane = PaneFrame("图形窗口")
         self.graphics_pane.set_body(self.graphics_tabs)
         right.addWidget(self.graphics_pane)
 

@@ -243,7 +243,9 @@ class SimulationTree(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Simulation Tree"])
+        self.tree.setHeaderLabels(["模型 / 场景/绘图"])
+        self.tree.setRootIsDecorated(True)
+        self.tree.setUniformRowHeights(True)
         self.tree.itemSelectionChanged.connect(self._on_selection)
         self.tree.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self.tree)
@@ -256,11 +258,12 @@ class SimulationTree(QWidget):
         self.tree.clear()
         if self.model is None:
             return
-        from star_gui_model import Node
-        for root in self.model.tree_roots():
+        from star_gui_model import Node  # noqa: F401
+        roots = self.model.sim_tree() if hasattr(self.model, "sim_tree") else self.model.tree_roots()
+        for root in roots:
             item = self._make_item(root)
             self.tree.addTopLevelItem(item)
-        self.tree.expandToDepth(1)
+        self.tree.expandToDepth(2)
 
     def _make_item(self, node):
         from PyQt5.QtCore import Qt
@@ -287,12 +290,29 @@ class SimulationTree(QWidget):
             self.check_changed.emit(oid, item.checkState(0) == Qt.Checked)
 
     def _icon_key(self, node):
+        cn = node.class_name or ""
+        short = cn.split(".")[-1]
+        if short in ("Region",):
+            return "region"
+        if short in ("Boundary",):
+            return "boundary"
+        if short in ("Scene",):
+            return "scene"
+        if "Plot" in short:
+            return "plot"
+        if "Monitor" in short:
+            return "monitor"
+        if "Part" in short or short.endswith("Part"):
+            return "part"
         layer_map = {
             "cad-geometry": "layer_geometry",
             "meshing": "layer_meshing",
             "physics": "layer_physics",
             "visualization": "layer_visualization",
             "post-processing": "layer_post",
+            "solver": "layer_physics",
+            "query": "info",
+            "core": "simulation",
         }
         return layer_map.get(node.layer, node.layer)
 
