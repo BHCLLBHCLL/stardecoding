@@ -1,13 +1,14 @@
-/* star_gui_theme.qss — 深色主题（对齐 STAR-CCM+ 深色风格） */
+/* star_gui_theme.qss — 深色主题（对齐 STAR-CCM+ 20.02 深色风格） */
 QMainWindow, QWidget { background-color: #2b2d31; color: #e8e8e8; font-size: 12px; }
 QMenuBar { background-color: #232428; }
 QMenuBar::item { padding: 4px 10px; }
 QMenuBar::item:selected { background-color: #3a3d42; }
 QMenu { background-color: #2b2d31; border: 1px solid #40434a; }
 QMenu::item:selected { background-color: #3d7ab5; }
-QToolBar { background-color: #232428; border-bottom: 1px solid #40434a; }
+QToolBar { background-color: #232428; border: none; border-bottom: 1px solid #40434a; spacing: 2px; padding: 2px; }
 QSplitter::handle { background-color: #3a3d42; }
-QTreeWidget, QTableWidget, QPlainTextEdit { background-color: #1e1f22; alternate-background-color: #26282c; border: 1px solid #3a3d42; }
+QTreeWidget, QTableWidget, QPlainTextEdit, QLineEdit { background-color: #1e1f22; alternate-background-color: #26282c; border: 1px solid #3a3d42; color: #e8e8e8; }
+QLineEdit { padding: 3px 6px; }
 QHeaderView::section { background-color: #2f3237; padding: 3px; border: 1px solid #3a3d42; }
 QTabWidget::pane { border: 1px solid #3a3d42; }
 QTabBar::tab { padding: 5px 12px; background: #2f3237; }
@@ -15,7 +16,10 @@ QTabBar::tab:selected { background: #3d7ab5; }
 QProgressBar { border: 1px solid #3a3d42; text-align: center; }
 QProgressBar::chunk { background-color: #3d7ab5; }
 QStatusBar { background-color: #232428; }
-QLabel#paneTitle { color: #9fc5e8; background: #232428; }
+QLabel#paneTitle { color: #9fc5e8; background: #232428; padding: 3px 8px; font-weight: bold; }
 QTableWidget::item:selected, QTreeWidget::item:selected { background-color: #3d7ab5; }
-QToolButton { background: transparent; }
+QToolButton { background: transparent; padding: 3px; }
 QToolButton:hover { background: #3a3d42; }
+QToolButton:pressed { background: #3d7ab5; }
+QScrollBar:vertical { background: #1e1f22; width: 10px; }
+QScrollBar::handle:vertical { background: #4a4d55; min-height: 20px; }

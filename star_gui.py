@@ -90,7 +90,7 @@ class StarMainWindow(QMainWindow):
         self._build_ui()
         self._build_menus()
         self._build_toolbar()
-        self.msg("STAR-CCM+ .sim Viewer 就绪 — File>Open 打开项目")
+        self.msg("STAR-CCM+ .sim Viewer 就绪 — 文件>打开 加载项目")
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -115,6 +115,7 @@ class StarMainWindow(QMainWindow):
         self.tree_pane.set_body(self.tree_widget)
         self.props_pane = PaneFrame("属性")
         self.props_pane.set_body(self.props_widget)
+        self.props_widget.title_changed.connect(self.props_pane.set_title)
         self.split_left.addWidget(self.tree_pane)
         self.split_left.addWidget(self.props_pane)
         self.split_left.setSizes([420, 260])
@@ -371,6 +372,9 @@ class StarMainWindow(QMainWindow):
         self.set_status("对象 %d · 分区 %d · 数组 %d" % (
             len(sim.objects), len(sim.sections), len(sim.arrays)))
         self.setWindowTitle("STAR-CCM+ .sim Viewer — %s" % sim.path)
+        base = os.path.splitext(os.path.basename(sim.path))[0]
+        self.bottom_tabs.setTabText(0, base)
+        self.msg("starccm+ viewer  %s" % os.path.basename(sim.path))
         self.msg("已加载 %s" % sim.path)
         self._remember_recent(sim.path)
         self.on_file_loaded()   # M1+ 钩子
@@ -433,6 +437,13 @@ class StarMainWindow(QMainWindow):
                             pass
                 self.msg("3D 网格：%d 个 Part" % len(actors))
             self.progress.done("3D 就绪")
+            try:
+                m = self.sim.extract_mesh()
+                nv = 0 if m.get("vertices") is None else len(m["vertices"])
+                nf = 0 if m.get("faces") is None else len(m["faces"])
+                self.status_helper.set_mesh(nv, nf)
+            except Exception:
+                pass
         except Exception as exc:  # noqa: BLE001
             self.msg("3D 构建失败: %s" % exc, "warn")
 
@@ -441,6 +452,9 @@ class StarMainWindow(QMainWindow):
         if obj is not None:
             self.set_status("选中 %s %s (id %d, %s)" % (
                 obj.class_name or "?", obj.name or "", obj.id, obj.layer))
+            self.status_helper.set_mode(obj.name or obj.class_name.split(".")[-1])
+        else:
+            self.status_helper.set_mode("对象")
         self._highlight_selection(obj)
 
     def on_picked(self, info, xyz):

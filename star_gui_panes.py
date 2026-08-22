@@ -13,9 +13,9 @@ import time
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QProgressBar,
     QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QHeaderView,
 )
 
 
@@ -48,7 +48,7 @@ class PaneFrame(QFrame):
 
 
 class MessageWindow(QWidget):
-    """底部消息/日志窗口（时间戳 + 级别）。"""
+    """底部输出窗口（对齐 STAR-CCM+ Output：时间戳 + 级别）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,18 +56,26 @@ class MessageWindow(QWidget):
         lay.setContentsMargins(2, 2, 2, 2)
         self.view = QPlainTextEdit()
         self.view.setReadOnly(True)
-        self.view.setMaximumBlockCount(2000)
+        self.view.setMaximumBlockCount(4000)
+        self.view.setPlaceholderText("输出…")
+        font = self.view.font()
+        font.setFamily("Consolas")
+        font.setPointSize(9)
+        self.view.setFont(font)
         lay.addWidget(self.view)
 
     def log(self, text, level="info"):
         stamp = time.strftime("%H:%M:%S")
-        prefix = {"info": " * ", "warn": " ! ", "error": " X ", "nyi": " ~ "}.get(level, " * ")
-        self.view.appendPlainText("%s%s%s" % (stamp, prefix, text))
+        prefix = {"info": "  ", "warn": "! ", "error": "X ", "nyi": "~ "}.get(level, "  ")
+        self.view.appendPlainText("%s %s%s" % (stamp, prefix, text))
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
 
     def nyi(self, name):
-        """未实现功能占位（对齐 cabdecoding _nyi 文案）。"""
         self.log("[%s] not available in star_gui viewer (STAR-CCM+ only / not yet mapped)." % name,
                  "nyi")
+
+    def clear(self):
+        self.view.clear()
 
 
 class ProgressPanel(QWidget):
@@ -97,28 +105,36 @@ class ProgressPanel(QWidget):
 
 
 class StatusBarHelper(QWidget):
-    """状态栏左侧辅助：坐标/统计文本。"""
+    """状态栏：坐标 / 网格规模 / 单位 / 选择模式。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(2, 0, 2, 0)
         self.coord = QLabel("(x,y,z): -")
+        self.mesh = QLabel("")
         self.stats = QLabel("")
         self.unit = QLabel("")
-        for lbl in (self.coord, self.stats, self.unit):
-            lbl.setStyleSheet("padding-left: 8px;")
+        self.mode = QLabel("选择: 对象")
+        for lbl in (self.coord, self.mesh, self.stats, self.unit, self.mode):
+            lbl.setStyleSheet("padding-left: 10px;")
             lay.addWidget(lbl)
         lay.addStretch(1)
 
     def set_coord(self, xyz):
         self.coord.setText("(x,y,z): (%s)" % ", ".join("%.4g" % v for v in xyz))
 
+    def set_mesh(self, nverts, nfaces):
+        self.mesh.setText("顶点 %s · 面 %s" % (nverts, nfaces))
+
     def set_stats(self, text):
         self.stats.setText(text)
 
     def set_unit(self, text):
         self.unit.setText("单位: %s" % text)
+
+    def set_mode(self, text):
+        self.mode.setText("选择: %s" % text)
 
 
 class Star3DViewport(QWidget):
@@ -442,24 +458,37 @@ class SimulationTree(QWidget):
 
 
 class PropertiesPanel(QWidget):
-    """M1 属性面板：选中对象的属性表（名称/类型/值三列 + 引用跳转）。"""
+    """属性检查器：两列（属性|值），对齐 STAR-CCM+ Properties 窗。"""
 
     reference_activated = pyqtSignal(object)
+    title_changed = pyqtSignal(str)
 
     def __init__(self, model=None, parent=None):
         super().__init__(parent)
         self.model = model
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["属性", "类型", "值"])
+        lay.setSpacing(2)
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("筛选属性…")
+        self.filter.textChanged.connect(self._apply_filter)
+        lay.addWidget(self.filter)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["属性", "值"])
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setColumnWidth(0, 150)
-        self.table.setColumnWidth(1, 110)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, 160)
+        self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(self.table.NoEditTriggers)
+        self.table.setSelectionBehavior(self.table.SelectRows)
         self.table.cellDoubleClicked.connect(self._on_double)
         lay.addWidget(self.table)
+        self.hint = QLabel("")
+        self.hint.setObjectName("propHint")
+        self.hint.setStyleSheet("color: #8aa4c1; padding: 2px 6px; font-size: 11px;")
+        lay.addWidget(self.hint)
         self._current = None
+        self._rows = []
 
     def set_model(self, model):
         self.model = model
@@ -467,22 +496,49 @@ class PropertiesPanel(QWidget):
     def show_object(self, obj):
         self._current = obj
         self.table.setRowCount(0)
+        self._rows = []
         if obj is None:
+            self.hint.setText("")
+            self.title_changed.emit("属性")
             return
+        from star_gui_model import friendly_name, short_class
+        from semantic_dict import resolve_class
         rows = self.model.properties(obj) if self.model else []
+        alias = resolve_class(obj.class_name) if obj.class_name else obj.class_name
+        self._rows = rows
+        self._fill_table(rows)
+        title = "%s - 属性" % (obj.name or friendly_name(obj))
+        self.title_changed.emit(title)
+        extra = short_class(obj.class_name)
+        if alias and alias != obj.class_name:
+            extra += "  (= %s)" % short_class(alias)
+        self.hint.setText("id %d · %s" % (obj.id, extra))
+
+    def _fill_table(self, rows):
+        self.table.setRowCount(0)
         for attr, val, raw in rows:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(attr))
-            self.table.setItem(row, 1, QTableWidgetItem(type(raw).__name__))
+            aitem = QTableWidgetItem(attr)
+            aitem.setToolTip(type(raw).__name__)
+            self.table.setItem(row, 0, aitem)
             vitem = QTableWidgetItem(val)
-            vitem.setData(34, raw)   # Qt.UserRole+2：原始值
-            self.table.setItem(row, 2, vitem)
+            vitem.setData(34, raw)
+            vitem.setToolTip(type(raw).__name__)
+            self.table.setItem(row, 1, vitem)
+
+    def _apply_filter(self, text):
+        needle = (text or "").lower()
+        if not needle:
+            self._fill_table(self._rows)
+            return
+        filtered = [r for r in self._rows if needle in r[0].lower() or needle in str(r[1]).lower()]
+        self._fill_table(filtered)
 
     def _on_double(self, row, col):
-        if col != 2 or self.model is None:
+        if self.model is None:
             return
-        item = self.table.item(row, 2)
+        item = self.table.item(row, 1)
         raw = item.data(34) if item else None
         if isinstance(raw, int) and raw in self.model.objmap:
             self.reference_activated.emit(self.model.objmap[raw])
