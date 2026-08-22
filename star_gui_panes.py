@@ -14,7 +14,7 @@ import time
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
-    QTableWidget, QTableWidgetItem, QTreeWidget, QToolButton,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -119,6 +119,98 @@ class StatusBarHelper(QWidget):
 
     def set_unit(self, text):
         self.unit.setText("单位: %s" % text)
+
+
+class Star3DViewport(QWidget):
+    """M2 3D 视口：QVTKRenderWindowInteractor + mesh actors。"""
+
+    picked = pyqtSignal(object, object)   # (info_tuple, xyz)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+        from vtkmodules.vtkRenderingCore import vtkRenderer
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.vtk_widget = QVTKRenderWindowInteractor(self)
+        lay.addWidget(self.vtk_widget)
+        self.renderer = vtkRenderer()
+        self.renderer.SetBackground(0.08, 0.09, 0.12)
+        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
+        self.actors = []          # [(key, name, part_id, vtkActor)]
+        self._by_actor = {}
+        self._picker = None
+        self._init_picker()
+
+    def _init_picker(self):
+        from vtkmodules.vtkRenderingCore import vtkCellPicker
+        picker = vtkCellPicker()
+        self._picker = picker
+        self.vtk_widget.GetRenderWindow().GetInteractor().SetPicker(picker)
+        picker.AddObserver("EndPickEvent", self._on_pick)
+
+    def _on_pick(self, picker, event):
+        actor = picker.GetActor()
+        info = self._by_actor.get(id(actor))
+        if info is None:
+            return
+        xyz = picker.GetPickPosition()
+        self.picked.emit(info, (xyz[0], xyz[1], xyz[2]))
+
+    def set_actors(self, actors):
+        for k, n, pid, actor in self.actors:
+            self.renderer.RemoveActor(actor)
+        self.actors = list(actors)
+        self._by_actor = {id(a): (k, n, pid) for k, n, pid, a in self.actors}
+        for k, n, pid, actor in self.actors:
+            self.renderer.AddActor(actor)
+        self.fit_view()
+
+    def fit_view(self):
+        self.renderer.ResetCamera()
+        self.render()
+
+    def reset_view(self):
+        self.renderer.ResetCamera()
+        self.render()
+
+    def render(self):
+        self.vtk_widget.GetRenderWindow().Render()
+
+    def set_representation(self, mode):
+        wire = mode == "wireframe"
+        for k, n, pid, actor in self.actors:
+            if wire:
+                actor.GetProperty().SetRepresentationToWireframe()
+            else:
+                actor.GetProperty().SetRepresentationToSurface()
+        self.render()
+
+    def set_background(self, rgb):
+        self.renderer.SetBackground(*rgb)
+        self.render()
+
+    def closeEvent(self, event):
+        try:
+            self.vtk_widget.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
+class GraphicsTabs(QTabWidget):
+    """M2 图形区：Info 标签 + 3D 场景标签页。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDocumentMode(True)
+
+    def add_info_tab(self, summary_pane):
+        self.addTab(summary_pane, "Info")
+
+    def add_mesh_tab(self, title, viewport):
+        idx = self.addTab(viewport, title)
+        return idx
 
 
 class SummaryPane(QWidget):

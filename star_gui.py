@@ -114,8 +114,13 @@ class StarMainWindow(QMainWindow):
         right = QSplitter()
         right.setOrientation(1)                # 垂直：图形区 / 底部输出
         self.summary_pane = SummaryPane()
-        self.graphics_pane = PaneFrame("Graphics Window（M2 起提供 3D 场景）")
-        self.graphics_pane.set_body(self.summary_pane)
+        from star_gui_panes import GraphicsTabs, Star3DViewport
+        self.graphics_tabs = GraphicsTabs()
+        self.graphics_tabs.add_info_tab(self.summary_pane)
+        self.viewport = Star3DViewport()
+        self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
+        self.graphics_pane = PaneFrame("Graphics Window")
+        self.graphics_pane.set_body(self.graphics_tabs)
         right.addWidget(self.graphics_pane)
 
         bottom = QTabWidget()
@@ -154,6 +159,9 @@ class StarMainWindow(QMainWindow):
         self._add("Tools>Fingerprint", "Version Fingerprint", self.cmd_fingerprint, "info")
         self._add("Tools>Check Length", "State Length Check", self.cmd_check_length, "info")
         self._add("Tools>Validate", "ClassVersions Validate", self.cmd_validate, "info")
+        self._add("Scene>Fit", "Fit View", self.cmd_fit, "fit")
+        self._add("Scene>Reset", "Reset View", self.cmd_reset, "reset")
+        self._add("Scene>Wireframe", "Wireframe / Solid", self.cmd_toggle_wire, "mesh")
         self._add("Help>About", "About", self.cmd_about, "info")
 
     def _add(self, key, label, slot, icon_key, shortcut=None):
@@ -173,7 +181,7 @@ class StarMainWindow(QMainWindow):
                        None, "File>Export>STL", "File>Export>Summary"]),
             ("&Edit", ["Edit>NYI"]),
             ("&Mesh", ["Mesh>NYI"]),
-            ("&Scene", ["Scene>NYI"]),
+            ("&Scene", ["Scene>Fit", "Scene>Reset", "Scene>Wireframe"]),
             ("&Plot", ["Plot>NYI"]),
             ("&Tools", ["Tools>Fingerprint", "Tools>Check Length", "Tools>Validate"]),
             ("&Help", ["Help>About"]),
@@ -246,12 +254,27 @@ class StarMainWindow(QMainWindow):
         self.on_file_loaded()   # M1+ 钩子
 
     def on_file_loaded(self):
-        """文件加载后的后续构建（M1 建树/属性，M2 起建 3D）。"""
+        """文件加载后的后续构建（M1 建树/属性，M2 建 3D）。"""
         from star_gui_model import StarSceneModel
         self.model = StarSceneModel(self.sim)
         self.tree_widget.set_model(self.model)
         self.props_widget.set_model(self.model)
         self.msg("仿真树已构建：%d 个顶层节点" % self.tree_widget.tree.topLevelItemCount())
+        self._build_3d()
+
+    def _build_3d(self):
+        """M2：构建网格 actors 并挂到 3D 视口。"""
+        try:
+            from star_gui_vtk import build_mesh_actors
+            self.progress.set_progress(10, "构建 3D 网格 ...")
+            actors = build_mesh_actors(self.sim)
+            self.viewport.set_actors(actors)
+            n_face = sum(a.GetMapper().GetInput().GetNumberOfCells() for _k, _n, _i, a in actors)
+            self.progress.done("3D 网格就绪：%d 个 Part / %d 面" % (len(actors), n_face))
+            self.msg("3D 网格：%d 个 Part / %d 面" % (len(actors), n_face))
+            self.set_status("3D: %d parts" % len(actors))
+        except Exception as exc:  # noqa: BLE001
+            self.msg("3D 构建失败: %s" % exc, "warn")
 
     def on_object_selected(self, obj):
         self.props_widget.show_object(obj)
@@ -286,6 +309,19 @@ class StarMainWindow(QMainWindow):
             return self.msg("请先打开文件", "warn")
         chk = self.sim.check_state_length()
         self.msg("length check: %s" % chk["detail"])
+
+    def cmd_fit(self):
+        if self.viewport:
+            self.viewport.fit_view()
+
+    def cmd_reset(self):
+        if self.viewport:
+            self.viewport.reset_view()
+
+    def cmd_toggle_wire(self):
+        self._wire = not getattr(self, "_wire", False)
+        if self.viewport:
+            self.viewport.set_representation("wireframe" if self._wire else "solid")
 
     def cmd_validate(self):
         if not self.sim:

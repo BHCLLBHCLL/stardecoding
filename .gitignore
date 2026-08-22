@@ -6,3 +6,4 @@ work_pkgs/
 tmp_*
 resaved_*.sim
 *.stl
+_tmp_tests/
