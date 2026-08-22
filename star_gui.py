@@ -312,6 +312,7 @@ class StarMainWindow(QMainWindow):
                         vp.renderer.SetBackground(*bg["solid"])
                         vp.set_actors(actors)
                         apply_camera(vp.renderer, cam)
+                        vp.picked.connect(self.on_picked)
                     self.graphics_tabs.add_mesh_tab(sc["name"] or "Scene", vp)
                 self.graphics_tabs.setCurrentIndex(1)
                 self.msg("3D 场景：%d 个（含显示器/视图相机）" % len(scenes))
@@ -319,6 +320,11 @@ class StarMainWindow(QMainWindow):
                 actors = build_mesh_actors(self.sim)
                 if not HEADLESS:
                     self.viewport.set_actors(actors)
+                    if hasattr(self.viewport, "picked"):
+                        try:
+                            self.viewport.picked.connect(self.on_picked)
+                        except Exception:
+                            pass
                 self.msg("3D 网格：%d 个 Part" % len(actors))
             self.progress.done("3D 就绪")
         except Exception as exc:  # noqa: BLE001
@@ -330,6 +336,16 @@ class StarMainWindow(QMainWindow):
             self.set_status("选中 %s %s (id %d, %s)" % (
                 obj.class_name or "?", obj.name or "", obj.id, obj.layer))
         self._highlight_selection(obj)
+
+    def on_picked(self, info, xyz):
+        """3D 拾取 → 状态栏坐标 + 树同步选中。"""
+        self.status_helper.set_coord(xyz)
+        pid = info[2] if info and len(info) > 2 else None
+        name = info[1] if info and len(info) > 1 else ""
+        if pid:
+            self.tree_widget.select_object(pid)
+            self.set_status("拾取 %s (id %s)  @ (%.4g, %.4g, %.4g)" % (
+                name, pid, xyz[0], xyz[1], xyz[2]))
 
     def _highlight_selection(self, obj):
         """选中 Region/Boundary → 高亮其所属 Part 的网格（边界→面片映射未做，
@@ -356,10 +372,12 @@ class StarMainWindow(QMainWindow):
                     p = self.sim.objmap.get(k)
                     if p is not None and p.name:
                         names.add(p.name)
-        for key, name, pid, actor in self.viewport.actors:
-            visible = name in names
-            actor.SetVisibility(visible)
-        self.viewport.render()
+        vp = self.current_viewport()
+        if vp is None:
+            return
+        for key, name, pid, actor in vp.actors:
+            actor.SetVisibility(name in names)
+        vp.render()
         self.msg("高亮 %d 个 Part（Region→Parts 链接；边界→面片映射未做）" % len(names))
 
     def on_part_visibility(self, obj_id, checked):
@@ -369,10 +387,13 @@ class StarMainWindow(QMainWindow):
         obj = self.sim.objmap.get(obj_id)
         if obj is None or not obj.name:
             return
-        for key, name, pid, actor in self.viewport.actors:
+        vp = self.current_viewport()
+        if vp is None:
+            return
+        for key, name, pid, actor in vp.actors:
             if name == obj.name:
                 actor.SetVisibility(checked)
-        self.viewport.render()
+        vp.render()
 
     def _on_failed(self, path, err):
         self._finish_thread()
@@ -448,28 +469,53 @@ class StarMainWindow(QMainWindow):
                 json.dump(sim.semantic_report(), f, indent=1, default=str)
             self.msg("报告已导出: %s" % path)
 
+    def current_viewport(self):
+        """当前 Graphics 标签中的 3D 视口（场景切换后 Fit/线框应对此窗口生效）。"""
+        tabs = getattr(self, "graphics_tabs", None)
+        if tabs is not None and hasattr(tabs, "current_viewport"):
+            vp = tabs.current_viewport()
+            if vp is not None:
+                return vp
+        vp = getattr(self, "viewport", None)
+        if vp is not None and hasattr(vp, "fit_view"):
+            return vp
+        return None
+
     def cmd_fit(self):
-        if self.viewport:
-            self.viewport.fit_view()
+        vp = self.current_viewport()
+        if vp is not None:
+            vp.fit_view()
 
     def cmd_reset(self):
-        if self.viewport:
-            self.viewport.reset_view()
+        vp = self.current_viewport()
+        if vp is not None:
+            vp.reset_view()
 
     def cmd_toggle_wire(self):
+        vp = self.current_viewport()
+        if vp is None:
+            return
         self._wire = not getattr(self, "_wire", False)
-        if self.viewport:
-            self.viewport.set_representation("wireframe" if self._wire else "solid")
+        vp.set_representation("wireframe" if self._wire else "solid")
 
     def cmd_edges_only(self):
-        """边线模式：隐藏表面 actor，显示边线 actor。"""
-        if HEADLESS:
+        vp = self.current_viewport()
+        if vp is None:
             return
-        self._edges_only = not getattr(self, "_edges_only", False)
-        for key, name, pid, actor in self.viewport.actors:
-            is_edges = key.startswith("edges:")
-            actor.SetVisibility(is_edges if self._edges_only else True)
-        self.viewport.render()
+        if getattr(vp, "_rep_mode", "") == "edges":
+            vp.set_representation("solid")
+        else:
+            vp.set_representation("edges")
+
+    def cmd_view(self, name):
+        vp = self.current_viewport()
+        if vp is not None and hasattr(vp, "set_view"):
+            vp.set_view(name)
+
+    def cmd_transparency(self):
+        vp = self.current_viewport()
+        if vp is not None and hasattr(vp, "toggle_transparency"):
+            vp.toggle_transparency()
 
     def cmd_validate(self):
         if not self.sim:

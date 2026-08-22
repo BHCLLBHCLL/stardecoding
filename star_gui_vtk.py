@@ -30,24 +30,50 @@ def _colors():
 
 
 def mesh_polydata(vertices, faces, one_based=True):
-    """顶点/面 → vtkPolyData（三角形面片，1 基索引自动校正）。"""
+    """顶点/面 → vtkPolyData（三角形 + 点法向，对齐 cab_vtk._tris_to_polydata）。"""
     import vtk
+    nps = _numpy_support()
     v = np.asarray(vertices, dtype=np.float64)
     f = np.asarray(faces, dtype=np.int64)
     if f.size == 0 or v.size == 0:
         raise ValueError("空网格")
     if one_based and f.min() >= 1:
         f = f - 1
-    f = np.clip(f, 0, v.shape[0] - 1)
+    f = np.clip(f, 0, v.shape[0] - 1).astype(np.int64)
     pd = vtk.vtkPolyData()
     pts = vtk.vtkPoints()
-    pts.SetData(_numpy_support().numpy_to_vtk(v, deep=True))
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(v), deep=True))
     pd.SetPoints(pts)
-    cells = vtk.vtkCellArray()
-    for tri in f:
-        cells.InsertNextCell(3, [int(tri[0]), int(tri[1]), int(tri[2])])
-    pd.SetPolys(cells)
-    return pd
+    n = int(f.shape[0])
+    cells = np.empty(n * 4, dtype=np.int64)
+    cells[0::4] = 3
+    cells[1::4] = f[:, 0]
+    cells[2::4] = f[:, 1]
+    cells[3::4] = f[:, 2]
+    ca = vtk.vtkCellArray()
+    try:
+        idarr = nps.numpy_to_vtkIdTypeArray(cells, deep=True)
+        if hasattr(ca, "ImportLegacyFormat"):
+            ca.ImportLegacyFormat(idarr)
+        else:
+            ca.SetCells(n, idarr)
+    except Exception:
+        for tri in f:
+            ca.InsertNextCell(3, [int(tri[0]), int(tri[1]), int(tri[2])])
+    pd.SetPolys(ca)
+    normals = vtk.vtkPolyDataNormals()
+    normals.SetInputData(pd)
+    normals.ComputePointNormalsOn()
+    normals.ComputeCellNormalsOff()
+    normals.SplittingOn()
+    normals.SetFeatureAngle(45.0)
+    normals.ConsistencyOn()
+    try:
+        normals.AutoOrientNormalsOn()
+    except Exception:
+        pass
+    normals.Update()
+    return normals.GetOutput()
 
 
 def part_meshes(sim):
@@ -89,15 +115,19 @@ def _actor(pd, color, opacity=1.0, wireframe=False, line_width=1.0, user_data=No
     import vtk
     mapper = vtk.vtkPolyDataMapper()
     mapper.SetInputData(pd)
+    mapper.ScalarVisibilityOff()
     actor = vtk.vtkActor()
     actor.SetMapper(mapper)
-    actor.GetProperty().SetColor(*color)
-    actor.GetProperty().SetOpacity(opacity)
+    prop = actor.GetProperty()
+    prop.SetColor(*color)
+    prop.SetOpacity(opacity)
+    prop.SetAmbient(0.28)
+    prop.SetDiffuse(0.72)
+    prop.SetSpecular(0.12)
+    prop.SetSpecularPower(18)
     if wireframe:
-        actor.GetProperty().SetRepresentationToWireframe()
-    actor.GetProperty().SetLineWidth(line_width)
-    if user_data is not None:
-        actor.SetProperty("part_id", user_data) if hasattr(actor, "SetProperty") else None
+        prop.SetRepresentationToWireframe()
+    prop.SetLineWidth(line_width)
     return actor
 
 
@@ -115,17 +145,35 @@ def build_mesh_actors(sim, wireframe=False, opacity=1.0):
 
 
 def edges_actor(pd, color=(0.15, 0.15, 0.18), line_width=1.0):
-    """网格边线 actor（vtkExtractEdges）。"""
+    """网格边线 actor（优先 vtkFeatureEdges，回退 vtkExtractEdges；对齐 cab_vtk）。"""
     import vtk
-    edges = vtk.vtkExtractEdges()
-    edges.SetInputData(pd)
+    edge_pd = None
+    try:
+        ext = vtk.vtkFeatureEdges()
+        ext.SetInputData(pd)
+        ext.BoundaryEdgesOn()
+        ext.ManifoldEdgesOn()
+        ext.NonManifoldEdgesOff()
+        ext.FeatureEdgesOff()
+        ext.ColoringOff()
+        ext.Update()
+        edge_pd = ext.GetOutput()
+        if edge_pd is None or edge_pd.GetNumberOfCells() == 0:
+            raise RuntimeError("empty feature edges")
+    except Exception:
+        ext2 = vtk.vtkExtractEdges()
+        ext2.SetInputData(pd)
+        ext2.Update()
+        edge_pd = ext2.GetOutput()
     mapper = vtk.vtkPolyDataMapper()
-    mapper.SetInputConnection(edges.GetOutputPort())
+    mapper.SetInputData(edge_pd)
+    mapper.ScalarVisibilityOff()
     actor = vtk.vtkActor()
     actor.SetMapper(mapper)
-    actor.GetProperty().SetColor(*color)
-    actor.GetProperty().SetRepresentationToWireframe()
-    actor.GetProperty().SetLineWidth(line_width)
+    prop = actor.GetProperty()
+    prop.SetColor(*color)
+    prop.SetRepresentationToWireframe()
+    prop.SetLineWidth(line_width)
     return actor
 
 
@@ -138,16 +186,47 @@ def axes_actor(length=1.0):
     return axes
 
 
-def orientation_marker_widget(interactor, size_frac=0.16):
-    """左上角方向指示器（对齐 cab_vtk.orientation_marker_widget）。"""
+def orientation_marker_widget(interactor, size_frac=0.17):
+    """左下角方向指示器（STAR-CCM+ 截图 / cab_vtk：viewport (0,0,s,s)）。"""
     import vtk
     marker = vtk.vtkOrientationMarkerWidget()
     marker.SetOrientationMarker(axes_actor(1.0))
     marker.SetInteractor(interactor)
-    marker.SetViewport(0.0, 0.85, size_frac, 1.0)
+    marker.SetViewport(0.0, 0.0, size_frac, size_frac)
     marker.SetEnabled(1)
-    marker.InteractOff()
+    marker.InteractiveOff()
     return marker
+
+
+# STAR-CCM+ 视图按钮：+X/-X/+Y/-Y/+Z/-Z / 等轴测（相机位置相对焦点的方向 + ViewUp）
+VIEW_PRESETS = {
+    "+x": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "-x": ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "+y": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "-y": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+    "+z": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+    "-z": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
+    "iso": ((1.0, 1.0, 1.0), (0.0, 0.0, 1.0)),
+}
+
+
+def apply_view_preset(renderer, name):
+    """正交/等轴测预设。name: +x/-x/+y/-y/+z/-z/iso。"""
+    key = (name or "").lower().strip()
+    if key not in VIEW_PRESETS:
+        return False
+    direction, up = VIEW_PRESETS[key]
+    cam = renderer.GetActiveCamera()
+    fp = cam.GetFocalPoint()
+    cam.SetFocalPoint(*fp)
+    cam.SetPosition(fp[0] + direction[0], fp[1] + direction[1], fp[2] + direction[2])
+    cam.SetViewUp(*up)
+    try:
+        cam.ParallelProjectionOn()
+    except Exception:
+        pass
+    renderer.ResetCamera()
+    return True
 
 
 def scene_displayers(sim, scene_obj):

@@ -122,7 +122,7 @@ class StatusBarHelper(QWidget):
 
 
 class Star3DViewport(QWidget):
-    """M2 3D 视口：QVTKRenderWindowInteractor + mesh actors。"""
+    """3D 视口：QVTK + 方向指示器 + 六向/等轴测 + 拾取（对齐 cab_vtk / STAR-CCM+）。"""
 
     picked = pyqtSignal(object, object)   # (info_tuple, xyz)
 
@@ -135,12 +135,37 @@ class Star3DViewport(QWidget):
         self.vtk_widget = QVTKRenderWindowInteractor(self)
         lay.addWidget(self.vtk_widget)
         self.renderer = vtkRenderer()
-        self.renderer.SetBackground(0.08, 0.09, 0.12)
+        self.renderer.SetBackground(0.10, 0.12, 0.16)
+        self.renderer.SetBackground2(0.04, 0.05, 0.07)
+        try:
+            self.renderer.GradientBackgroundOn()
+        except Exception:
+            pass
         self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
         self.actors = []          # [(key, name, part_id, vtkActor)]
         self._by_actor = {}
         self._picker = None
+        self._orient = None
+        self._rep_mode = "solid"   # solid | wireframe | edges
+        self._opacity = 1.0
+        self._init_interactor()
         self._init_picker()
+        self._init_orientation_marker()
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def _init_interactor(self):
+        try:
+            self.vtk_widget.Initialize()
+        except Exception:
+            pass
+
+    def _init_orientation_marker(self):
+        from star_gui_vtk import orientation_marker_widget
+        try:
+            iren = self.vtk_widget.GetRenderWindow().GetInteractor()
+            self._orient = orientation_marker_widget(iren)
+        except Exception:
+            self._orient = None
 
     def _init_picker(self):
         from vtkmodules.vtkRenderingCore import vtkCellPicker
@@ -164,6 +189,7 @@ class Star3DViewport(QWidget):
         self._by_actor = {id(a): (k, n, pid) for k, n, pid, a in self.actors}
         for k, n, pid, actor in self.actors:
             self.renderer.AddActor(actor)
+        self._apply_rep()
         self.fit_view()
 
     def fit_view(self):
@@ -171,26 +197,84 @@ class Star3DViewport(QWidget):
         self.render()
 
     def reset_view(self):
-        self.renderer.ResetCamera()
+        from star_gui_vtk import apply_view_preset
+        apply_view_preset(self.renderer, "iso")
         self.render()
+
+    def set_view(self, name):
+        from star_gui_vtk import apply_view_preset
+        if apply_view_preset(self.renderer, name):
+            self.render()
+            return True
+        return False
 
     def render(self):
         self.vtk_widget.GetRenderWindow().Render()
 
-    def set_representation(self, mode):
-        wire = mode == "wireframe"
+    def _is_edge_actor(self, key):
+        return (key or "").startswith("edges:")
+
+    def _apply_rep(self):
+        mode = self._rep_mode
         for k, n, pid, actor in self.actors:
-            if wire:
-                actor.GetProperty().SetRepresentationToWireframe()
+            is_edge = self._is_edge_actor(k)
+            if mode == "edges":
+                actor.SetVisibility(is_edge)
             else:
-                actor.GetProperty().SetRepresentationToSurface()
+                actor.SetVisibility(True)
+                if is_edge:
+                    continue
+                if mode == "wireframe":
+                    actor.GetProperty().SetRepresentationToWireframe()
+                else:
+                    actor.GetProperty().SetRepresentationToSurface()
+                actor.GetProperty().SetOpacity(self._opacity)
+
+    def set_representation(self, mode):
+        if mode == "edges_only":
+            mode = "edges"
+        self._rep_mode = mode if mode in ("solid", "wireframe", "edges") else "solid"
+        self._apply_rep()
         self.render()
 
-    def set_background(self, rgb):
-        self.renderer.SetBackground(*rgb)
+    def set_opacity(self, opacity):
+        self._opacity = max(0.05, min(1.0, float(opacity)))
+        self._apply_rep()
         self.render()
+
+    def toggle_transparency(self):
+        self.set_opacity(0.4 if self._opacity > 0.7 else 1.0)
+
+    def set_background(self, rgb, rgb2=None):
+        self.renderer.SetBackground(*rgb)
+        if rgb2:
+            self.renderer.SetBackground2(*rgb2)
+            try:
+                self.renderer.GradientBackgroundOn()
+            except Exception:
+                pass
+        self.render()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        shift = bool(event.modifiers() & Qt.ShiftModifier)
+        if key == Qt.Key_F:
+            self.fit_view()
+            return
+        mapping = {Qt.Key_X: "x", Qt.Key_Y: "y", Qt.Key_Z: "z"}
+        axis = mapping.get(key)
+        if axis:
+            name = ("-" if shift else "+") + axis
+            self.set_view(name)
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        try:
+            if self._orient is not None:
+                self._orient.SetEnabled(0)
+        except Exception:
+            pass
         try:
             self.vtk_widget.close()
         except Exception:
@@ -199,11 +283,13 @@ class Star3DViewport(QWidget):
 
 
 class GraphicsTabs(QTabWidget):
-    """M2 图形区：Info 标签 + 3D 场景标签页。"""
+    """图形区：Info 标签 + 每 Scene 一页 3D。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDocumentMode(True)
+        self.setTabsClosable(False)
+        self.setMovable(True)
 
     def add_info_tab(self, summary_pane):
         self.addTab(summary_pane, "Info")
@@ -211,6 +297,17 @@ class GraphicsTabs(QTabWidget):
     def add_mesh_tab(self, title, viewport):
         idx = self.addTab(viewport, title)
         return idx
+
+    def current_viewport(self):
+        """当前标签若为 Star3DViewport 则返回，否则在所有标签中找第一个。"""
+        w = self.currentWidget()
+        if hasattr(w, "fit_view") and hasattr(w, "set_actors"):
+            return w
+        for i in range(self.count()):
+            w = self.widget(i)
+            if hasattr(w, "fit_view") and hasattr(w, "set_actors"):
+                return w
+        return None
 
 
 class SummaryPane(QWidget):
