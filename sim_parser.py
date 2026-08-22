@@ -276,10 +276,24 @@ def walk_sections(blob, start=0, max_sections=200000):
 # 3. STAR-CORE 状态表解析
 # ----------------------------------------------------------------------------
 NAME_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_\-/+.]*?)(\d+)$")
+NAME_RE2 = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_\-/+.]*[A-Za-z_])(\d+)$")  # 允许数字开头（如 3DX_NON_PERSISTENT_ID14）
 FMT_RE = re.compile(r"^([A-Za-z]+)(\d*)$")
 NUM_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
-BITMAP_RE = re.compile(r"^([FT]*F[FT]*)(\d+)$")
-FMT_LETTERS = set("ABCDITVZSuld")  # 状态表格式字母（其余大写/小写字母属于名称）
+BITMAP_RE = re.compile(r"^([FT]+)(\d+)$")
+BITMAP2_RE = re.compile(r"^([FTPB?]+)(\d+)$")  # B/P 位图 + 内嵌 ?? 指针链（如 BBBBBBBB????0）
+FMT_LETTERS = set("ABCDIJLTVZSuld")  # 状态表格式字母（其余大写/小写字母属于名称）
+
+
+def parse_pointer(tok):
+    """解析 '?' 指针 token（支持嵌套与浮点引用）：?5, ?24, ?-.0376, ??0, ????0 ..."""
+    rest = tok[1:]
+    if rest.startswith("?"):
+        return {"nested": parse_pointer(rest)}
+    if re.fullmatch(r"[+-]?\d+", rest):
+        return int(rest)
+    if NUM_RE.match(rest):
+        return float(rest)
+    return rest  # 原样保留
 
 
 def unwrap_table(table_lines):
@@ -311,16 +325,153 @@ def unwrap_table(table_lines):
     return "".join(out)
 
 
-def parse_state_table(text):
-    """把状态表文本解析为记录流（无损：每个 token 都被归类）。
+KNOWN_BIN_FMTS = {
+    "A", "CI", "CZ", "DI", "dA", "dI", "dZ", "dCCZ", "uI", "lCCCDCCDI",
+    "CCCCCCCA", "CCCCCCCCCA", "CCCCCCCCCCCCCDI", "CCCCCCCCCCCCCCCCCCCCCCCA",
+    "S", "V", "Z", "T", "J", "L", "F", "TTT",
+}
 
-    状态表 = 4 行魔数块 + 1 行 T51 banner + 80 列折行的记录表。
+
+def parse_state_table_binary(text):
+    """解析"二进制编码"状态表变体（部分老版本 .sim，如 airfoil.sim）。
+
+    与 ASCII 变体的差异：魔数块后不再是 80 列折行文本，而是一条字节流——
+    名字/格式字母仍是 ASCII，id/flags/version/尾值等数字字段为二进制
+    （id=3 字节小端、flags/version/尾值=1 字节）。数值流（T 块等）的具体
+    二进制文法未完全还原，按原始字节保留。
     返回 (tokens, records, magic, banner)。
     """
     lines = text.split("\n")
     magic = lines[:4]
-    banner = lines[4] if len(lines) > 4 else ""
-    table_lines = lines[5:]
+    blob = text.encode("latin-1")[len("\n".join(magic)) + 1:]
+
+    # banner：从字节流中正则提取（NUL 填充的版本号/SCH 串）
+    bm = re.search(rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)", blob)
+    banner = ""
+    if bm:
+        banner = "T51 : TRANSMIT FILE created by modeller version %s SCH_%s" % (
+            bm.group(1).decode("latin-1"), bm.group(2).decode("latin-1"))
+        body = blob[bm.end():]
+    else:
+        body = blob
+
+    NAME_BYTES = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
+    records = []
+    i = 0
+    n = len(body)
+    tokens = []
+
+    def scan_name(i):
+        j = i
+        while j < n and body[j] in NAME_BYTES:
+            j += 1
+        return body[i:j].decode("latin-1"), j
+
+    while i < n:
+        b = body[i]
+        if b in NAME_BYTES:
+            run, j = scan_name(i)
+            is_bitmap = bool(re.fullmatch(r"[FTPB?]+", run))
+            is_fmt = run in KNOWN_BIN_FMTS or (len(run) == 1 and run.isupper())
+            if is_bitmap or is_fmt:
+                rec = {"kind": "bitmap" if is_bitmap else "anonymous",
+                       "name": None, "id": None, "flags": None,
+                       "version": None, "fmt": run if not is_bitmap else None,
+                       "bits": run if is_bitmap else None,
+                       "value": None, "values": [], "token_index": len(tokens),
+                       "raw": None}
+                tokens.append(run)
+                i = j
+                if i < n and body[i] not in NAME_BYTES:
+                    rec["value"] = body[i]; i += 1
+                # 数值流：原始字节直到下一个字母 run
+                k = i
+                while k < n and body[k] not in NAME_BYTES:
+                    k += 1
+                if k > i:
+                    rec["raw"] = body[i:k].hex(" ")
+                i = k
+                records.append(rec)
+                continue
+            # 名字记录
+            rec = {"kind": "named", "name": run, "id": None, "flags": None,
+                   "version": None, "fmt": None, "value": None, "values": [],
+                   "token_index": len(tokens), "raw": None}
+            tokens.append(run)
+            i = j
+            # id = 3 字节大端（= ASCII 模式 id × 256）
+            if i + 3 <= n and body[i] not in NAME_BYTES:
+                rec["id"] = int.from_bytes(body[i:i+3], "big") // 256
+                i += 3
+                # flags = 1 字节
+                if i < n:
+                    rec["flags"] = body[i]; i += 1
+                if rec["flags"] > 2:
+                    # flags 异常（>2）说明该字母 run 是数值流中浮点字节的假阳性
+                    k = i
+                    while k < n and body[k] not in NAME_BYTES:
+                        k += 1
+                    records.append({"kind": "data", "raw": body[i:k].hex(" "),
+                                    "token_index": len(tokens) - 1, "values": []})
+                    i = k
+                    continue
+                # 可选 version：非打印字节且后面跟字母
+                if (i + 1 < n and body[i] not in NAME_BYTES
+                        and body[i+1] in NAME_BYTES):
+                    rec["version"] = body[i]; i += 1
+                # fmt 字母 + 1 字节尾值
+                fm, j2 = scan_name(i)
+                if fm and (fm in KNOWN_BIN_FMTS or (len(fm) == 1 and fm.isupper())):
+                    rec["fmt"] = fm
+                    i = j2
+                    if i < n and body[i] not in NAME_BYTES:
+                        rec["value"] = body[i]; i += 1
+                    # 数值流：原始字节直到下一个字母 run
+                    k = i
+                    while k < n and body[k] not in NAME_BYTES:
+                        k += 1
+                    if k > i:
+                        rec["raw"] = body[i:k].hex(" ")
+                    i = k
+                else:
+                    i = j2
+            records.append(rec)
+        else:
+            # 非字母字节（数值流/位图等）：原样累计
+            k = i
+            while k < n and body[k] not in NAME_BYTES:
+                k += 1
+            tokens.append("<bytes:%d>" % (k - i))
+            records.append({"kind": "data", "raw": body[i:k].hex(" "),
+                            "token_index": len(tokens) - 1, "values": []})
+            i = k
+
+    if banner:
+        records.insert(0, {"kind": "banner", "fmt": "T", "value": 51,
+                           "message": banner.split(": ", 1)[-1], "token_index": -1})
+    return tokens, records, magic, banner
+
+
+def parse_state_table(text):
+    """把状态表文本解析为记录流（无损：每个 token 都被归类）。
+
+    状态表 = 魔数块（外层 4 行 / 嵌套 3 行）+ 1 行 T51 banner + 80 列折行的记录表。
+    自动识别 ASCII / 二进制编码变体。
+    返回 (tokens, records, magic, banner)。
+    """
+    lines = text.split("\n")
+    # banner 行 = 包含 "TRANSMIT FILE" 的行（外层与嵌套块行数不同，动态定位）
+    bi = next((k for k, l in enumerate(lines[:12])
+               if "TRANSMIT FILE" in l and k > 0), None)
+    if bi is None:
+        bi = 4
+    magic = lines[:bi]
+    banner = lines[bi] if bi < len(lines) else ""
+    table_lines = lines[bi + 1:]
+
+    # 二进制变体检测：记录区包含 NUL 字节
+    if "\x00" in "\n".join(table_lines[:20]):
+        return parse_state_table_binary(text)
 
     table = unwrap_table(table_lines)
     tokens = table.split()
@@ -344,12 +495,12 @@ def parse_state_table(text):
             return "element"
         if tok.startswith("?"):
             return "pointer"
-        if BITMAP_RE.match(tok):
+        if BITMAP_RE.match(tok) or BITMAP2_RE.match(tok):
             return "bitmap"
         m = FMT_RE.match(tok)
         if m and all(c in FMT_LETTERS for c in m.group(1)):
             return "fmt"
-        if NAME_RE.match(tok):
+        if NAME_RE.match(tok) or NAME_RE2.match(tok):
             return "name"
         return "other"
 
@@ -358,7 +509,7 @@ def parse_state_table(text):
         kind = classify(tok)
 
         if kind == "name":
-            m = NAME_RE.match(tok)
+            m = NAME_RE.match(tok) or NAME_RE2.match(tok)
             name, sid = m.group(1), int(m.group(2))
             rec = {"kind": "named", "name": name, "id": sid, "flags": None,
                    "version": None, "fmt": None, "value": None, "values": [],
@@ -403,7 +554,7 @@ def parse_state_table(text):
             records.append(rec)
 
         elif kind == "pointer":
-            rec = {"kind": "pointer", "ref": int(tok[1:]), "values": [], "token_index": i}
+            rec = {"kind": "pointer", "ref": parse_pointer(tok), "values": [], "token_index": i}
             i += 1
             j = next_non_number(i)
             while i < j:
@@ -420,7 +571,7 @@ def parse_state_table(text):
             i += 1
 
         elif kind == "bitmap":
-            m = BITMAP_RE.match(tok)
+            m = BITMAP_RE.match(tok) or BITMAP2_RE.match(tok)
             records.append({"kind": "bitmap", "bits": m.group(1), "value": int(m.group(2)),
                             "values": [], "token_index": i})
             i += 1
@@ -576,10 +727,12 @@ class SimFile:
         self.state_position = self.header.get("StatePosition")
         self.arrays = []
         self.state_text = None
+        self.state_mode = "ascii"
         self.state_magic = []
         self.state_banner = ""
         self.tokens = []
         self.records = []
+        self.nested_transmits = []   # 嵌套 TRANSMIT 子块（Character1 数组）
         self.objects = []
         self.roots = []
         self.children = {}
@@ -595,10 +748,31 @@ class SimFile:
                     "data": payload,
                     "dict": d,
                 })
-                if d.get("Type") == "Character1" and self.state_text is None:
-                    self.state_text = payload.decode("latin-1")
-                    self.tokens, self.records, self.state_magic, self.state_banner = \
-                        parse_state_table(self.state_text)
+                if d.get("Type") == "Character1":
+                    ctext = payload.decode("latin-1")
+                    if self.state_text is None:
+                        self.state_text = ctext
+                        self.tokens, self.records, self.state_magic, self.state_banner = \
+                            parse_state_table(self.state_text)
+                        self.state_mode = "binary" if "\x00" in \
+                            "\n".join(self.state_text.split("\n")[5:20]) else "ascii"
+                    elif "TRANSMIT FILE created by" in ctext:
+                        # 嵌套 TRANSMIT 子块（每块一个子状态表）
+                        try:
+                            nt_tok, nt_rec, nt_magic, nt_banner = parse_state_table(ctext)
+                            self.nested_transmits.append({
+                                "array_index": len(self.arrays),
+                                "count": d.get("nElements"),
+                                "magic": nt_magic, "banner": nt_banner.strip(),
+                                "records": nt_rec,
+                            })
+                        except Exception as _e:
+                            self.nested_transmits.append({
+                                "array_index": len(self.arrays),
+                                "count": d.get("nElements"),
+                                "magic": [], "banner": "", "records": [],
+                                "error": repr(_e),
+                            })
 
         # 对象图：从 Simulation 区（第一个 star.common.Simulation）开始
         obj_start = None
@@ -619,8 +793,10 @@ class SimFile:
         """解码数组（numpy 可用时返回 ndarray，否则返回 list/bytes）。"""
         a = self.arrays[index]
         t = a["type"]
-        if _np is not None and t in ("Float8", "Float", "Unsigned4", "Integer4"):
-            dt = {"Float8": "<f8", "Float": "<f4", "Unsigned4": "<u4", "Integer4": "<i4"}[t]
+        if _np is not None and t in ("Float8", "Float", "Float4", "Unsigned4",
+                                          "Integer4", "Integer8"):
+            dt = {"Float8": "<f8", "Float": "<f4", "Float4": "<f4",
+                  "Unsigned4": "<u4", "Integer4": "<i4", "Integer8": "<i8"}[t]
             return _np.frombuffer(a["data"], dtype=dt)
         if t == "Character1":
             return a["data"].decode("latin-1")
@@ -636,14 +812,17 @@ class SimFile:
         L.append("StatePosition: %d" % self.state_position)
         L.append("分区数: %d" % len(self.sections))
         L.append("数组块: %d" % len(self.arrays))
-        L.append("状态表: %d 字符 / %d token / %d 记录" % (
-            len(self.state_text or ""), len(self.tokens), len(self.records)))
+        L.append("状态表: %d 字符 / %d token / %d 记录 (%s 编码)" % (
+            len(self.state_text or ""), len(self.tokens), len(self.records), self.state_mode))
         if self.state_magic:
             L.append("魔数块: %r" % self.state_magic)
         if self.state_banner:
             L.append("Banner: %s" % self.state_banner.strip())
         L.append("对象图: %d 个对象 (id 2..%d)" % (len(self.objects),
                                                   len(self.objects) + 1 if self.objects else 0))
+        if self.nested_transmits:
+            L.append("嵌套 TRANSMIT 子块: %d (记录数 %s)" % (len(self.nested_transmits),
+                     ", ".join(str(nt["count"]) for nt in self.nested_transmits[:8])))
         if self.roots:
             main_roots = [r for r in self.roots if self.children.get(r.id)]
             loose = [r for r in self.roots if not self.children.get(r.id)]
