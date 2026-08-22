@@ -9,13 +9,13 @@
 | --- | --- |
 | `sim_parser.py` | 主解析器（CLI + 可导入模块） |
 | `README.md` | 本说明（格式逆向文档） |
-| `GAPS.md` | **功能完整性与深度差距分析**（21 文件实测） |
+| `function_gap_analysis.md` | **功能完整性与深度差距分析**（21 文件实测，按节推进改进） |
 | `starccm_dump_tree.java` | 用官方 Java API 交叉验证对象图的宏（需要 license） |
 | `adjointWing_start.sim` | 官方算例（本解析器的主要测试对象） |
 
 > 已用 `D:\training\starccm\startutorialsdata` 全部 **21 个 .sim** 实测（6.03–10.05 版本，
 > 187KB–13MB）：容器/分区/数组/对象图全部可解析；状态表含 ASCII 与二进制两种编码变体，
-> 且存在嵌套 TRANSMIT 子块——详见 GAPS.md。
+> 且存在嵌套 TRANSMIT 子块——详见 function_gap_analysis.md。
 
 ## 快速上手
 
@@ -133,6 +133,6 @@ starccmw.exe -batch starccm_dump_tree.java adjointWing_start.sim
   含 ASCII/二进制两种状态表编码、嵌套 TRANSMIT 子块、多 id 魔数等变体）实测，
   **21/21 可解析**。
 - STAR-CORE 状态表部分格式字母的完整语义（`T`/`V`/`S`/`Z` 块内部结构、
-  `?1` face 记录各字段含义、二进制变体的数值流文法）仍为经验结论——见 GAPS.md。
+  `?1` face 记录各字段含义、二进制变体的数值流文法）仍为经验结论——见 function_gap_analysis.md。
 - 若文件以 `PK` 开头（ZIP 容器），解析器会自动解包取主条目后按相同格式解析。
 - 中文输出依赖 UTF-8 终端（脚本已自动 reconfigure）。
