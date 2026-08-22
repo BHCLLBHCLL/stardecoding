@@ -1,0 +1,354 @@
+[
+ {
+  "file": "adjointWing_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "250020723",
+  "objects": 2076,
+  "arrays": 33,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "cylinderBase.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "260019823",
+  "objects": 2186,
+  "arrays": 31,
+  "char_arrays": 3,
+  "nested": 2
+ },
+ {
+  "file": "3DEChemGeometry.sim",
+  "header_keys": [
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "",
+  "magic_lines": 0,
+  "magic_style": "standard",
+  "banner_ver": null,
+  "objects": 1439,
+  "arrays": 68,
+  "char_arrays": 0,
+  "nested": 0
+ },
+ {
+  "file": "basicGravitySandCastingGeo.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 8,
+  "magic_style": "multi-id",
+  "banner_ver": "260019823",
+  "objects": 1498,
+  "arrays": 95,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "methaneOnPt.sim",
+  "header_keys": [
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f\f",
+  "magic_lines": 1,
+  "magic_style": "nested-style",
+  "banner_ver": null,
+  "objects": 3951,
+  "arrays": 153,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "airfoil_oversetParts.sim",
+  "header_keys": [
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 5,
+  "magic_style": "multi-id",
+  "banner_ver": "240114323",
+  "objects": 749,
+  "arrays": 80,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "CoSimAPI_spindleValve.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "260121723",
+  "objects": 4278,
+  "arrays": 15,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "checkValve-AMESim.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 6,
+  "magic_style": "multi-id",
+  "banner_ver": "270019223",
+  "objects": 2587,
+  "arrays": 57,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "plate-cosim.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "",
+  "magic_lines": 0,
+  "magic_style": "standard",
+  "banner_ver": null,
+  "objects": 989,
+  "arrays": 7,
+  "char_arrays": 0,
+  "nested": 0
+ },
+ {
+  "file": "AXMGeometry.sim",
+  "header_keys": [
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "1",
+  "magic_lines": 3,
+  "magic_style": "nested-style",
+  "banner_ver": "240014323",
+  "objects": 2381,
+  "arrays": 11,
+  "char_arrays": 11,
+  "nested": 10
+ },
+ {
+  "file": "adjointWing_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "250020723",
+  "objects": 2076,
+  "arrays": 33,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "directedMeshCAD.sim",
+  "header_keys": [
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "240114323",
+  "objects": 1665,
+  "arrays": 81,
+  "char_arrays": 11,
+  "nested": 10
+ },
+ {
+  "file": "surfaceRepairCAD.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": null,
+  "objects": 1155,
+  "arrays": 155,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "genericHelicopter_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "",
+  "magic_lines": 0,
+  "magic_style": "standard",
+  "banner_ver": null,
+  "objects": 1742,
+  "arrays": 36,
+  "char_arrays": 0,
+  "nested": 0
+ },
+ {
+  "file": "marineSelfPropulsion_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "260121723",
+  "objects": 1778,
+  "arrays": 66,
+  "char_arrays": 1,
+  "nested": 0
+ },
+ {
+  "file": "openWaterPropeller_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": null,
+  "objects": 7210,
+  "arrays": 52,
+  "char_arrays": 6,
+  "nested": 5
+ },
+ {
+  "file": "airfoil.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "binary",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "2700192",
+  "objects": 4929,
+  "arrays": 115,
+  "char_arrays": 8,
+  "nested": 5
+ },
+ {
+  "file": "pipeBlockage.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "260121723",
+  "objects": 3750,
+  "arrays": 89,
+  "char_arrays": 3,
+  "nested": 1
+ },
+ {
+  "file": "pipeMixingBlockage.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "ascii",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "240114323",
+  "objects": 4894,
+  "arrays": 103,
+  "char_arrays": 3,
+  "nested": 1
+ },
+ {
+  "file": "manifold_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "binary",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "2800151",
+  "objects": 10395,
+  "arrays": 64,
+  "char_arrays": 7,
+  "nested": 4
+ },
+ {
+  "file": "vibratingPipe_start.sim",
+  "header_keys": [
+   "Binary",
+   "StatePosition",
+   "Version"
+  ],
+  "mode": "binary",
+  "magic0": "CD-adapco_STAR-CCM+_ID",
+  "magic_lines": 4,
+  "magic_style": "standard",
+  "banner_ver": "2800151",
+  "objects": 1517,
+  "arrays": 44,
+  "char_arrays": 1,
+  "nested": 0
+ }
+]
