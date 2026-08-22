@@ -1009,6 +1009,87 @@ class SimFile:
             return {"ok": ok, "detail": "嵌套: 魔数 %d vs 实际 %d" % (vals[0], expect)}
         return {"ok": None, "detail": "未识别"}
 
+    def semantic_report(self):
+        """语义层报告：Region↔Boundary↔Part↔网格、Continuum↔Models、Scene↔Displayer。
+
+        基于对象图引用关系（Parent/Keys/属性），输出可读的仿真配置摘要。
+        """
+        om = self.objmap
+        rep = {"regions": [], "continua": [], "scenes": [], "parts": []}
+
+        def ref(v):
+            if isinstance(v, int) and v in om:
+                return om[v]
+            return None
+
+        def kids_of(o):
+            return self.children.get(o.id, [])
+
+        # Regions 及其边界/部件
+        for o in self.objects:
+            if o.class_name == "star.common.Region":
+                bm = ref(o.dict.get("BoundaryManager"))
+                boundaries = []
+                if bm is not None:
+                    for b in kids_of(bm):
+                        if b.class_name == "star.common.Boundary":
+                            boundaries.append({"id": b.id, "name": b.name})
+                parts = []
+                pv = o.dict.get("Parts")
+                plist = pv if isinstance(pv, list) else [pv]
+                for p in plist:
+                    po = ref(p)
+                    if po is None:
+                        continue
+                    # PartGroup 容器 → 展开其 Keys 得到实际部件
+                    if "PartGroup" in (po.class_name or ""):
+                        for k in po.dict.get("Keys") or []:
+                            pk = ref(k)
+                            if pk is not None:
+                                parts.append({"id": pk.id, "name": pk.name,
+                                              "class": pk.class_name,
+                                              "triangles": pk.dict.get("TriangleCount")})
+                    else:
+                        parts.append({"id": po.id, "name": po.name,
+                                      "class": po.class_name,
+                                      "triangles": po.dict.get("TriangleCount")})
+                rep["regions"].append({"id": o.id, "name": o.name,
+                                       "boundaries": boundaries, "parts": parts})
+        # Continuums 及其模型
+        for o in self.objects:
+            if o.class_name == "star.common.PhysicsContinuum":
+                models = []
+                mm = ref(o.dict.get("ModelManager"))
+                if mm is not None:
+                    for m2 in kids_of(mm):
+                        models.append({"id": m2.id, "class": m2.class_name,
+                                       "name": m2.name})
+                rep["continua"].append({"id": o.id, "name": o.name,
+                                        "models": models})
+        # Scenes 及其显示器
+        for o in self.objects:
+            if o.class_name == "star.vis.Scene":
+                dm = ref(o.dict.get("DisplayerManager"))
+                displayers = []
+                if dm is not None:
+                    for k in dm.dict.get("Keys") or []:
+                        d2 = ref(k)
+                        if d2 is not None and (d2.class_name or "").startswith("star.vis"):
+                            displayers.append({"id": d2.id, "class": d2.class_name,
+                                               "name": d2.name})
+                view = ref(o.dict.get("CurrentView"))
+                rep["scenes"].append({"id": o.id, "name": o.name,
+                                      "displayers": displayers,
+                                      "view": (view.class_name, view.name) if view else None})
+        # 所有命名 Part（网格规模）
+        for o in self.objects:
+            if isinstance(o.dict.get("TriangleCount"), int) and o.name:
+                rep["parts"].append({"id": o.id, "class": o.class_name,
+                                     "name": o.name,
+                                     "triangles": o.dict["TriangleCount"],
+                                     "vertices": o.dict.get("VertexCount")})
+        return rep
+
     def validate_class_versions(self):
         """用文件尾部 ClassVersions 统计校验对象图（诊断性比对）。
 
@@ -1280,6 +1361,7 @@ def main(argv=None):
     ap.add_argument("--mesh-export", metavar="STL", help="把抽取出的网格写为 ASCII STL")
     ap.add_argument("--fingerprint", action="store_true", help="输出版本指纹（banner/release/编码/头部）")
     ap.add_argument("--check-length", action="store_true", help="状态表长度自校验")
+    ap.add_argument("--report", action="store_true", help="语义层报告（Region/Continuum/Scene/Part）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     args = ap.parse_args(argv)
@@ -1290,7 +1372,7 @@ def main(argv=None):
                                 args.objects, args.tree, args.layers,
                                 args.validate, args.mesh, args.mesh_export,
                                 args.fingerprint, args.check_length,
-                                args.export]):
+                                args.report, args.export]):
         print(sim.summary())
 
     if args.fingerprint:
@@ -1379,6 +1461,36 @@ def main(argv=None):
         for r in sim.roots:
             if sim.children.get(r.id):
                 print_tree([r], sim.children)
+
+    if args.report:
+        rep = sim.semantic_report()
+        print("\n== 语义层报告 ==")
+        for r in rep["regions"]:
+            print("  Region %r (id %d):" % (r["name"], r["id"]))
+            for p in r["parts"]:
+                print("    Part %r (%s, %s 三角)" % (
+                    p["name"], p["class"], p["triangles"]))
+            for b in r["boundaries"][:8]:
+                print("    Boundary %r (id %d)" % (b["name"], b["id"]))
+            if len(r["boundaries"]) > 8:
+                print("    ... 共 %d 个边界" % len(r["boundaries"]))
+        for c in rep["continua"]:
+            print("  Continuum %r (id %d): %d 个模型" % (c["name"], c["id"], len(c["models"])))
+            for m2 in c["models"][:10]:
+                print("    %s %r" % (m2["class"], m2["name"]))
+            if len(c["models"]) > 10:
+                print("    ... 其余 %d 个" % (len(c["models"]) - 10))
+        for s in rep["scenes"]:
+            print("  Scene %r (id %d): %d 个显示器%s" % (
+                s["name"], s["id"], len(s["displayers"]),
+                ("，视图 %s" % (s["view"],) if s["view"] else "")))
+            for d2 in s["displayers"][:6]:
+                print("    %s %r" % (d2["class"], d2["name"]))
+        print("  Part 清单（有网格规模）:")
+        for p in rep["parts"]:
+            print("    %r %s: %s 三角%s" % (
+                p["name"], p["class"], p["triangles"],
+                (" %s 顶点" % p["vertices"]) if p["vertices"] else ""))
 
     if args.mesh:
         m = sim.extract_mesh()

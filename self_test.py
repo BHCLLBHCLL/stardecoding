@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """sim_parser.py 自检：结构不变量 + 导出有效性。"""
 import json, sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, "D:/training/caedecoder/stardecoding")
 from sim_parser import SimFile, walk_sections
 from collections import Counter
@@ -80,4 +81,21 @@ assert m["vertices"] is not None and m["vertices"].shape[0] == 1412
 assert m["consistent"] is True
 print("mesh:", m["faces"].shape[0], "faces,", m["vertices"].shape[0],
       "vertices, flags:", m["face_flag"], "/", m["vertex_flag"])
+
+# --- 改进⑤⑥：版本指纹 / 长度自校验 ---
+fp = sim.version_fingerprint()
+assert fp["banner_version"] == "250020723" and fp["release"] == "8.03.076"
+chk = sim.check_state_length()
+assert chk["ok"] is True
+print("fingerprint:", fp["banner_version"], "/", fp["release"], "/", fp["state_mode"],
+      "; length check:", chk["detail"])
+
+# --- 改进⑦：语义层报告 ---
+rep = sim.semantic_report()
+assert len(rep["regions"]) == 1 and rep["regions"][0]["name"] == "Fluid Domain"
+assert rep["regions"][0]["parts"][0]["triangles"] == 2824
+assert rep["continua"][0]["name"] == "Physics 1" and len(rep["continua"][0]["models"]) >= 20
+assert rep["scenes"][0]["name"] == "Mesh Scene 1"
+print("report: %d regions, %d continua, %d scenes, %d parts" % (
+    len(rep["regions"]), len(rep["continua"]), len(rep["scenes"]), len(rep["parts"])))
 print("ALL CHECKS PASSED")
