@@ -24,9 +24,10 @@
 
 已发现的变体与剩余工作：
 
-1. **头部字段变体**：部分文件头无 `'Binary'` 标记（如 directedMeshCAD、3DEChemGeometry），
-   且缺 StarVersion 对象的老文件（约 6 个）版本信息只存在于状态表 banner。
-   → 需归纳"版本指纹"表：banner 版本 ↔ StarVersion ↔ 头部字段组合。
+1. **头部字段变体** ✅（改进⑤）：`--fingerprint` 输出版本指纹
+   （banner 版本 ↔ StarVersion ↔ 状态表编码 ↔ 头部字段组合），21 文件指纹表已建
+   （version_fingerprint.py）；发现二进制模式与版本无关（10.04/10.05 二进制、
+   10.01 ASCII 并存），由内容/特性决定。
 2. **魔数块变体**：外层 `CD-adapco_STAR-CCM+_ID`（标准）、**多 id 变体**
    （如 openWaterPropeller：`ID | 25 | 65607 | 65605 | ...`）、**无前缀变体**
    （methaneOnPt、AXMGeometry 直接以 `1 | 16260 | @ | T51...` 开头）。
@@ -34,7 +35,8 @@
    原文计字节，切分后尾差=0）；分段 0 = 主块，其余为记录流物理延续。
    表内嵌 `CD-adapco_STAR-CCM+_ID<对象id>` 标记 = 某对象的内嵌状态根，
    id 已关联对象图；分段 ↔ 对象级归属（哪个分段属于哪个对象）仍待细查。
-3. **ZIP/压缩变体**：本语料未出现 `PK` 容器；解析器已有自动解包兜底，但未实测。
+3. **ZIP/压缩变体** ✅（改进⑤）：语料无 `PK` 容器；合成 ZIP 测试通过
+   （zip 内单条目自动解包解析，2076 对象/36153 字符与直读一致）。真实压缩 .sim 待遇到再验。
 4. **新数组类型** Integer8（methaneOnPt）、Float4（airfoil、directedMeshCAD 的
    MasterArray<Float4>）已支持；若遇 Unsigned8/复杂结构体需扩展 TYPE_SIZE。
 5. **多 Character1 数组**（最多 11 个/文件）→ 嵌套 TRANSMIT 子块：已解析；
@@ -61,7 +63,9 @@
    未能得到 ASCII 版本）。
 3. **状态表尾部校验记录**（`S0 74 4 CI16 ... dCCZ ... 550 460 178 ...`）：含义
    （偏移/校验和）未定；可尝试修改文件重存验证。
-4. **多 id 魔数**与"36120 = 表长-33"这类长度自校验未做（可做一致性断言）。
+4. ~~多 id 魔数与长度自校验~~ ✅（改进⑥）：`check_state_length()`/`--check-length`
+   通用规则 "魔数值 = 块总长 - 魔数块长 - 1；多 id 时 sum = banner+表体长"，
+   21 文件外层 16/16 通过（5 个无状态表/异形跳过）、嵌套子块 29/29 通过。
 
 ## 3. 数组表（深度）
 

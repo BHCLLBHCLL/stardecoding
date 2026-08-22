@@ -946,6 +946,69 @@ class SimFile:
                 named[o.layer].append((o.id, o.class_name, o.name))
         return census, named
 
+    def version_fingerprint(self):
+        """版本指纹：banner 版本 / StarVersion / 状态表编码 / 头部字段组合。"""
+        import re as _re
+        m = _re.search(r"version (\d+)", self.state_banner or "")
+        banner_ver = m.group(1) if m else None
+        release = None
+        for d, payload, s0, ps in self.sections:
+            if isinstance(d, dict) and d.get("ClassName") == "StarVersion":
+                release = d.get("ReleaseNumber")
+                break
+        hdr = sorted(k for k in self.header.keys() if k != "ClassName")
+        return {"banner_version": banner_ver, "release": release,
+                "state_mode": self.state_mode, "header_keys": hdr}
+
+    def check_state_length(self):
+        """状态表长度自校验（魔数值 vs 实际表长）。
+
+        规则（语料验证）:
+          - 外层标准魔数 N==1：value == 状态表总长 - 魔数块长 - 1
+          - 多 id 魔数 N>1：sum(values) == banner+表体折行原文长
+          - 嵌套块：value == 块长 - 10
+        返回 {"ok": bool, "detail": str}。
+        """
+        m = self.state_magic
+        if not m:
+            return {"ok": None, "detail": "无魔数"}
+        lines = self.state_text.split("\n")
+        bi = next((k for k, l in enumerate(lines) if "TRANSMIT FILE" in l), None)
+        if bi is None:
+            return {"ok": None, "detail": "无 banner"}
+        body_len = len("\n".join(lines[bi:]))
+        if m[0].startswith("CD-adapco"):
+            try:
+                n = int(m[1])
+                vals = [int(x) for x in m[2:-1]]
+            except ValueError:
+                return {"ok": None, "detail": "魔数解析失败"}
+            if n == 1 and len(vals) == 1:
+                expect = len(self.state_text) - len("\n".join(m)) - 1
+                ok = vals[0] == expect
+                return {"ok": ok, "detail": "外层 N=1: 魔数 %d vs 实际 %d" % (vals[0], expect)}
+            if n >= 2 and len(vals) == n:
+                ok = sum(vals) == body_len
+                return {"ok": ok, "detail": "多 id: sum(%d 段)=%d vs 表体 %d" % (
+                    n, sum(vals), body_len)}
+            return {"ok": None, "detail": "魔数形态未识别"}
+        # 嵌套块：3 行魔数（count, size, @）或嵌套多 id 形态——通用规则同外层：
+        # 单值: value == 块总长 - 魔数块长 - 1；多值: sum(values) == banner+表体长
+        if m[-1] == "@" and len(m) >= 3:
+            try:
+                n = int(m[0])
+                vals = [int(x) for x in m[1:-1]]
+            except ValueError:
+                return {"ok": None, "detail": "嵌套魔数解析失败"}
+            if n >= 2 and len(vals) == n:
+                ok = sum(vals) == body_len
+                return {"ok": ok, "detail": "嵌套多 id: sum(%d 段)=%d vs 表体 %d" % (
+                    n, sum(vals), body_len)}
+            expect = len(self.state_text) - len("\n".join(m)) - 1
+            ok = vals[0] == expect
+            return {"ok": ok, "detail": "嵌套: 魔数 %d vs 实际 %d" % (vals[0], expect)}
+        return {"ok": None, "detail": "未识别"}
+
     def validate_class_versions(self):
         """用文件尾部 ClassVersions 统计校验对象图（诊断性比对）。
 
@@ -1215,6 +1278,8 @@ def main(argv=None):
     ap.add_argument("--validate", action="store_true", help="校验 ClassVersions 尾部统计与对象图一致性")
     ap.add_argument("--mesh", action="store_true", help="抽取网格并输出统计（顶点/面）")
     ap.add_argument("--mesh-export", metavar="STL", help="把抽取出的网格写为 ASCII STL")
+    ap.add_argument("--fingerprint", action="store_true", help="输出版本指纹（banner/release/编码/头部）")
+    ap.add_argument("--check-length", action="store_true", help="状态表长度自校验")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     args = ap.parse_args(argv)
@@ -1224,8 +1289,24 @@ def main(argv=None):
     if args.summary or not any([args.sections, args.arrays, args.state,
                                 args.objects, args.tree, args.layers,
                                 args.validate, args.mesh, args.mesh_export,
+                                args.fingerprint, args.check_length,
                                 args.export]):
         print(sim.summary())
+
+    if args.fingerprint:
+        fp = sim.version_fingerprint()
+        print("\n== 版本指纹 ==")
+        print("  banner 版本: %s" % fp["banner_version"])
+        print("  StarVersion Release: %s" % fp["release"])
+        print("  状态表编码: %s" % fp["state_mode"])
+        print("  头部字段: %s" % ",".join(fp["header_keys"]))
+        if sim.container_entry:
+            print("  ZIP 容器条目: %s" % sim.container_entry)
+
+    if args.check_length:
+        chk = sim.check_state_length()
+        print("\n== 状态表长度自校验 ==")
+        print("  %s: %s" % ("通过" if chk["ok"] else ("失败" if chk["ok"] is False else "跳过"), chk["detail"]))
 
     if args.sections:
         print("\n== 分区 ==")
