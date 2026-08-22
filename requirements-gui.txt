@@ -1,0 +1,5 @@
+# star_gui GUI runtime deps
+# 安装: python -m pip install -r requirements-gui.txt
+PyQt5>=5.15
+vtk>=9.3
+numpy>=1.24
