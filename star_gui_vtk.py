@@ -150,6 +150,113 @@ def orientation_marker_widget(interactor, size_frac=0.16):
     return marker
 
 
+def scene_displayers(sim, scene_obj):
+    """场景的 PartDisplayer 列表（DisplayerManager.Keys → star.vis.*）。"""
+    om = sim.objmap
+    dm = om.get(scene_obj.dict.get("DisplayerManager") or -1)
+    out = []
+    if dm is None:
+        return out
+    for k in dm.dict.get("Keys") or []:
+        d = om.get(k)
+        if d is not None and (d.class_name or "").startswith("star.vis"):
+            out.append(d)
+    return out
+
+
+def scene_background(sim, scene_obj):
+    """场景背景：BackgroundColorMode + Solid/Gradient 颜色。"""
+    om = sim.objmap
+    mode = scene_obj.dict.get("BackgroundColorMode", 0)
+    solid = scene_obj.dict.get("SolidBackgroundColor")
+    grad = scene_obj.dict.get("GradientBackgroundColor")
+    bg = (0.08, 0.09, 0.12)
+    if isinstance(solid, int):
+        o = om.get(solid)
+        c = o.dict.get("Color") if o is not None else None
+        if c:
+            bg = tuple(float(x) for x in c[:3])
+    return {"mode": mode, "solid": bg,
+            "gradient": {"mode": 0, "color1": (1.0, 1.0, 1.0),
+                         "color2": (0.93, 0.93, 0.93)}}
+
+
+def scene_camera(sim, scene_obj):
+    """从 Scene.CurrentView 读相机参数（Position/FocalPoint/ViewUp/ParallelScale）。"""
+    om = sim.objmap
+    view = om.get(scene_obj.dict.get("CurrentView") or -1)
+    if view is None:
+        return None
+
+    def coord_val(ref):
+        o = om.get(ref) if isinstance(ref, int) else None
+        if o is not None:
+            v = o.dict.get("Value")
+            if isinstance(v, list) and len(v) == 3:
+                return tuple(float(x) for x in v)
+        return None
+
+    cam = {
+        "position": coord_val(view.dict.get("Position")),
+        "focal": coord_val(view.dict.get("FocalPoint")),
+        "view_up": coord_val(view.dict.get("ViewUp")),
+        "parallel_scale": view.dict.get("ParallelScale"),
+        "projection": view.dict.get("ProjectionMode", 0),
+        "name": view.name,
+    }
+    return cam
+
+
+def apply_camera(renderer, cam):
+    """把场景相机参数应用到 vtkRenderer 的相机。"""
+    if cam is None:
+        return False
+    camera = renderer.GetActiveCamera()
+    if cam.get("projection") == 1:
+        camera.ParallelProjectionOn()
+    else:
+        camera.ParallelProjectionOff()
+    if cam.get("position") and cam.get("focal"):
+        camera.SetPosition(*cam["position"])
+        camera.SetFocalPoint(*cam["focal"])
+        if cam.get("view_up"):
+            camera.SetViewUp(*cam["view_up"])
+    if cam.get("parallel_scale"):
+        camera.SetParallelScale(float(cam["parallel_scale"]))
+    return True
+
+
+def build_scene_actors(sim, scene_obj, fallback_palette=True):
+    """按场景构建 actors：PartDisplayer 颜色/透明度 + 边线。"""
+    parts = part_meshes(sim)
+    if not parts:
+        return [], None
+    om = sim.objmap
+    colors = _colors()
+    actors = []
+    edges = []
+    disp = scene_displayers(sim, scene_obj)
+    for idx, p in enumerate(parts):
+        color = colors[idx % len(colors)]
+        opacity = 1.0
+        use_disp = False
+        if disp:
+            d0 = disp[0]
+            dc = d0.dict.get("DisplayerColor")
+            if d0.dict.get("UseDisplayerColor") and dc:
+                color = tuple(float(x) for x in dc[:3])
+                use_disp = True
+            opacity = float(d0.dict.get("Opacity", 1.0))
+        pd = mesh_polydata(p["vertices"], p["faces"], one_based=p["one_based"])
+        actors.append(("part:%s" % p["name"], p["name"], p["id"], _actor(pd, color, opacity=opacity)))
+        if disp and disp[0].dict.get("Mesh"):
+            mc = disp[0].dict.get("MeshColor") or (0.0, 0.0, 0.0)
+            edges.append(("edges:%s" % p["name"], p["name"], p["id"],
+                          edges_actor(pd, color=tuple(float(x) for x in mc[:3]),
+                                      line_width=float(disp[0].dict.get("LineWidth", 1.0)))))
+    return actors + edges, scene_camera(sim, scene_obj)
+
+
 def bounds_of(actors):
     """actors 合并包围盒 → (xmin,xmax,ymin,ymax,zmin,zmax)。"""
     xs, ys, zs = [], [], []

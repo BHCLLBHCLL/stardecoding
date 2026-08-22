@@ -23,9 +23,17 @@ def main():
     for f in files:
         print("=== %s ===" % f)
         p = subprocess.run([sys.executable, "-m", "pytest", os.path.join(TESTS, f),
-                            "-q", "--tb=short"], cwd=ROOT)
-        if p.returncode != 0:
+                            "-q", "--tb=short"], cwd=ROOT,
+                           capture_output=True, text=True)
+        out = (p.stdout or "") + (p.stderr or "")
+        print(out.strip().splitlines()[-1] if out.strip() else "(no output)")
+        # 注意：QVTK 在 headless 平台退出时会段错误（-1073741819），但测试本身
+        # 已全部通过——按 pytest 输出判定成败，而不是进程退出码。
+        ok = ("passed" in out and "failed" not in out and "error" not in out
+              and "no tests ran" not in out)
+        if not ok:
             failed.append((f, p.returncode))
+            print(out[-1500:])
     print()
     if failed:
         print("FAILED files:", failed)

@@ -3,6 +3,7 @@
 import os
 import sys
 
+os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -24,6 +25,8 @@ def test_main_window_constructs(app):
     win.show()
     assert win.actions.get("File>Open") is not None
     assert win.actions.get("Help>About") is not None
+    win.close()
+    app.processEvents()
 
 
 def test_load_sim_summary(app):

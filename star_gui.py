@@ -17,6 +17,11 @@ import os
 import sys
 import threading
 
+HEADLESS = os.environ.get("QT_QPA_PLATFORM", "").lower() in ("minimal", "offscreen")
+"""无头模式：minimal/offscreen 下不创建 QVTK 视口（QVTK 在无头平台不稳定），
+用占位控件代替；3D 渲染正确性由 star_gui_vtk.render_offscreen_png 的纯 VTK
+离屏测试覆盖。"""
+
 from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
@@ -117,8 +122,15 @@ class StarMainWindow(QMainWindow):
         from star_gui_panes import GraphicsTabs, Star3DViewport
         self.graphics_tabs = GraphicsTabs()
         self.graphics_tabs.add_info_tab(self.summary_pane)
-        self.viewport = Star3DViewport()
-        self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
+        if HEADLESS:
+            from PyQt5.QtCore import Qt
+            from PyQt5.QtWidgets import QLabel
+            self.viewport = QLabel("3D 视口（无头模式禁用 QVTK）")
+            self.viewport.setAlignment(Qt.AlignCenter)
+            self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
+        else:
+            self.viewport = Star3DViewport()
+            self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
         self.graphics_pane = PaneFrame("Graphics Window")
         self.graphics_pane.set_body(self.graphics_tabs)
         right.addWidget(self.graphics_pane)
@@ -263,16 +275,48 @@ class StarMainWindow(QMainWindow):
         self._build_3d()
 
     def _build_3d(self):
-        """M2：构建网格 actors 并挂到 3D 视口。"""
+        """M2/M3：按场景构建 3D 标签页（场景→显示器颜色→视图相机）。
+
+        无头模式下 viewport 是占位控件，仅更新消息，不做 QVTK 操作。
+        """
         try:
-            from star_gui_vtk import build_mesh_actors
-            self.progress.set_progress(10, "构建 3D 网格 ...")
-            actors = build_mesh_actors(self.sim)
-            self.viewport.set_actors(actors)
-            n_face = sum(a.GetMapper().GetInput().GetNumberOfCells() for _k, _n, _i, a in actors)
-            self.progress.done("3D 网格就绪：%d 个 Part / %d 面" % (len(actors), n_face))
-            self.msg("3D 网格：%d 个 Part / %d 面" % (len(actors), n_face))
-            self.set_status("3D: %d parts" % len(actors))
+            from star_gui_vtk import (apply_camera, build_mesh_actors,
+                                      build_scene_actors, scene_background)
+            self.progress.set_progress(10, "构建 3D 场景 ...")
+            scenes = self.model.scenes() if self.model else []
+            # 清掉默认 mesh 标签页
+            while self.graphics_tabs.count() > 1:
+                w = self.graphics_tabs.widget(self.graphics_tabs.count() - 1)
+                self.graphics_tabs.removeTab(self.graphics_tabs.count() - 1)
+                try:
+                    w.close()
+                except Exception:
+                    pass
+            if scenes:
+                for sc in scenes:
+                    from star_gui_panes import Star3DViewport
+                    scene_obj = self.sim.objmap.get(sc["id"])
+                    actors, cam = build_scene_actors(self.sim, scene_obj)
+                    if HEADLESS:
+                        from PyQt5.QtCore import Qt
+                        from PyQt5.QtWidgets import QLabel
+                        vp = QLabel("3D（无头）")
+                        vp.setAlignment(Qt.AlignCenter)
+                    else:
+                        vp = Star3DViewport()
+                        bg = scene_background(self.sim, scene_obj)
+                        vp.renderer.SetBackground(*bg["solid"])
+                        vp.set_actors(actors)
+                        apply_camera(vp.renderer, cam)
+                    self.graphics_tabs.add_mesh_tab(sc["name"] or "Scene", vp)
+                self.graphics_tabs.setCurrentIndex(1)
+                self.msg("3D 场景：%d 个（含显示器/视图相机）" % len(scenes))
+            else:
+                actors = build_mesh_actors(self.sim)
+                if not HEADLESS:
+                    self.viewport.set_actors(actors)
+                self.msg("3D 网格：%d 个 Part" % len(actors))
+            self.progress.done("3D 就绪")
         except Exception as exc:  # noqa: BLE001
             self.msg("3D 构建失败: %s" % exc, "warn")
 
