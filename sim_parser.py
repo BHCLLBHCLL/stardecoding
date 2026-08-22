@@ -41,6 +41,20 @@ try:
 except ImportError:
     _np = None
 
+try:
+    from semantic_dict import layer_of, resolve_class, attr_direction, LAYER_CN
+except ImportError:  # 允许单文件独立运行
+    def layer_of(cn):
+        return "unknown"
+
+    def resolve_class(cn):
+        return cn
+
+    def attr_direction(name):
+        return None
+
+    LAYER_CN = {"unknown": "未分类"}
+
 
 # ----------------------------------------------------------------------------
 # 1. Python repr 值解析器（该格式用 repr() 风格写出，含 Python2 的 L 后缀、
@@ -627,6 +641,14 @@ class SimObject:
         # 顶层对象用 'name'，其余对象用 'PresentationName'
         return self.dict.get("name") or self.dict.get("PresentationName")
 
+    @property
+    def layer(self):
+        return layer_of(self.class_name or "")
+
+    @property
+    def resolved_class(self):
+        return resolve_class(self.class_name or "")
+
     def __repr__(self):
         return "<SimObject id=%d %s name=%r>" % (self.id, self.class_name, self.name)
 
@@ -650,14 +672,15 @@ def resolve_ref(value, objmap):
 
 
 def build_tree(objs):
-    """按所有权引用构建对象树。
+    """按所有权引用构建对象树（结合语义字典的引用方向）。
 
-    所有权边（按优先级，先到先得）:
+    边（按优先级，先到先得）:
       1. 显式 'Parent' 属性（Parent == 自身 id 或非法 id 表示根）;
-      2. 出现在某个对象 'Keys' 列表中的对象 → 该对象的子节点;
-      3. 被某个对象 'NameManager' 属性引用的 NameManager 对象 → 该对象的子节点。
-    其余对象（Dimensions / Units / 事件对象等通过语义属性相互引用）保持游离，
-    由调用方自行归类。
+      2. 'Keys' 列表项 → 该对象的子节点;
+      3. 'NameManager' 引用 → 该对象的子节点;
+      4. 语义字典（semantic_dict.attr_direction）:
+         - 'down' 属性（管理器/复数容器）→ 属性值是子节点;
+         - 'up' 属性（Parent/Simulation/Region/Units...）→ 被引用对象是父节点。
     """
     objmap = {o.id: o for o in objs}
     parent_of = {}
@@ -675,6 +698,29 @@ def build_tree(objs):
         nm = o.dict.get("NameManager")
         if isinstance(nm, int) and nm in objmap and nm not in parent_of:
             parent_of[nm] = o.id
+    # 语义字典边（先 down 后 up，先到先得）
+    for o in objs:
+        if o.class_name == "ClassVersions":
+            continue  # 尾部统计对象，值不是引用
+        for attr, v in o.dict.items():
+            direction = attr_direction(attr)
+            if direction is None:
+                continue
+            if attr == "Dimensions" and isinstance(v, list):
+                continue  # 列表形式 = 量纲指数向量（数据）；仅整数值是 Dimensions 对象引用
+            cands = []
+            if isinstance(v, int):
+                cands.append(v)
+            elif isinstance(v, list):
+                cands.extend(x for x in v if isinstance(x, int))
+            for c in cands:
+                if c not in objmap or c == o.id or c in parent_of:
+                    continue
+                if direction == "down":
+                    parent_of[c] = o.id
+                else:  # up：被引用对象是父
+                    parent_of[o.id] = c
+                    break
     roots = [o for o in objs if o.id not in parent_of]
     children = {o.id: [] for o in objs}
     for cid, pid in parent_of.items():
@@ -788,6 +834,52 @@ class SimFile:
     # ---- 便捷访问 ----
     def object_by_id(self, oid):
         return self.objmap.get(oid)
+
+    def layer_census(self):
+        """按语义层统计对象（dict: layer -> count），含命名对象清单。"""
+        from collections import Counter, defaultdict
+        census = Counter()
+        named = defaultdict(list)
+        for o in self.objects:
+            census[o.layer] += 1
+            if o.name and o.layer in ("core", "cad-geometry", "meshing", "visualization",
+                                      "post-processing", "physics", "materials",
+                                      "co-simulation", "motion", "automation"):
+                named[o.layer].append((o.id, o.class_name, o.name))
+        return census, named
+
+    def validate_class_versions(self):
+        """用文件尾部 ClassVersions 统计校验对象图（诊断性比对）。
+
+        ClassVersions = {'ClassName': 'ClassVersions', 'Versions': {类名: 实例数}}，
+        是写入方 C++ 类注册表在保存时刻的快照（含未序列化的运行时类，如
+        DynamicLoader），与序列化对象图的精确类计数不完全等同——按诊断信息处理：
+        - matched: 两边计数一致的类数
+        - coverage: 期望计数之和 / 图内对象数
+        - mismatches: 差异最大的若干类
+        """
+        from collections import Counter
+        if not (self.objects and self.objects[-1].class_name == "ClassVersions"):
+            return {"status": "no-ClassVersions"}
+        expected = self.objects[-1].dict.get("Versions") or {}
+        actual = Counter(o.class_name for o in self.objects[:-1])
+        matched = 0
+        checked = 0
+        mismatches = {}
+        for cn, n in expected.items():
+            if not isinstance(n, int):
+                continue
+            checked += 1
+            got = actual.get(cn, 0)
+            if got == n:
+                matched += 1
+            else:
+                mismatches[cn] = {"expected": n, "actual": got}
+        total_exp = sum(v for v in expected.values() if isinstance(v, int))
+        return {"status": "diagnostic", "expected_classes": checked,
+                "matched": matched, "expected_total": total_exp,
+                "actual_total": len(self.objects) - 1,
+                "mismatches": mismatches}
 
     def array_data(self, index):
         """解码数组（numpy 可用时返回 ndarray，否则返回 list/bytes）。"""
@@ -920,6 +1012,9 @@ def main(argv=None):
     ap.add_argument("--state", action="store_true", help="输出状态表记录流")
     ap.add_argument("--objects", action="store_true", help="列出对象图")
     ap.add_argument("--tree", action="store_true", help="按 Parent 输出对象树")
+    ap.add_argument("--layers", action="store_true", help="按语义层统计对象（几何/网格/物理/场景...）")
+    ap.add_argument("--aliases", action="store_true", help="--objects 时同时显示类名别名解析结果")
+    ap.add_argument("--validate", action="store_true", help="校验 ClassVersions 尾部统计与对象图一致性")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     args = ap.parse_args(argv)
@@ -927,7 +1022,8 @@ def main(argv=None):
     sim = SimFile(args.file)
 
     if args.summary or not any([args.sections, args.arrays, args.state,
-                                args.objects, args.tree, args.export]):
+                                args.objects, args.tree, args.layers,
+                                args.validate, args.export]):
         print(sim.summary())
 
     if args.sections:
@@ -963,8 +1059,38 @@ def main(argv=None):
     if args.objects:
         print("\n== 对象图（%d）==" % len(sim.objects))
         for o in sim.objects:
-            print("%5d  %-60s %s" % (o.id, o.class_name,
-                                     ("name=%r" % o.name) if o.name else ""))
+            extra = ""
+            if args.aliases:
+                rn = o.resolved_class
+                if rn != o.class_name:
+                    extra = "  (alias: %s)" % rn
+            print("%5d  %-60s %s%s" % (o.id, o.class_name,
+                                       ("name=%r" % o.name) if o.name else "", extra))
+
+    if args.layers:
+        census, named = sim.layer_census()
+        print("\n== 语义层统计 ==")
+        for layer, n in census.most_common():
+            print("  %-18s %-12s %5d 个对象" % (layer, LAYER_CN.get(layer, ""), n))
+        print("\n== 各层命名对象（前 12 个/层）==")
+        for layer, items in sorted(named.items()):
+            print("  [%s %s]" % (layer, LAYER_CN.get(layer, "")))
+            for oid, cn, nm in items[:12]:
+                print("     %5d %-48s %r" % (oid, cn, nm))
+            if len(items) > 12:
+                print("     ... 其余 %d 个" % (len(items) - 12))
+
+    if args.validate:
+        v = sim.validate_class_versions()
+        print("\n== ClassVersions 校验 ==")
+        if v["status"] == "no-ClassVersions":
+            print("  本文件无 ClassVersions 尾部统计")
+        else:
+            print("  类注册表快照：%d 类，%d 类计数一致；注册表计数和 %d / 图内对象 %d" % (
+                v["expected_classes"], v["matched"], v["expected_total"], v["actual_total"]))
+            print("  （注：注册表含未序列化的运行时类，计数语义与图内对象数不同，按诊断信息使用）")
+            for cn, m in list(v["mismatches"].items())[:10]:
+                print("    %-50s 注册表 %s / 图内 %s" % (cn, m["expected"], m["actual"]))
 
     if args.tree:
         print("\n== 对象树 ==")

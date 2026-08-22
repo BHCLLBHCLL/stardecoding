@@ -46,4 +46,30 @@ objs = json.load(open("D:/training/caedecoder/stardecoding/export_check/objects.
 recs = json.load(open("D:/training/caedecoder/stardecoding/export_check/state_records.json", encoding="utf-8"))
 assert len(objs) == 2076 and len(recs) == len(sim.records)
 print("export JSON OK:", len(objs), "objects,", len(recs), "records")
+
+# --- 改进①：语义字典 / 分层 / 全量建树 / 校验 ---
+from semantic_dict import layer_of, resolve_class, attr_direction
+assert layer_of("star.vis.Scene") == "visualization"
+assert layer_of("star.cadmodeler.CadModel") == "cad-geometry"
+assert layer_of("star.material.Gas") == "materials"
+assert layer_of("star.common.Region") == "core"
+assert resolve_class("star.common.XyPlot") == "star.common.Cartesian2DPlot"
+assert resolve_class("star.meshing.PolyhedralMesher") == "star.dualmesher.DualAutoMesher"
+assert attr_direction("Keys") == "down" and attr_direction("Parent") == "up"
+assert attr_direction("PostSweeps") is None  # 数值属性不当引用
+
+census, named = sim.layer_census()
+assert census["core"] > 1000 and census["materials"] > 0
+print("layer census:", dict(census.most_common(6)), "...")
+
+main_roots = [r for r in sim.roots if sim.children.get(r.id)]
+assert len(main_roots) == 1 and main_roots[0].id == 2  # 全量建树：Simulation 为唯一主根
+loose = [r for r in sim.roots if not sim.children.get(r.id)]
+assert len(loose) < 100  # 语义字典建树后游离对象应大幅减少（原 304）
+print("tree: single main root", main_roots[0].id, "; loose:", len(loose))
+
+v = sim.validate_class_versions()
+assert v["status"] == "diagnostic" and v["expected_classes"] > 400
+print("classversions diagnostic:", v["expected_classes"], "classes,",
+      v["matched"], "matched,", v["expected_total"], "/", v["actual_total"])
 print("ALL CHECKS PASSED")

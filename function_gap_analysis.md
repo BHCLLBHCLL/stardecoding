@@ -15,6 +15,7 @@
 | 状态表**二进制**编码变体（id=3B 大端、1B flags/version/尾值） | ✅ 3 文件（airfoil / manifold / vibratingPipe），**数值流按原始字节保留，未解码** |
 | 数组块（Character1/Unsigned4/Integer4/Float8/**Integer8/Float4**） | ✅ 全部解码为 numpy；**字段级语义未解** |
 | 对象图（2076~10395 对象，id=序号+2，Parent/Keys/NameManager 建树） | ✅ 全部；与官方 API 视图逐项一致（adjointWing 验证） |
+| 语义字典/分层/别名表/全量建树（改进①） | ✅ semantic_dict.py：包→语义层、旧名→新名别名、属性引用方向；--layers/--aliases/--validate；游离对象 304→87 |
 | 嵌套 TRANSMIT 子块识别（每文件 0~10 个） | ⚠️ 已识别并逐块解析记录流；**与主表/对象图的引用关系未还原** |
 | ? 指针（对象 id / 浮点引用 / 嵌套 ?? 链） | ✅ 解析；浮点引用的含义未定 |
 | 新格式字母/位图（L、J、TTT、B/P/???? 位图、+- 元素标记） | ✅ 捕获为记录；语义未解 |
@@ -81,13 +82,15 @@
   SurfaceRemesher→ResurfacerAutoMesher...），解析器需要一张**旧名→新名别名表**
   （用 1286 个语料类名 × Javadoc 现名自动比对生成）。
 - **缺口**：
-  1. 属性级语义：每个 ClassName 的属性名（如 Region.Parts、Scene.DisplayerManager、
-     PhysicsContinuum.ModelManager）没有白名单 → 建树只用了 Parent/Keys/NameManager，
-     ~300-856 个/文件的对象仍"游离"。用 Javadoc 生成"属性→引用方向"表即可大幅提升建树质量。
+  1. ~~属性级语义~~ → ✅ 已建 semantic_dict.py（DOWN/UP 属性方向白名单），全量建树后
+     adjointWing 游离对象 304→87；剩余游离多为容器/子模型对象（MasterArray、
+     SerializableSurfaceMesh、Export*Vector 等），可继续补充属性方向。
   2. 数值容器对象（MasterArray<Float8>/SerializableVector/Domain/InactiveList 等）与
-     "文件级数组块"的对应关系未还原（对象图内的容器数据是否=数组块数据？）。
-  3. ClassVersions 尾部统计未用于校验（可用来断言对象数/类分布）。
-  4. NameManager 为空对象——名字映射存于何处未解（可能即状态表内 ?N 指针区）。
+     "文件级数组块"的对应关系未还原（对象图内的容器数据是否=数组块数据？）——仍开放。
+  3. ~~ClassVersions 尾部统计~~ → ✅ --validate 输出诊断比对（类注册表快照：552 类/
+     136 精确一致/计数和 1772 vs 图内 2075；语义为写入方运行时类注册表，含未序列化
+     类，非严格校验和）。
+  4. NameManager 为空对象——名字映射存于何处未解（可能即状态表内 ?N 指针区）——仍开放。
 
 ## 5. 语义层能力矩阵（"能导出什么"）
 
@@ -132,8 +135,9 @@ loadedLibraries —— 即本项目的全部逆向工作无官方背书，需以
 ## 7. 建议的下一步（按性价比排序）
 
 1. **网格抽取模块**：用 21 文件交叉验证数组表语义 → 输出点/面/体（STL/OBJ 级导出）。
-2. **对象图语义字典**：doc_javadoc_catalog.md 已就绪 → 生成 ClassName→属性→引用方向表
-   → 全量建树 + 自动分层报告（几何/网格/物理/场景/后处理）；同时生成**旧名→新名别名表**。
+2. **对象图语义字典** ✅ 已完成（改进①）：doc_javadoc_catalog.md → semantic_dict.py
+   （574 包→语义层、别名表、属性引用方向）→ 全量建树（游离 304→87）+ --layers 分层
+   报告 + --aliases + --validate。剩余：容器对象与数组块对应、NameManager 名字映射。
 3. **嵌套子块关联**：解出多 id 魔数与 Character1 数组的映射，逐个消费子块记录。
 4. **二进制 T 块文法**：寻找或自制"同内容双格式"配对标例，比对推敲。
 5. **校验与回写**：尾部校验记录、ClassVersions 一致性断言；按 DOM 序列化模型设计回写
