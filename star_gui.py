@@ -157,14 +157,14 @@ class StarMainWindow(QMainWindow):
         self._add("File>Open", "Open...", self.open_file, "open", QKeySequence.Open)
         self._add("File>Close", "Close", self.close_sim, "file")
         self._add("File>Exit", "Exit", self.close, "file", QKeySequence.Quit)
+        self._add("File>Export>STL", "Export STL...", self.cmd_export_stl, "mesh")
+        self._add("File>Export>Summary", "Export Summary...", self.cmd_export_summary, "file")
+        self._add("File>Export>Report", "Export Report (JSON)...", self.cmd_export_report, "report")
         for path, label in [
-            ("File>Export>STL", "Export STL..."),
-            ("File>Export>Summary", "Export Summary..."),
             ("File>Save", "Save"),
             ("File>Save As", "Save As..."),
             ("Edit>NYI", "Edit"),
             ("Mesh>NYI", "Mesh"),
-            ("Scene>NYI", "Scene"),
             ("Plot>NYI", "Plot"),
         ]:
             self._add(path, label, lambda checked=False, p=path: self._nyi(p), "unknown")
@@ -354,6 +354,52 @@ class StarMainWindow(QMainWindow):
         chk = self.sim.check_state_length()
         self.msg("length check: %s" % chk["detail"])
 
+    def _require_sim(self):
+        if self.sim is None:
+            self.msg("请先打开文件", "warn")
+            return None
+        return self.sim
+
+    def cmd_export_stl(self):
+        sim = self._require_sim()
+        if sim is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出 STL", "mesh.stl", "STL (*.stl)")
+        if path:
+            self.export_stl_to(path)
+
+    def export_stl_to(self, path):
+        sim = self._require_sim()
+        if sim is None:
+            return
+        try:
+            sim.export_stl(path)
+            self.msg("STL 已导出: %s" % path)
+            self.progress.done("STL 导出完成")
+        except Exception as exc:  # noqa: BLE001
+            self.msg("STL 导出失败: %s" % exc, "error")
+
+    def cmd_export_summary(self):
+        sim = self._require_sim()
+        if sim is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出摘要", "summary.txt", "Text (*.txt)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(sim.summary())
+            self.msg("摘要已导出: %s" % path)
+
+    def cmd_export_report(self):
+        sim = self._require_sim()
+        if sim is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出报告", "report.json", "JSON (*.json)")
+        if path:
+            import json
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(sim.semantic_report(), f, indent=1, default=str)
+            self.msg("报告已导出: %s" % path)
+
     def cmd_fit(self):
         if self.viewport:
             self.viewport.fit_view()
@@ -380,11 +426,50 @@ class StarMainWindow(QMainWindow):
                           "数据层: sim_parser.py（21 文件语料验证）")
 
 
+def cli_main(argv=None):
+    """--cli 无窗口模式：解析 + 导出（复用 sim_parser 能力）。"""
+    import argparse
+    import json
+    ap = argparse.ArgumentParser(description="STAR-CCM+ .sim 查看器（CLI 模式）")
+    ap.add_argument("file", help=".sim 文件路径")
+    ap.add_argument("--export-dir", default="", help="导出目录（数组/摘要/报告/STL）")
+    ap.add_argument("--stl", default="", help="导出网格 STL 到指定路径")
+    args = ap.parse_args(argv)
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    from sim_parser import SimFile
+    sim = SimFile(args.file)
+    print(sim.summary())
+    if args.export_dir:
+        os.makedirs(args.export_dir, exist_ok=True)
+        sim.export(args.export_dir)
+        with open(os.path.join(args.export_dir, "semantic_report.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(sim.semantic_report(), f, indent=1, default=str)
+        print("已导出到 %s" % args.export_dir)
+    if args.stl:
+        sim.export_stl(args.stl)
+        print("STL 已导出到 %s" % args.stl)
+    return 0
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="STAR-CCM+ .sim 项目查看器")
     ap.add_argument("file", nargs="?", help=".sim 文件路径")
+    ap.add_argument("--cli", action="store_true", help="无窗口 CLI 模式")
+    ap.add_argument("--export-dir", default="", help="--cli 导出目录")
+    ap.add_argument("--stl", default="", help="--cli 导出 STL 路径")
     args = ap.parse_args(argv)
+
+    if args.cli:
+        return cli_main([args.file] +
+                        (["--export-dir", args.export_dir] if args.export_dir else []) +
+                        (["--stl", args.stl] if args.stl else []))
 
     app = QApplication(sys.argv)
     win = StarMainWindow()
