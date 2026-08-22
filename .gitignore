@@ -4,3 +4,5 @@ export_check/
 export_test/
 work_pkgs/
 tmp_*
+resaved_*.sim
+*.stl

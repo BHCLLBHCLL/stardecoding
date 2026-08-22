@@ -2,9 +2,11 @@
 
 > 依据：`startutorialsdata` 全部 21 个 .sim 实测（版本 6.03–10.05 / modeller 240014323–2800151，
 > 187KB–13MB）、`doc\client` Javadoc、`doc\en\online` 用户手册、`doc\UserGuide_19.02.pdf`。
-> 结论先行：**容器级/结构级解析已覆盖全部 21 个文件（21/21 可解析）**；缺口集中在
-> 三个层面——①语义解码（STAR-CORE 状态表与数组表的字段级含义）、②嵌套 TRANSMIT 子块的
-> 完整消费、③对象图语义层的自动归类与"重建/导出"能力。
+> 结论先行：**容器级/结构级解析已覆盖全部 21 个文件（21/21 可解析）**。
+> 七项系统改进已全部落地（改进①~⑦，2026-08，均已提交 GitHub）：
+> ①语义字典/全量建树/分层 ②网格抽取+STL ③嵌套子块关联 ④二进制数值流扫描
+> ⑤版本指纹+ZIP 回退 ⑥状态表长度自校验 ⑦语义层报告。剩余缺口集中在字段级
+> 语义解码（T 块文法、数组表字段、体网格）与回写能力。
 
 ## 0. 当前状态（v2 解析器实测）
 
@@ -12,8 +14,8 @@
 | --- | --- |
 | repr 字典头 / 分区遍历（2112~5047 分区） | ✅ 全 21 文件 |
 | 状态表 ASCII 编码（80 列折行还原、记录文法） | ✅ 18 文件 |
-| 状态表**二进制**编码变体（id=3B 大端、1B flags/version/尾值） | ✅ 3 文件（airfoil / manifold / vibratingPipe），**数值流按原始字节保留，未解码** |
-| 数组块（Character1/Unsigned4/Integer4/Float8/**Integer8/Float4**） | ✅ 全部解码为 numpy；**字段级语义未解** |
+| 状态表**二进制**编码变体（id=3B 大端、1B flags/version/尾值） | ✅ 3 文件（airfoil / manifold / vibratingPipe），数值流新增 2B 整 + 8B 双精度扫描（改进④），完整文法待解 |
+| 数组块（Character1/Unsigned4/Integer4/Float8/**Integer8/Float4**） | ✅ 全部解码为 numpy；**面网格语义已解（改进②）**，其余字段级语义待解 |
 | 对象图（2076~10395 对象，id=序号+2，Parent/Keys/NameManager 建树） | ✅ 全部；与官方 API 视图逐项一致（adjointWing 验证） |
 | 语义字典/分层/别名表/全量建树（改进①） | ✅ semantic_dict.py：包→语义层、旧名→新名别名、属性引用方向；--layers/--aliases/--validate；游离对象 304→87 |
 | 嵌套 TRANSMIT 子块识别（每文件 0~10 个） | ✅ 改进③：多 id 魔数 = 表内分段长度表（已按字节切分验证）；表内嵌 `CD-adapco_STAR-CCM+_ID<对象id>` 标记解析并关联到对象图（如 adjointWing id 15 → ConditionTypeManager）；独立 Character1 数组子块逐块解析 |

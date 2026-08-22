@@ -8,9 +8,11 @@
 | 文件 | 说明 |
 | --- | --- |
 | `sim_parser.py` | 主解析器（CLI + 可导入模块） |
+| `semantic_dict.py` | 对象图语义字典（包→语义层、别名表、属性引用方向） |
 | `README.md` | 本说明（格式逆向文档） |
 | `function_gap_analysis.md` | **功能完整性与深度差距分析**（21 文件实测，按节推进改进） |
-| `starccm_dump_tree.java` | 用官方 Java API 交叉验证对象图的宏（需要 license） |
+| `self_test.py` / `batch_parse.py` / `mesh_validate.py` / `check_length_all.py` | 回归与校验工具 |
+| `starccm_dump_tree.java` / `resave_sim.java` | 官方 API 交叉验证 / 重存配对标例宏（需要 license） |
 | `adjointWing_start.sim` | 官方算例（本解析器的主要测试对象） |
 
 > 已用 `D:\training\starccm\startutorialsdata` 全部 **21 个 .sim** 实测（6.03–10.05 版本，
@@ -20,11 +22,16 @@
 ## 快速上手
 
 ```bat
-python sim_parser.py adjointWing_start.sim --summary   :: 总体概览
-python sim_parser.py adjointWing_start.sim --arrays    :: 数组表
-python sim_parser.py adjointWing_start.sim --state     :: STAR-CORE 状态表记录流
-python sim_parser.py adjointWing_start.sim --objects   :: 对象图
-python sim_parser.py adjointWing_start.sim --tree      :: 对象树
+python sim_parser.py adjointWing_start.sim --summary    :: 总体概览
+python sim_parser.py adjointWing_start.sim --arrays     :: 数组表
+python sim_parser.py adjointWing_start.sim --state      :: STAR-CORE 状态表记录流
+python sim_parser.py adjointWing_start.sim --objects    :: 对象图
+python sim_parser.py adjointWing_start.sim --tree       :: 对象树
+python sim_parser.py adjointWing_start.sim --layers     :: 语义层统计（几何/网格/物理/场景...）
+python sim_parser.py adjointWing_start.sim --report     :: 语义报告（Region/Part/网格、Continuum 模型、Scene 显示器）
+python sim_parser.py adjointWing_start.sim --mesh       :: 网格抽取统计
+python sim_parser.py adjointWing_start.sim --mesh-export out.stl  :: 导出面网格 STL
+python sim_parser.py adjointWing_start.sim --fingerprint --check-length --validate  :: 版本指纹/长度自校验/ClassVersions 诊断
 python sim_parser.py adjointWing_start.sim --export out :: 导出 .npy/.csv/JSON
 ```
 
