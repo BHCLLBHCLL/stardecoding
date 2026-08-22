@@ -11,6 +11,7 @@
 | `semantic_dict.py` | 对象图语义字典（包→语义层、别名表、属性引用方向） |
 | `README.md` | 本说明（格式逆向文档） |
 | `function_gap_analysis.md` | **功能完整性与深度差距分析**（21 文件实测，按节推进改进） |
+| `star_gui_design.md` / `star_gui_plan.md` | **GUI 查看器架构设计与开发计划**（star_gui.py，M0–M6） |
 | `self_test.py` / `batch_parse.py` / `mesh_validate.py` / `check_length_all.py` | 回归与校验工具 |
 | `starccm_dump_tree.java` / `resave_sim.java` | 官方 API 交叉验证 / 重存配对标例宏（需要 license） |
 | `adjointWing_start.sim` | 官方算例（本解析器的主要测试对象） |
