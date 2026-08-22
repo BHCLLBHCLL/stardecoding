@@ -71,7 +71,15 @@
   按包分类后（common 3530 / meshing 1113 / vis 784 / cadmodeler 457 / flow 411 /
   material 365 / energy 215 / motion 140 / turbulence 101 / post 57 / coremodule 48 ...），
   可自动归类"几何/CAD、网格、物理、场景可视化、后处理、求解器、自动化、协同仿真"。
-  （Javadoc 目录见 doc_javadoc_catalog.md。）
+  （完整包级语义目录见 doc_javadoc_catalog.md，已覆盖 574 个 star.* 包。）
+- **官方机制命名确认**：对象图区 = 官方 Javadoc 中的 **DOM 序列化**
+  （`star.common.dom.ObjectModel`：每个对象一个 DOM 元素），对象模型根 =
+  `star.base.neo.ClientServerObject`（键 ClientServerObjectKey，属性走 NeoProperty）。
+  这印证了"每行一个 repr 字典"的结构，并可指导将来的**回写**设计。
+- **类名跨版本漂移**（重要）：本语料（6.x–10.x）含大量旧类名（XyPlot→Cartesian2DPlot、
+  View→VisView、PolyhedralMesher→DualAutoMesher、PrismLayerMesher→PrismAutoMesher、
+  SurfaceRemesher→ResurfacerAutoMesher...），解析器需要一张**旧名→新名别名表**
+  （用 1286 个语料类名 × Javadoc 现名自动比对生成）。
 - **缺口**：
   1. 属性级语义：每个 ClassName 的属性名（如 Region.Parts、Scene.DisplayerManager、
      PhysicsContinuum.ModelManager）没有白名单 → 建树只用了 Parent/Keys/NameManager，
@@ -118,12 +126,15 @@ loadedLibraries —— 即本项目的全部逆向工作无官方背书，需以
 - "6.06 修订过格式" → 解释了 6.x 时代二进制状态表 ↔ 7.x 起 ASCII 状态表的切换
   （语料中 binary 模式恰好都来自 modeller 270x/280x 的老文件）。
 - .simh/HDF5 与 .sce/.scd5 是独立格式，不在本项目范围内（可列为后续扩展）。
+- Javadoc（doc_javadoc_catalog.md）与用户指南互补：前者给出对象级语义字典
+  （574 包），后者给出文件级行为定义；两者均未公开内部序列化格式。
 
 ## 7. 建议的下一步（按性价比排序）
 
 1. **网格抽取模块**：用 21 文件交叉验证数组表语义 → 输出点/面/体（STL/OBJ 级导出）。
-2. **对象图语义字典**：从 Javadoc 生成 ClassName→属性→引用方向表 → 全量建树 +
-   自动分层报告（几何/网格/物理/场景/后处理）。
+2. **对象图语义字典**：doc_javadoc_catalog.md 已就绪 → 生成 ClassName→属性→引用方向表
+   → 全量建树 + 自动分层报告（几何/网格/物理/场景/后处理）；同时生成**旧名→新名别名表**。
 3. **嵌套子块关联**：解出多 id 魔数与 Character1 数组的映射，逐个消费子块记录。
 4. **二进制 T 块文法**：寻找或自制"同内容双格式"配对标例，比对推敲。
-5. **校验与回写**：尾部校验记录、ClassVersions 一致性断言；修改后重写文件（高风险）。
+5. **校验与回写**：尾部校验记录、ClassVersions 一致性断言；按 DOM 序列化模型设计回写
+   （高风险，需要先闭环 §2/§3）。
