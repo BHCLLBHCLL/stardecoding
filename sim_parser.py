@@ -342,8 +342,49 @@ def unwrap_table(table_lines):
 KNOWN_BIN_FMTS = {
     "A", "CI", "CZ", "DI", "dA", "dI", "dZ", "dCCZ", "uI", "lCCCDCCDI",
     "CCCCCCCA", "CCCCCCCCCA", "CCCCCCCCCCCCCDI", "CCCCCCCCCCCCCCCCCCCCCCCA",
-    "S", "V", "Z", "T", "J", "L", "F", "TTT",
+    "S", "V", "Z", "T", "J", "L", "F", "Q", "G", "D", "TTT",
 }
+
+
+def decode_binary_values(raw_hex):
+    """尽力解码二进制数值流：把原始字节区拆为 2 字节整数与 8 字节双精度交替段。
+
+    二进制状态表的数值流（T/Q/G/V 块等）混合存放 2 字节小端整数与 8 字节小端
+    双精度，且无显式类型标记。本函数按"8 字节对齐的有限浮点"扫描双精度段，
+    其余按 2 字节整数解释，返回 [(kind, offset, value), ...] 与置信统计。
+    """
+    import struct as _struct
+    if not raw_hex:
+        return [], {"int_runs": 0, "double_runs": 0, "double_values": 0, "bytes": 0}
+    blob = bytes.fromhex(raw_hex.replace(" ", ""))
+    n = len(blob)
+    out = []
+    stats = {"int_runs": 0, "double_runs": 0, "double_values": 0, "bytes": n}
+    i = 0
+    while i < n:
+        # 尝试在当前位置找一段连续的合法双精度（至少 2 个连续才认定为 double run）
+        j = i
+        while j + 8 <= n:
+            d = _struct.unpack_from("<d", blob, j)[0]
+            if not (d == 0.0 or 1e-30 <= abs(d) <= 1e30):
+                break
+            j += 8
+        run = (j - i) // 8
+        if run >= 2 and j - i >= 16:
+            stats["double_runs"] += 1
+            stats["double_values"] += run
+            for k in range(run):
+                out.append(("double", i + 8 * k, _struct.unpack_from("<d", blob, i + 8 * k)[0]))
+            i = j
+        else:
+            stats["int_runs"] += 1
+            while i + 1 < n:
+                out.append(("int", i, _struct.unpack_from("<h", blob, i)[0]))
+                i += 2
+            if i < n:
+                out.append(("byte", i, blob[i]))
+                i += 1
+    return out, stats
 
 
 def parse_state_table_binary(text):
@@ -463,6 +504,12 @@ def parse_state_table_binary(text):
     if banner:
         records.insert(0, {"kind": "banner", "fmt": "T", "value": 51,
                            "message": banner.split(": ", 1)[-1], "token_index": -1})
+    # 对带 raw 的记录追加尽力数值解码（2 字节整 + 8 字节双精度交替段）
+    for rec in records:
+        if rec.get("raw"):
+            vals, stats = decode_binary_values(rec["raw"])
+            rec["values_decoded"] = vals
+            rec["decode_stats"] = stats
     return tokens, records, magic, banner
 
 
