@@ -22,7 +22,7 @@ HEADLESS = os.environ.get("QT_QPA_PLATFORM", "").lower() in ("minimal", "offscre
 用占位控件代替；3D 渲染正确性由 star_gui_vtk.render_offscreen_png 的纯 VTK
 离屏测试覆盖。"""
 
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt5.QtCore import QObject, QSettings, QSize, QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction, QApplication, QFileDialog, QMainWindow, QMessageBox, QSplitter,
@@ -139,10 +139,12 @@ class StarMainWindow(QMainWindow):
         right.addWidget(self.graphics_pane)
 
         bottom = QTabWidget()
+        self.bottom_tabs = bottom
         self.messages = MessageWindow()
         self.progress = ProgressPanel()
-        bottom.addTab(self.messages, "Messages")
-        bottom.addTab(self.progress, "Progress")
+        from star_gui_i18n import tr
+        bottom.addTab(self.messages, tr("Messages"))
+        bottom.addTab(self.progress, tr("Progress"))
         right.addWidget(bottom)
         right.setSizes([560, 170])
 
@@ -156,29 +158,53 @@ class StarMainWindow(QMainWindow):
         self.set_status("就绪")
 
     def _build_actions(self):
+        from star_gui_i18n import tr
         self.actions = {}
-        self._add("File>Open", "Open...", self.open_file, "open", QKeySequence.Open)
-        self._add("File>Close", "Close", self.close_sim, "file")
-        self._add("File>Exit", "Exit", self.close, "file", QKeySequence.Quit)
-        self._add("File>Export>STL", "Export STL...", self.cmd_export_stl, "mesh")
-        self._add("File>Export>Summary", "Export Summary...", self.cmd_export_summary, "file")
-        self._add("File>Export>Report", "Export Report (JSON)...", self.cmd_export_report, "report")
+        self._add("File>Open", tr("Open..."), self.open_file, "open", QKeySequence.Open)
+        self._add("File>Close", tr("Close"), self.close_sim, "file")
+        self._add("File>Exit", tr("Exit"), self.close, "file", QKeySequence.Quit)
+        self._add("File>Export>STL", tr("Export STL..."), self.cmd_export_stl, "mesh")
+        self._add("File>Export>Summary", tr("Export Summary..."), self.cmd_export_summary, "file")
+        self._add("File>Export>Report", tr("Export Report (JSON)..."), self.cmd_export_report, "report")
         for path, label in [
-            ("File>Save", "Save"),
-            ("File>Save As", "Save As..."),
-            ("Edit>NYI", "Edit"),
-            ("Mesh>NYI", "Mesh"),
-            ("Plot>NYI", "Plot"),
+            ("File>Save", tr("Save")),
+            ("File>Save As", tr("Save As...")),
+            ("Edit>Undo", "撤销"),
+            ("Mesh>Generate", "生成网格"),
+            ("Plot>NYI", tr("Plot")),
+            ("Solution>Run", tr("Run")),
+            ("Solution>Pause", tr("Pause")),
+            ("Solution>Step", tr("Step")),
+            ("Solution>Stop", tr("Stop")),
+            ("Connection>Server", tr("Connect to Server")),
         ]:
-            self._add(path, label, lambda checked=False, p=path: self._nyi(p), "unknown")
-        self._add("Tools>Fingerprint", "Version Fingerprint", self.cmd_fingerprint, "info")
-        self._add("Tools>Check Length", "State Length Check", self.cmd_check_length, "info")
-        self._add("Tools>Validate", "ClassVersions Validate", self.cmd_validate, "info")
-        self._add("Scene>Fit", "Fit View", self.cmd_fit, "fit")
-        self._add("Scene>Reset", "Reset View", self.cmd_reset, "reset")
-        self._add("Scene>Wireframe", "Wireframe / Solid", self.cmd_toggle_wire, "mesh")
-        self._add("Scene>Edges", "Edges Only", self.cmd_edges_only, "mesh")
-        self._add("Help>About", "About", self.cmd_about, "info")
+            icon = {"Solution>Run": "play", "Solution>Pause": "pause",
+                    "Solution>Step": "step", "Solution>Stop": "stop",
+                    "File>Save": "save", "File>Save As": "save"}.get(path, "unknown")
+            self._add(path, label, lambda checked=False, p=path: self._nyi(p), icon)
+        self._add("Tools>Fingerprint", tr("Version Fingerprint"), self.cmd_fingerprint, "info")
+        self._add("Tools>Check Length", tr("State Length Check"), self.cmd_check_length, "info")
+        self._add("Tools>Validate", tr("ClassVersions Validate"), self.cmd_validate, "info")
+        self._add("Scene>Fit", tr("Fit View"), self.cmd_fit, "fit", "Ctrl+F")
+        self._add("Scene>Reset", tr("Reset View"), self.cmd_reset, "reset")
+        self._add("Scene>Solid", tr("Solid"), self.cmd_solid, "solid")
+        self._add("Scene>Wireframe", tr("Wireframe"), self.cmd_toggle_wire, "wire")
+        self._add("Scene>Edges", tr("Edges Only"), self.cmd_edges_only, "edges")
+        self._add("Scene>Transparency", tr("Transparency"), self.cmd_transparency, "transp")
+        for name, label in (("+x", "+X"), ("-x", "-X"), ("+y", "+Y"), ("-y", "-Y"),
+                            ("+z", "+Z"), ("-z", "-Z"), ("iso", tr("Isometric"))):
+            self._add("Scene>View>%s" % name, label,
+                      lambda checked=False, n=name: self.cmd_view(n), "view_%s" % name)
+        self._add("Help>About", tr("About"), self.cmd_about, "info")
+        self._add("Window>Tree", tr("Simulation Tree"), self._toggle_tree, "tree")
+        self._add("Window>Props", tr("Properties"), self._toggle_props, "properties")
+        self._add("Window>Output", tr("Output"), self._toggle_output, "messages")
+        for key in ("Window>Tree", "Window>Props", "Window>Output"):
+            act = self.actions[key]
+            act.blockSignals(True)
+            act.setCheckable(True)
+            act.setChecked(True)
+            act.blockSignals(False)
 
     def _add(self, key, label, slot, icon_key, shortcut=None):
         act = QAction(icons().get(icon_key), label, self)
@@ -190,36 +216,115 @@ class StarMainWindow(QMainWindow):
         return act
 
     def _build_menus(self):
+        from star_gui_i18n import tr
         mbar = self.menuBar()
-        for title, keys in [
-            ("&File", ["File>Open", "File>Close", None, "File>Exit",
-                       None, "File>Save", "File>Save As",
-                       None, "File>Export>STL", "File>Export>Summary"]),
-            ("&Edit", ["Edit>NYI"]),
-            ("&Mesh", ["Mesh>NYI"]),
-            ("&Scene", ["Scene>Fit", "Scene>Reset", "Scene>Wireframe"]),
-            ("&Plot", ["Plot>NYI"]),
-            ("&Tools", ["Tools>Fingerprint", "Tools>Check Length", "Tools>Validate"]),
-            ("&Help", ["Help>About"]),
-        ]:
-            menu = mbar.addMenu(title)
+        def menu(title, keys):
+            m = mbar.addMenu(title)
             for key in keys:
                 if key is None:
-                    menu.addSeparator()
+                    m.addSeparator()
                     continue
                 act = self.actions.get(key)
                 if act:
-                    menu.addAction(act)
+                    m.addAction(act)
+            return m
+
+        file_menu = menu(tr("File") + "(&F)", [
+            "File>Open", "File>Close", None, "File>Save", "File>Save As",
+            None, "File>Export>STL", "File>Export>Summary", "File>Export>Report"])
+        self._recent_menu = file_menu.addMenu(tr("Recent Files"))
+        self._rebuild_recent_menu()
+        file_menu.addSeparator()
+        file_menu.addAction(self.actions["File>Exit"])
+        menu(tr("Edit") + "(&E)", ["Edit>Undo"])
+        menu(tr("Mesh") + "(&M)", ["Mesh>Generate"])
+        menu(tr("Scene") + "(&S)", [
+            "Scene>Fit", "Scene>Reset", None,
+            "Scene>View>+x", "Scene>View>-x", "Scene>View>+y", "Scene>View>-y",
+            "Scene>View>+z", "Scene>View>-z", "Scene>View>iso", None,
+            "Scene>Solid", "Scene>Wireframe", "Scene>Edges", "Scene>Transparency"])
+        menu(tr("Solution") + "(&N)", [
+            "Solution>Run", "Solution>Pause", "Solution>Step", "Solution>Stop"])
+        menu(tr("Tools") + "(&T)", [
+            "Tools>Fingerprint", "Tools>Check Length", "Tools>Validate"])
+        menu(tr("Connection") + "(&C)", ["Connection>Server"])
+        menu(tr("Window") + "(&W)", ["Window>Tree", "Window>Props", "Window>Output"])
+        menu(tr("Help") + "(&H)", ["Help>About"])
 
     def _build_toolbar(self):
-        tb = QToolBar("Main")
-        tb.setMovable(False)
-        for key in ("File>Open", "File>Close", None, "Tools>Fingerprint"):
-            if key is None:
-                tb.addSeparator()
-                continue
-            tb.addAction(self.actions[key])
-        self.addToolBar(tb)
+        from PyQt5.QtCore import Qt as _Qt
+        def make_tb(name):
+            tb = QToolBar(name)
+            tb.setObjectName(name)
+            tb.setMovable(False)
+            tb.setIconSize(QSize(20, 20))
+            tb.setToolButtonStyle(_Qt.ToolButtonIconOnly)
+            self.addToolBar(tb)
+            return tb
+
+        self.tb_file = make_tb("File")
+        for key in ("File>Open", "File>Close", "File>Save"):
+            self.tb_file.addAction(self.actions[key])
+        self.tb_solve = make_tb("Solve")
+        for key in ("Solution>Run", "Solution>Pause", "Solution>Step", "Solution>Stop"):
+            self.tb_solve.addAction(self.actions[key])
+        self.addToolBarBreak()
+        self.tb_view = make_tb("View")
+        for key in ("Scene>Fit", "Scene>Reset"):
+            self.tb_view.addAction(self.actions[key])
+        self.tb_view.addSeparator()
+        for name in ("+x", "-x", "+y", "-y", "+z", "-z", "iso"):
+            self.tb_view.addAction(self.actions["Scene>View>%s" % name])
+        self.tb_disp = make_tb("Display")
+        for key in ("Scene>Solid", "Scene>Wireframe", "Scene>Edges", "Scene>Transparency"):
+            self.tb_disp.addAction(self.actions[key])
+
+    def _toggle_tree(self, on=True):
+        self.split_left.setVisible(bool(self.actions["Window>Tree"].isChecked()
+                                        or self.actions["Window>Props"].isChecked()))
+        self.tree_pane.setVisible(self.actions["Window>Tree"].isChecked())
+
+    def _toggle_props(self, on=True):
+        self.split_left.setVisible(bool(self.actions["Window>Tree"].isChecked()
+                                        or self.actions["Window>Props"].isChecked()))
+        self.props_pane.setVisible(self.actions["Window>Props"].isChecked())
+
+    def _toggle_output(self, on=True):
+        self.bottom_tabs.setVisible(self.actions["Window>Output"].isChecked())
+
+    def _recent_paths(self):
+        s = QSettings("stardecoding", "star_gui")
+        raw = s.value("recent", [])
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            return [raw]
+        return [p for p in raw if p]
+
+    def _remember_recent(self, path):
+        s = QSettings("stardecoding", "star_gui")
+        items = [p for p in self._recent_paths() if p != path]
+        items.insert(0, path)
+        s.setValue("recent", items[:8])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        menu = getattr(self, "_recent_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        paths = self._recent_paths()
+        if not paths:
+            act = menu.addAction("(空)")
+            act.setEnabled(False)
+            return
+        for p in paths:
+            menu.addAction(p, lambda checked=False, path=p: self.load_file(path))
+
+    def cmd_solid(self):
+        vp = self.current_viewport()
+        if vp is not None:
+            vp.set_representation("solid")
 
     # ---------------- 命令 ----------------
     def msg(self, text, level="info"):
@@ -267,6 +372,7 @@ class StarMainWindow(QMainWindow):
             len(sim.objects), len(sim.sections), len(sim.arrays)))
         self.setWindowTitle("STAR-CCM+ .sim Viewer — %s" % sim.path)
         self.msg("已加载 %s" % sim.path)
+        self._remember_recent(sim.path)
         self.on_file_loaded()   # M1+ 钩子
 
     def on_file_loaded(self):

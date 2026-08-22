@@ -5,9 +5,9 @@
 起步，后续替换为内嵌 SVG/PNG 资产。每个 key 绑定一个图标，主题化经 QIcon 重载。
 """
 
-from PyQt5.QtCore import QSize
+from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtWidgets import QStyle
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 
 class AppIcons:
@@ -50,6 +50,22 @@ class AppIcons:
         "layer_post": "SP_FileDialogDetailedView",
         "layer_unknown": "SP_FileIcon",
         "unknown": "SP_FileIcon",
+        "pause": "SP_MediaPause",
+        "step": "SP_MediaSeekForward",
+    }
+
+    _PAINTED = {
+        "view_+x": ("+X", (180, 50, 50)),
+        "view_-x": ("-X", (180, 50, 50)),
+        "view_+y": ("+Y", (50, 150, 70)),
+        "view_-y": ("-Y", (50, 150, 70)),
+        "view_+z": ("+Z", (50, 90, 190)),
+        "view_-z": ("-Z", (50, 90, 190)),
+        "view_iso": ("Iso", (90, 90, 100)),
+        "solid": ("S", (70, 130, 190)),
+        "wire": ("W", (90, 90, 100)),
+        "edges": ("E", (60, 60, 70)),
+        "transp": ("T", (80, 140, 160)),
     }
 
     def __init__(self, style=None):
@@ -58,10 +74,32 @@ class AppIcons:
 
     def get(self, key, fallback="unknown"):
         """按 key 返回 QIcon；未知 key 回退到 fallback。"""
-        name = self._STANDARD.get(key) or self._STANDARD.get(fallback, "SP_FileIcon")
-        if key not in self._cache:
-            self._cache[key] = self._standard_icon(name)
-        return self._cache[key]
+        if key in self._cache:
+            return self._cache[key]
+        if key in self._PAINTED:
+            text, rgb = self._PAINTED[key]
+            icon = self._letter_icon(text, rgb)
+        else:
+            name = self._STANDARD.get(key) or self._STANDARD.get(fallback, "SP_FileIcon")
+            icon = self._standard_icon(name)
+        self._cache[key] = icon
+        return icon
+
+    def _letter_icon(self, text, rgb):
+        pm = QPixmap(24, 24)
+        pm.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor(*rgb))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(1, 1, 22, 22, 4, 4)
+        p.setPen(QColor(255, 255, 255))
+        font = QFont("Segoe UI", 7 if len(text) > 2 else 8)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(pm.rect(), Qt.AlignCenter, text)
+        p.end()
+        return QIcon(pm)
 
     def _standard_icon(self, style_enum_name):
         from PyQt5.QtWidgets import QApplication
