@@ -16,7 +16,7 @@
 | 数组块（Character1/Unsigned4/Integer4/Float8/**Integer8/Float4**） | ✅ 全部解码为 numpy；**字段级语义未解** |
 | 对象图（2076~10395 对象，id=序号+2，Parent/Keys/NameManager 建树） | ✅ 全部；与官方 API 视图逐项一致（adjointWing 验证） |
 | 语义字典/分层/别名表/全量建树（改进①） | ✅ semantic_dict.py：包→语义层、旧名→新名别名、属性引用方向；--layers/--aliases/--validate；游离对象 304→87 |
-| 嵌套 TRANSMIT 子块识别（每文件 0~10 个） | ⚠️ 已识别并逐块解析记录流；**与主表/对象图的引用关系未还原** |
+| 嵌套 TRANSMIT 子块识别（每文件 0~10 个） | ✅ 改进③：多 id 魔数 = 表内分段长度表（已按字节切分验证）；表内嵌 `CD-adapco_STAR-CCM+_ID<对象id>` 标记解析并关联到对象图（如 adjointWing id 15 → ConditionTypeManager）；独立 Character1 数组子块逐块解析 |
 | ? 指针（对象 id / 浮点引用 / 嵌套 ?? 链） | ✅ 解析；浮点引用的含义未定 |
 | 新格式字母/位图（L、J、TTT、B/P/???? 位图、+- 元素标记） | ✅ 捕获为记录；语义未解 |
 
@@ -28,9 +28,12 @@
    且缺 StarVersion 对象的老文件（约 6 个）版本信息只存在于状态表 banner。
    → 需归纳"版本指纹"表：banner 版本 ↔ StarVersion ↔ 头部字段组合。
 2. **魔数块变体**：外层 `CD-adapco_STAR-CCM+_ID`（标准）、**多 id 变体**
-   （如 openWaterPropeller：`ID | 25 | 65607 | 65605 | ...`，疑似列出嵌套子块的 id 表）、
-   **无前缀变体**（methaneOnPt、AXMGeometry 直接以 `1 | 16260 | @ | T51...` 开头）。
-   → 多 id 列表的含义（子块索引？对象 id？）未确认；应建立 id ↔ Character1 数组的映射。
+   （如 openWaterPropeller：`ID | 25 | 65607 | 65605 | ...`）、**无前缀变体**
+   （methaneOnPt、AXMGeometry 直接以 `1 | 16260 | @ | T51...` 开头）。
+   ✅ 多 id 语义已解（改进③）：N 后跟 N 个**表内分段长度**（按 banner+表体折行
+   原文计字节，切分后尾差=0）；分段 0 = 主块，其余为记录流物理延续。
+   表内嵌 `CD-adapco_STAR-CCM+_ID<对象id>` 标记 = 某对象的内嵌状态根，
+   id 已关联对象图；分段 ↔ 对象级归属（哪个分段属于哪个对象）仍待细查。
 3. **ZIP/压缩变体**：本语料未出现 `PK` 容器；解析器已有自动解包兜底，但未实测。
 4. **新数组类型** Integer8（methaneOnPt）、Float4（airfoil、directedMeshCAD 的
    MasterArray<Float4>）已支持；若遇 Unsigned8/复杂结构体需扩展 TYPE_SIZE。
@@ -143,7 +146,9 @@ loadedLibraries —— 即本项目的全部逆向工作无官方背书，需以
 2. **对象图语义字典** ✅ 已完成（改进①）：doc_javadoc_catalog.md → semantic_dict.py
    （574 包→语义层、别名表、属性引用方向）→ 全量建树（游离 304→87）+ --layers 分层
    报告 + --aliases + --validate。剩余：容器对象与数组块对应、NameManager 名字映射。
-3. **嵌套子块关联**：解出多 id 魔数与 Character1 数组的映射，逐个消费子块记录。
+3. **嵌套子块关联** ✅ 主要完成（改进③）：多 id 魔数 = 表内分段长度表（切分验证
+   尾差=0）；内嵌 CD-adapco_STAR-CCM+_ID<对象id> 标记已关联对象图；独立 Character1
+   数组子块已逐个消费。剩余：分段 ↔ 对象级归属的完整映射。
 4. **二进制 T 块文法**：寻找或自制"同内容双格式"配对标例，比对推敲。
 5. **校验与回写**：尾部校验记录、ClassVersions 一致性断言；按 DOM 序列化模型设计回写
    （高风险，需要先闭环 §2/§3）。

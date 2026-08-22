@@ -474,8 +474,9 @@ def parse_state_table(text):
     返回 (tokens, records, magic, banner)。
     """
     lines = text.split("\n")
-    # banner 行 = 包含 "TRANSMIT FILE" 的行（外层与嵌套块行数不同，动态定位）
-    bi = next((k for k, l in enumerate(lines[:12])
+    # banner 行 = 包含 "TRANSMIT FILE" 的行（外层与嵌套块行数不同，动态定位；
+    # 多 id 魔数可能占几十行，故扫描窗口放宽到 60 行）
+    bi = next((k for k, l in enumerate(lines[:60])
                if "TRANSMIT FILE" in l and k > 0), None)
     if bi is None:
         bi = 4
@@ -779,6 +780,8 @@ class SimFile:
         self.tokens = []
         self.records = []
         self.nested_transmits = []   # 嵌套 TRANSMIT 子块（Character1 数组）
+        self.state_segments = []   # 多 id 魔数声明的表内分段（字节区间）
+        self.embedded_states = []  # 表内嵌 "CD-adapco_STAR-CCM+_ID<对象id>" 标记
         self.objects = []
         self.roots = []
         self.children = {}
@@ -802,6 +805,7 @@ class SimFile:
                             parse_state_table(self.state_text)
                         self.state_mode = "binary" if "\x00" in \
                             "\n".join(self.state_text.split("\n")[5:20]) else "ascii"
+                        self._parse_state_segments()
                     elif "TRANSMIT FILE created by" in ctext:
                         # 嵌套 TRANSMIT 子块（每块一个子状态表）
                         try:
@@ -830,10 +834,57 @@ class SimFile:
             self.objects = build_object_graph(self.sections, obj_start)
             self.objmap = {o.id: o for o in self.objects}
             self.roots, self.children = build_tree(self.objects)
+        self._find_embedded_states()  # 需要 objmap，放在对象图构建之后
 
     # ---- 便捷访问 ----
     def object_by_id(self, oid):
         return self.objmap.get(oid)
+
+    def _parse_state_segments(self):
+        """多 id 魔数（N>1）声明的表内分段：长度为"banner+表体"折行文本的字节区间。
+
+        外层状态表 = 分段 0（主块：banner + 记录流）+ 分段 1..N-1（记录流的物理
+        延续/内嵌子状态）。分段长度按折行后的原始字节计。
+        """
+        m = self.state_magic
+        if not (len(m) >= 4 and m[0].startswith("CD-adapco") and m[-1] == "@"):
+            return
+        try:
+            n = int(m[1])
+        except ValueError:
+            return
+        vals = [int(x) for x in m[2:-1]]
+        if n < 2 or len(vals) != n:
+            return
+        lines = self.state_text.split("\n")
+        bi = next((k for k, l in enumerate(lines) if "TRANSMIT FILE" in l), None)
+        if bi is None:
+            return
+        body = "\n".join(lines[bi:])  # banner + 表体（折行原文）
+        pos = 0
+        for k, v in enumerate(vals):
+            chunk = body[pos:pos + v]
+            self.state_segments.append({
+                "index": k, "length": v, "offset": pos,
+                "kind": "main" if k == 0 else "continuation",
+                "preview": chunk[:60].replace("\n", "|"),
+            })
+            pos += v
+
+    def _find_embedded_states(self):
+        """表内嵌标记 'CD-adapco_STAR-CCM+_ID<对象id>'：其后数值为该对象内嵌
+        状态的分段长度。把 id 解析到对象图（ClassName/name）。"""
+        for rec in self.records:
+            if rec.get("kind") == "named" and rec.get("name") == "CD-adapco_STAR-CCM+_ID":
+                oid = rec.get("id")
+                obj = self.objmap.get(oid) if isinstance(oid, int) else None
+                self.embedded_states.append({
+                    "object_id": oid,
+                    "class": obj.class_name if obj else None,
+                    "name": obj.name if obj else None,
+                    "lengths": [v["value"] for v in rec.get("values", [])],
+                    "token_index": rec.get("token_index"),
+                })
 
     def layer_census(self):
         """按语义层统计对象（dict: layer -> count），含命名对象清单。"""
@@ -1007,6 +1058,14 @@ class SimFile:
         if self.nested_transmits:
             L.append("嵌套 TRANSMIT 子块: %d (记录数 %s)" % (len(self.nested_transmits),
                      ", ".join(str(nt["count"]) for nt in self.nested_transmits[:8])))
+        if self.state_segments:
+            L.append("状态表分段（多 id 魔数）: %d 段 (%s...)" % (
+                len(self.state_segments),
+                ", ".join(str(s["length"]) for s in self.state_segments[:6])))
+        if self.embedded_states:
+            L.append("表内嵌状态标记: %d 处 -> %s" % (len(self.embedded_states),
+                     "; ".join("%s:%s" % (es["object_id"], es["class"] or "?")
+                               for es in self.embedded_states[:5])))
         if self.roots:
             main_roots = [r for r in self.roots if self.children.get(r.id)]
             loose = [r for r in self.roots if not self.children.get(r.id)]

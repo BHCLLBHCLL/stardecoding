@@ -3,7 +3,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\adjoint\\data\\adjointWing_start.sim",
   "size": 561418,
   "ok": true,
-  "secs": 0.2,
+  "secs": 0.21,
   "sections": 2112,
   "arrays": 33,
   "array_types": {
@@ -111,7 +111,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\battery\\data\\3DEChemGeometry.sim",
   "size": 1859624,
   "ok": true,
-  "secs": 0.11,
+  "secs": 0.12,
   "sections": 1510,
   "arrays": 68,
   "array_types": {
@@ -139,7 +139,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\casting\\data\\basicGravitySandCastingGeo.sim",
   "size": 1021015,
   "ok": true,
-  "secs": 0.3,
+  "secs": 0.29,
   "sections": 1596,
   "arrays": 95,
   "array_types": {
@@ -232,7 +232,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\compressibleFlow\\data\\airfoil_oversetParts.sim",
   "size": 256420,
   "ok": true,
-  "secs": 0.13,
+  "secs": 0.14,
   "sections": 832,
   "arrays": 80,
   "array_types": {
@@ -283,7 +283,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\CoSimAPI_spindleValve.sim",
   "size": 1146034,
   "ok": true,
-  "secs": 0.35,
+  "secs": 0.36,
   "sections": 4296,
   "arrays": 15,
   "array_types": {
@@ -336,7 +336,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\checkValve-AMESim.sim",
   "size": 789902,
   "ok": true,
-  "secs": 0.34,
+  "secs": 0.37,
   "sections": 2647,
   "arrays": 57,
   "array_types": {
@@ -390,7 +390,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\coupling\\data\\plate-cosim.sim",
   "size": 187729,
   "ok": true,
-  "secs": 0.1,
+  "secs": 0.11,
   "sections": 999,
   "arrays": 7,
   "array_types": {
@@ -418,7 +418,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\electromagnetism\\data\\AXMGeometry.sim",
   "size": 567069,
   "ok": true,
-  "secs": 0.37,
+  "secs": 0.39,
   "sections": 2395,
   "arrays": 11,
   "array_types": {
@@ -466,7 +466,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\incompressibleFlow\\data\\adjointWing_start.sim",
   "size": 561418,
   "ok": true,
-  "secs": 0.26,
+  "secs": 0.22,
   "sections": 2112,
   "arrays": 33,
   "array_types": {
@@ -520,7 +520,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\mesh\\data\\directedMeshCAD.sim",
   "size": 454592,
   "ok": true,
-  "secs": 0.3,
+  "secs": 0.32,
   "sections": 1749,
   "arrays": 81,
   "array_types": {
@@ -571,7 +571,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\mesh\\data\\surfaceRepairCAD.sim",
   "size": 8449069,
   "ok": true,
-  "secs": 1.59,
+  "secs": 1.6,
   "sections": 1313,
   "arrays": 155,
   "array_types": {
@@ -581,16 +581,17 @@
    "Integer4": 33
   },
   "state_len": 1965727,
-  "tokens": 335727,
-  "records": 7052,
+  "tokens": 335718,
+  "records": 7044,
   "record_kinds": {
-   "other": 283,
-   "string": 31,
+   "banner": 1,
    "data": 364,
-   "named": 1205,
    "anonymous": 26,
+   "named": 1204,
+   "string": 25,
    "bitmap": 70,
-   "pointer": 5073
+   "pointer": 5073,
+   "other": 281
   },
   "fmts": [
    "A",
@@ -601,6 +602,7 @@
    "CZ",
    "L",
    "S",
+   "T",
    "V",
    "Z",
    "dA",
@@ -611,8 +613,6 @@
    "uI"
   ],
   "other_tokens": [
-   "656096560565605656226560665608656146560665613656216561565605656066560665607656076560765607656076561665605656076560365609656066560562847@T51",
-   ":",
    "--.02238110084375585",
    "--.1007155325711546",
    "+R2104",
@@ -620,6 +620,8 @@
    "--.025",
    "+R2317",
    "+R2368",
+   "+R2546",
+   "+R2560",
    "+R2546"
   ],
   "objects": 1155,
@@ -630,13 +632,13 @@
    "ReleaseDate": "Tue Apr 30 13:34:41 UTC 2013",
    "ReleaseNumber": "8.04.004"
   },
-  "banner": "65619"
+  "banner": "T51 : TRANSMIT FILE created by modeller version 250020723 SCH_2500207_25001_1300"
  },
  {
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\genericHelicopter_start.sim",
   "size": 10064307,
   "ok": true,
-  "secs": 0.19,
+  "secs": 0.2,
   "sections": 1781,
   "arrays": 36,
   "array_types": {
@@ -664,7 +666,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\marineSelfPropulsion_start.sim",
   "size": 1067498,
   "ok": true,
-  "secs": 0.19,
+  "secs": 0.2,
   "sections": 1847,
   "arrays": 66,
   "array_types": {
@@ -718,7 +720,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\motion\\data\\openWaterPropeller_start.sim",
   "size": 13359403,
   "ok": true,
-  "secs": 2.26,
+  "secs": 2.24,
   "sections": 7265,
   "arrays": 52,
   "array_types": {
@@ -728,16 +730,17 @@
    "Integer4": 9
   },
   "state_len": 1603133,
-  "tokens": 139543,
-  "records": 2026,
+  "tokens": 139534,
+  "records": 2018,
   "record_kinds": {
-   "other": 71,
-   "string": 82,
+   "banner": 1,
    "data": 639,
-   "named": 201,
    "anonymous": 8,
+   "named": 200,
    "bitmap": 554,
-   "pointer": 471
+   "other": 69,
+   "pointer": 471,
+   "string": 76
   },
   "fmts": [
    "A",
@@ -747,6 +750,7 @@
    "CI",
    "CZ",
    "S",
+   "T",
    "V",
    "Z",
    "dA",
@@ -757,8 +761,6 @@
    "uI"
   ],
   "other_tokens": [
-   "65606656176561065609656086561765610656156560665613656206561065604656116561665614656106561165612656216560728292@T51",
-   ":",
    "--1.355",
    "--1.355",
    "$80",
@@ -766,7 +768,9 @@
    "$84",
    "$81",
    "BBDBBBDB????0",
-   "BBDBBBDB????0"
+   "BBDBBBDB????0",
+   "$84",
+   "$84"
   ],
   "objects": 7210,
   "starversion": {
@@ -776,7 +780,7 @@
    "ReleaseDate": "Tue Aug 12 12:48:22 UTC 2014",
    "ReleaseNumber": "9.06.003"
   },
-  "banner": "65604"
+  "banner": "T51 : TRANSMIT FILE created by modeller version 260019823 SCH_2600198_25001_1300"
  },
  {
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\airfoil.sim",
@@ -855,7 +859,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\pipeBlockage.sim",
   "size": 3013921,
   "ok": true,
-  "secs": 0.33,
+  "secs": 0.34,
   "sections": 3842,
   "arrays": 89,
   "array_types": {
@@ -909,7 +913,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\optimate\\data\\pipeMixingBlockage.sim",
   "size": 3187077,
   "ok": true,
-  "secs": 0.43,
+  "secs": 0.44,
   "sections": 5000,
   "arrays": 103,
   "array_types": {
@@ -960,7 +964,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\solidStress\\data\\manifold_start.sim",
   "size": 6299798,
   "ok": true,
-  "secs": 1.4,
+  "secs": 1.38,
   "sections": 10462,
   "arrays": 64,
   "array_types": {
@@ -1033,7 +1037,7 @@
   "file": "D:\\training\\starccm\\startutorialsdata\\solidStress\\data\\vibratingPipe_start.sim",
   "size": 362663,
   "ok": true,
-  "secs": 0.18,
+  "secs": 0.19,
   "sections": 1564,
   "arrays": 44,
   "array_types": {
