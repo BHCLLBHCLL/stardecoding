@@ -163,7 +163,17 @@ def part_meshes(sim):
     from sim_parser import compact_face_indices
     items = []
     seen = set()
+    parts = []
     for o in sim.objects:
+        if o.dict.get("ImportedVertices") and o.dict.get("ImportedFaces"):
+            iv = np.asarray(o.dict["ImportedVertices"], dtype=float)
+            iff = np.asarray(o.dict["ImportedFaces"], dtype=np.int64)
+            parts.append({"name": o.name or "part%d" % o.id, "id": o.id,
+                          "triangles": int(iff.shape[0]), "vertices": iv,
+                          "faces": iff, "face_types": None, "one_based": False})
+            if o.name:
+                seen.add(o.name)
+            continue
         t = o.dict.get("TriangleCount")
         if not isinstance(t, int) or t <= 0:
             continue
@@ -174,7 +184,6 @@ def part_meshes(sim):
     items.sort(key=lambda x: (-x[0], x[1].id))
 
     used = set()
-    parts = []
     fallback = None
     for t, o in items:
         face_i = None

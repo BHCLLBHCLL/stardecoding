@@ -12,7 +12,7 @@
 | 文件>重新加载 | session（脏提示与关闭/新建对齐） |
 | 文件>保存/另存为 | persist |
 | 文件>全部保存/自动保存/模板 | disabled |
-| 文件>导入 CAD/表面/体网格 | stub（克隆 MeshPart，不读 STL）；CAD/体网格 needs_kernel |
+| 文件>导入 CAD/表面/体网格 | persist（真读 STL/OBJ → ImportedVertices/Faces）；体网格 needs_kernel |
 | 文件>导出 STL/摘要/报告 | view |
 | 文件>宏 | disabled |
 | 编辑>撤销/重做 | session |
@@ -45,7 +45,7 @@
 | --- | --- |
 | 显隐/仅显示/高亮 | session（勾选/仅显示走 CommandBus，可撤销） |
 | 重命名/删除/复制 | session |
-| 变换（平移/旋转/缩放） | session（VTK actor，不写顶点数组） |
+| 变换（平移/旋转/缩放） | persist（ImportedVertices 写回）；已有计算网格仍为 actor 预览 |
 | 指定到区域 | session→persist（已有 PartGroup.Keys） |
 | 3D：适配/视图/表示/网格开闭/复制图像 | view |
 | 新建自动网格/布尔 | needs_kernel |

@@ -237,20 +237,64 @@ def test_gui_editor_session_and_kernel_nyi(app):
 
 
 def test_gui_import_and_assign_region(app):
+    from mesh_io import cube_mesh, write_ascii_stl
     from star_gui import StarMainWindow
 
-    win = StarMainWindow()
-    win.show()
-    win.load_file(SIM)
-    _wait_loaded(win, app)
-    n0 = len(win.sim.objects)
-    oid = win.import_surface_from_path("session_wall.stl")
-    assert oid is not None
-    assert len(win.sim.objects) >= n0
-    part = win.document.object(oid)
-    assert part is not None
-    win.document.mark_clean()
-    win.close()
+    tmp = tempfile.mkdtemp(prefix="star_stl_")
+    try:
+        stl = os.path.join(tmp, "cube.stl")
+        v, f = cube_mesh()
+        write_ascii_stl(stl, v, f, "cube")
+        win = StarMainWindow()
+        win.show()
+        win.load_file(SIM)
+        _wait_loaded(win, app)
+        n0 = len(win.sim.objects)
+        oid = win.import_surface_from_path(stl)
+        assert oid is not None
+        assert len(win.sim.objects) >= n0
+        part = win.document.object(oid)
+        assert part is not None
+        assert len(part.dict.get("ImportedFaces") or []) == 12
+        win.document.mark_clean()
+        win.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_imported_stl_save_reload_face_count():
+    from mesh_io import cube_mesh, write_ascii_stl
+    from sim_parser import SimFile
+    from sim_writer import save_sim
+    from star_gui_commands import CopyObjectCommand
+    from star_gui_document import SimDocument
+
+    tmp = tempfile.mkdtemp(prefix="star_f3_")
+    try:
+        stl = os.path.join(tmp, "cube.stl")
+        dest = os.path.join(tmp, "wing.sim")
+        verts, faces = cube_mesh()
+        write_ascii_stl(stl, verts, faces)
+        from mesh_io import read_stl
+        rv, rf = read_stl(stl)
+        assert len(rf) == 12
+        sim = SimFile(SIM)
+        src = next(o for o in sim.objects if (o.class_name or "").endswith("MeshPart")
+                   or (o.class_name or "").endswith("CadPart"))
+        doc = SimDocument(sim, SIM)
+        cmd = CopyObjectCommand(src.id)
+        doc.execute(cmd)
+        doc.set_property(cmd.new_id, "PresentationName", "cube")
+        doc.set_property(cmd.new_id, "ImportedVertices", rv)
+        doc.set_property(cmd.new_id, "ImportedFaces", rf)
+        doc.set_property(cmd.new_id, "TriangleCount", len(rf))
+        save_sim(sim, dest, patches=doc.patches, created=doc.created, src_path=SIM)
+        re = SimFile(dest)
+        hit = next(o for o in re.objects if o.name == "cube")
+        assert len(hit.dict.get("ImportedFaces") or []) == 12
+        assert len(hit.dict.get("ImportedVertices") or []) == 8
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_writer_roundtrip_color_opacity_keys_view():

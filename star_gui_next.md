@@ -129,7 +129,7 @@ flowchart TB
 
 风险：官方客户端对尾部 ClassVersions / 状态表校验敏感。先 Save As 副本验收，不覆盖教程原件。
 
-### F3 表面几何真编辑（不依赖 CAD 内核）
+### F3 表面几何真编辑（不依赖 CAD 内核） ✅
 
 - **真读 STL** → 新 MeshPart + 顶点/面数组（优先改已有数组块；不够再评估追加 Array 分区）。
 - 变换：写回 Float8 顶点（可撤销 = 备份数组切片），不再只 `SetUserTransform`。

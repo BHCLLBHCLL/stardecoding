@@ -157,6 +157,13 @@ class SimDocument(object):
         nxt = (prev[0] + translate[0], prev[1] + translate[1], prev[2] + translate[2],
                prev[3] * scale[0], prev[4] * scale[1], prev[5] * scale[2])
         self.transforms[part_id] = nxt
+        obj = self.object(part_id)
+        if obj is not None and obj.dict.get("ImportedVertices"):
+            from mesh_io import transform_vertices
+            verts = transform_vertices(obj.dict["ImportedVertices"], translate, scale)
+            self.set_property(part_id, "ImportedVertices", verts)
+        if self.sim is not None:
+            self.sim._part_meshes_cache = None
         self.dirty = True
         self._notify("transform", obj_id=part_id, translate=translate, scale=scale)
         return nxt

@@ -1070,9 +1070,15 @@ class StarMainWindow(QMainWindow):
         self.import_surface_from_path(path)
 
     def import_surface_from_path(self, path):
-        """导入 STL/表面 → 会话 MeshPart（无数组回写则只占位）。"""
+        """导入 STL/表面 → MeshPart，顶点/面写入对象图 Imported* 字段。"""
         name = os.path.splitext(os.path.basename(path))[0]
-        self.msg("已记录导入 %s（会话部件，保存时需数组回写）" % path)
+        verts = faces = None
+        if os.path.isfile(path):
+            try:
+                from mesh_io import read_surface
+                verts, faces = read_surface(path)
+            except Exception as exc:
+                self.msg("STL 读取失败: %s" % exc, "warn")
         if self.sim is None:
             return None
         src = None
@@ -1081,19 +1087,34 @@ class StarMainWindow(QMainWindow):
                 src = o
                 break
         if src is None:
-            oid = self.document.create_session_object(
-                "star.meshing.MeshPart", name)
-            return oid
-        from star_gui_commands import CopyObjectCommand
-        cmd = CopyObjectCommand(src.id)
-        self.document.execute(cmd)
-        if cmd.new_id:
-            self.document.set_property(cmd.new_id, "PresentationName", name)
-        return cmd.new_id
+            oid = self.document.create_session_object("star.meshing.MeshPart", name)
+        else:
+            from star_gui_commands import CopyObjectCommand
+            cmd = CopyObjectCommand(src.id)
+            self.document.execute(cmd)
+            oid = cmd.new_id
+            if oid:
+                self.document.set_property(oid, "PresentationName", name)
+        if oid and verts is not None:
+            self.document.set_property(oid, "ImportedVertices", verts)
+            self.document.set_property(oid, "ImportedFaces", faces)
+            self.document.set_property(oid, "VertexCount", len(verts))
+            self.document.set_property(oid, "TriangleCount", len(faces))
+            if self.sim is not None:
+                self.sim._part_meshes_cache = None
+            self.msg("已导入 %s：%d 顶点 %d 面（写入 ImportedVertices/Faces）" % (
+                name, len(verts), len(faces)))
+        elif oid:
+            self.msg("已记录导入占位 %s（未读到 STL）" % name, "warn")
+        return oid
 
     def cmd_import_cad(self):
-        self.cmd_import_surface()
-        self.msg("无 Parasolid 时 CAD 导入按表面三角化处理", "warn")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入 CAD", "", "Surface (*.stl *.obj);;All (*)")
+        if not path:
+            return
+        self.import_surface_from_path(path)
+        self.msg("无 Parasolid：CAD 按 STL/OBJ 三角化导入", "warn")
 
     def cmd_options(self):
         QMessageBox.information(self, "选项",
