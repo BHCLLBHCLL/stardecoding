@@ -253,6 +253,47 @@ def test_gui_import_and_assign_region(app):
     win.close()
 
 
+def test_writer_roundtrip_color_opacity_keys_view():
+    from sim_parser import SimFile
+    from sim_writer import save_sim
+    from star_gui_document import SimDocument
+    from star_gui_commands import SetPropertyCommand
+
+    tmp = tempfile.mkdtemp(prefix="star_f1_")
+    try:
+        dest = os.path.join(tmp, "wing.sim")
+        sim = SimFile(SIM)
+        disp = next(o for o in sim.objects if o.name == "Mesh 1"
+                    and "Displayer" in (o.class_name or ""))
+        doc = SimDocument(sim, SIM)
+        old_color = list(disp.dict.get("DisplayerColor"))
+        new_color = [0.1, 0.2, 0.3]
+        doc.execute(SetPropertyCommand(disp.id, "DisplayerColor", new_color, old_color))
+        doc.execute(SetPropertyCommand(disp.id, "Opacity", 0.42, disp.dict.get("Opacity")))
+        pg = sim.objmap[disp.dict["Collector"]]
+        keys = list(pg.dict.get("Keys") or [])
+        doc.execute(SetPropertyCommand(pg.id, "Keys", keys[1:] + keys[:1], keys))
+        scene = next(o for o in sim.objects if o.class_name == "star.vis.Scene")
+        assert doc.persist_view(scene.id, {
+            "position": (1.0, 2.0, 3.0),
+            "focal": (4.0, 5.0, 6.0),
+            "view_up": (0.0, 1.0, 0.0),
+            "parallel_scale": 12.5,
+        })
+        save_sim(sim, dest, patches=doc.patches, src_path=SIM)
+        re = SimFile(dest)
+        d2 = re.objmap[disp.id]
+        assert d2.dict.get("DisplayerColor") == pytest.approx(new_color)
+        assert d2.dict.get("Opacity") == pytest.approx(0.42)
+        assert re.objmap[pg.id].dict.get("Keys") == keys[1:] + keys[:1]
+        view = re.objmap[re.objmap[scene.id].dict["CurrentView"]]
+        pos = re.objmap[view.dict["Position"]].dict["Value"]
+        assert pos == [1.0, 2.0, 3.0]
+        assert view.dict.get("ParallelScale") == pytest.approx(12.5)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_visibility_and_show_only_undo():
     from sim_parser import SimFile
     from star_gui_commands import ShowOnlyCommand, VisibilityCommand

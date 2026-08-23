@@ -54,6 +54,6 @@
 
 | 条目 | 能力 |
 | --- | --- |
-| 类型化属性编辑 | session → persist（名称/颜色/透明等） |
+| 类型化属性编辑 | persist（名称/颜色/透明/Keys/CurrentView） |
 | 3D-CAD 模式外壳 | session |
 | 绘图标签（监视器/报告数值） | view |

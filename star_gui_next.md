@@ -106,7 +106,7 @@ flowchart TB
 - `test_gui_editor` 的 `imported_wall.stl` 改为不依赖仓库外文件。
 - 验收：`tests/run_all.py` + `self_test.py`；直升机场景不回退。
 
-### F1 已有对象落盘闭环（编辑器门槛 1）
+### F1 已有对象落盘闭环（编辑器门槛 1） ✅
 
 第一批必须 Save As → 本查看器重开 +（有许可时）官方打开一致：
 

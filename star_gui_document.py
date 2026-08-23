@@ -212,6 +212,36 @@ class SimDocument(object):
         self._notify("created", obj_id=new_id)
         return new_id
 
+    def persist_view(self, scene_id, cam):
+        """把相机写入 Scene.CurrentView 及其 Coordinate.Value（可 Save）。"""
+        scene = self.object(scene_id)
+        if scene is None or not cam:
+            return False
+        view = self.object(scene.dict.get("CurrentView"))
+        if view is None:
+            return False
+        changed = False
+        mapping = (
+            ("Position", cam.get("position") or cam.get("pos")),
+            ("FocalPoint", cam.get("focal") or cam.get("fp")),
+            ("ViewUp", cam.get("view_up") or cam.get("up")),
+        )
+        for key, xyz in mapping:
+            if not xyz or len(xyz) < 3:
+                continue
+            coord = self.object(view.dict.get(key))
+            if coord is None:
+                continue
+            val = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+            self.set_property(coord.id, "Value", val)
+            changed = True
+        scale = cam.get("parallel_scale") or cam.get("angle")
+        if scale is not None:
+            self.set_property(view.id, "ParallelScale", float(scale))
+            changed = True
+        self.saved_views["default"] = dict(cam)
+        return changed
+
     def mark_clean(self):
         self.dirty = False
         self._notify("clean")

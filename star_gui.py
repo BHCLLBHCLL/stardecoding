@@ -918,6 +918,10 @@ class StarMainWindow(QMainWindow):
             self.msg("请先打开文件", "warn")
             return False
         try:
+            cam = self._camera_from_viewport()
+            scene = self._active_scene_object()
+            if cam is not None and scene is not None:
+                self.document.persist_view(scene.id, cam)
             from sim_writer import save_sim
             save_sim(self.sim, path, patches=self.document.patches,
                      created=self.document.created, src_path=self.sim_path)
@@ -1171,21 +1175,48 @@ class StarMainWindow(QMainWindow):
         self.document.execute(SetPropertyCommand(obj.id, "Mesh", (not cur), cur))
         self.msg("Representation Mesh=%s" % (not cur))
 
-    def cmd_save_view(self):
-        vp = self.current_viewport()
+    def _active_scene_object(self):
+        if self.sim is None:
+            return None
+        tabs = getattr(self, "graphics_tabs", None)
+        name = tabs.tabText(tabs.currentIndex()) if tabs is not None else ""
+        for o in self.sim.objects:
+            if o.class_name == "star.vis.Scene" and (o.name or "") == name:
+                return o
+        for o in self.sim.objects:
+            if o.class_name == "star.vis.Scene":
+                return o
+        return None
+
+    def _camera_from_viewport(self, vp=None):
+        vp = vp or self.current_viewport()
         if vp is None or not hasattr(vp, "renderer"):
-            return
+            return None
         cam = vp.renderer.GetActiveCamera()
-        self.document.saved_views["default"] = {
+        return {
             "position": cam.GetPosition(),
             "focal": cam.GetFocalPoint(),
             "view_up": cam.GetViewUp(),
             "parallel_scale": cam.GetParallelScale(),
         }
-        self.msg("已保存视图")
+
+    def cmd_save_view(self):
+        cam = self._camera_from_viewport()
+        if cam is None:
+            return
+        self.document.saved_views["default"] = cam
+        scene = self._active_scene_object()
+        if scene is not None:
+            self.document.persist_view(scene.id, cam)
+        self.msg("已保存视图到 CurrentView")
 
     def cmd_restore_view(self):
         cam = self.document.saved_views.get("default")
+        if cam is None and self.sim is not None:
+            scene = self._active_scene_object()
+            if scene is not None:
+                from star_gui_vtk import scene_camera
+                cam = scene_camera(self.sim, scene)
         vp = self.current_viewport()
         if cam is None or vp is None or not hasattr(vp, "renderer"):
             return self.msg("没有已保存的视图", "warn")
