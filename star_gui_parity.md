@@ -18,7 +18,7 @@
 | 编辑>撤销/重做 | session |
 | 编辑>复制/粘贴/删除/重命名 | persist（复制插入对象图行；删除改 Keys） |
 | 编辑>上一选择/下一选择/按名称搜索 | session |
-| 网格>生成表面/体网格 | needs_kernel（尝试 STAR 宏，否则禁用说明） |
+| 网格>生成表面/体网格 | needs_kernel（确认后在临时副本 -batch，不改原件） |
 | 网格>清除网格/缩放/诊断/转 2D | 诊断=view；缩放=session actor；其余 needs_kernel |
 | 场景>（本客户端保留，官方在 Vis 工具栏） | view |
 | 求解/连接 | disabled |
@@ -55,5 +55,5 @@
 | 条目 | 能力 |
 | --- | --- |
 | 类型化属性编辑 | persist（名称/颜色/透明/Keys/CurrentView） |
-| 3D-CAD 模式外壳 | session |
-| 绘图标签（监视器/报告数值） | view |
+| 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图 needs_kernel） |
+| 绘图标签（监视器/报告数值） | view（有序列则 sparkline；无则说明未求解） |

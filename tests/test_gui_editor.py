@@ -409,6 +409,28 @@ def test_part_stl_export_and_volume_extract():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_plot_sparkline_and_empty_series():
+    from sim_parser import SimFile
+    from star_gui_plots import collect_plot_series, sparkline
+
+    assert sparkline([0, 1, 2, 3, 4])
+    series = collect_plot_series(SimFile(SIM))
+    assert isinstance(series, list)
+
+
+def test_star_macro_written_not_on_original():
+    from star_macro import write_generate_mesh_macro
+    tmp = tempfile.mkdtemp(prefix="star_f7_")
+    try:
+        path = write_generate_mesh_macro(tmp)
+        assert os.path.isfile(path)
+        text = open(path, encoding="ascii").read()
+        assert "MeshPipelineController" in text
+        assert "generateVolumeMesh" in text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_visibility_and_show_only_undo():
     from sim_parser import SimFile
     from star_gui_commands import ShowOnlyCommand, VisibilityCommand
