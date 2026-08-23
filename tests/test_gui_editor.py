@@ -294,6 +294,33 @@ def test_writer_roundtrip_color_opacity_keys_view():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_writer_inserts_copied_object():
+    from sim_parser import SimFile
+    from sim_writer import save_sim
+    from star_gui_commands import CopyObjectCommand
+    from star_gui_document import SimDocument
+
+    tmp = tempfile.mkdtemp(prefix="star_f2_")
+    try:
+        dest = os.path.join(tmp, "wing.sim")
+        sim = SimFile(SIM)
+        src = next(o for o in sim.objects if o.dict.get("PresentationName") == "Fluid Domain"
+                   and o.class_name == "star.common.Region")
+        doc = SimDocument(sim, SIM)
+        cmd = CopyObjectCommand(src.id)
+        assert doc.execute(cmd)
+        clone_name = doc.object(cmd.new_id).name
+        save_sim(sim, dest, patches=doc.patches, created=doc.created, src_path=SIM)
+        re = SimFile(dest)
+        names = [o.name for o in re.objects]
+        assert clone_name in names
+        assert re.objects[-1].class_name == "ClassVersions"
+        assert any(o.class_name == "star.common.Region" and o.name == clone_name
+                   for o in re.objects)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_visibility_and_show_only_undo():
     from sim_parser import SimFile
     from star_gui_commands import ShowOnlyCommand, VisibilityCommand

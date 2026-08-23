@@ -16,7 +16,7 @@
 | 文件>导出 STL/摘要/报告 | view |
 | 文件>宏 | disabled |
 | 编辑>撤销/重做 | session |
-| 编辑>复制/粘贴/删除/重命名 | session |
+| 编辑>复制/粘贴/删除/重命名 | persist（复制插入对象图行；删除改 Keys） |
 | 编辑>上一选择/下一选择/按名称搜索 | session |
 | 网格>生成表面/体网格 | needs_kernel（尝试 STAR 宏，否则禁用说明） |
 | 网格>清除网格/缩放/诊断/转 2D | 诊断=view；缩放=session actor；其余 needs_kernel |
