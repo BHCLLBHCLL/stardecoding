@@ -191,6 +191,8 @@ def test_menus_toolbars_and_disabled_solver(app):
     assert "Mesh>Generate" in win.actions
     assert "Window>Plots" in win.actions
     assert "Window>Cad" in win.actions
+    assert "Cad>Section" in win.actions
+    assert "Cad>Transform" in win.actions
     assert hasattr(win.tree_widget, "context_command")
     assert hasattr(win.props_widget, "property_edited")
     win.close()

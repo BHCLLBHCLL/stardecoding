@@ -86,6 +86,8 @@ _T = {
     ("zh", "Measure Distance"): "测距",
     ("zh", "Edit Parts Filter"): "编辑 Parts 过滤器",
     ("zh", "Scalar Coloring"): "标量着色",
+    ("zh", "CAD Section"): "CAD 剖面",
+    ("zh", "CAD Transform"): "CAD 变换",
 }
 
 
