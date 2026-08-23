@@ -259,6 +259,8 @@ class StarMainWindow(QMainWindow):
         self._add("Vis>Scalar", tr("Scalar Coloring"), self.cmd_scalar_color, "field")
         self._add("Window>Plots", tr("Plots Window"), self._toggle_plots, "plot")
         self._add("Window>Cad", tr("3D-CAD Mode"), self.cmd_toggle_cad, "layer_geometry")
+        self._add("Cad>Section", tr("CAD Section"), self.cmd_cad_section, "part")
+        self._add("Cad>Transform", tr("CAD Transform"), self.cmd_cad_transform, "mesh")
         self.actions["Window>Cad"].setCheckable(True)
         self.actions["Window>Plots"].setCheckable(True)
         self.actions["Window>Plots"].setChecked(True)
@@ -380,6 +382,8 @@ class StarMainWindow(QMainWindow):
         self.tb_cad = make_tb("Cad")
         self.tb_cad.addAction(self.actions["Window>Cad"])
         self.tb_cad.addAction(self.actions["Vis>Derived"])
+        self.tb_cad.addAction(self.actions["Cad>Section"])
+        self.tb_cad.addAction(self.actions["Cad>Transform"])
         self.tb_cad.addAction(self.actions["Mesh>Repair"])
         self.tb_cad.setVisible(False)
 
@@ -1061,8 +1065,30 @@ class StarMainWindow(QMainWindow):
         exe = self._find_starccm()
         if exe is None:
             return self._kernel_nyi(what)
-        self.msg("%s：已找到 STAR-CCM+（%s），未自动启动宏（避免改写原文件）" % (what, exe),
-                 "nyi")
+        if not self.sim_path:
+            return self._kernel_nyi(what)
+        if HEADLESS:
+            self.msg("%s：无头模式不启动 STAR 宏（将在工作副本上跑）" % what, "nyi")
+            return
+        ans = QMessageBox.question(
+            self, what,
+            "将在临时副本上调用\n%s\n不会改写当前打开的教程原件。继续？" % exe)
+        if ans != QMessageBox.Yes:
+            return self.msg("已取消 %s" % what, "warn")
+        try:
+            from star_macro import run_star_macro_on_copy, write_generate_mesh_macro
+            import tempfile
+            tmp = tempfile.mkdtemp(prefix="star_gui_macro_")
+            macro = write_generate_mesh_macro(tmp)
+            work, code, log = run_star_macro_on_copy(exe, self.sim_path, macro)
+            self.msg("%s 结束 code=%s 目录=%s" % (what, code, work))
+            if log:
+                self.msg(log[-800:])
+            out = os.path.join(work, "out.sim")
+            if os.path.isfile(out):
+                self.load_file(out)
+        except Exception as exc:
+            self.msg("%s 失败: %s" % (what, exc), "error")
 
     def cmd_scale_mesh(self):
         obj = self._selected_obj()
@@ -1284,6 +1310,19 @@ class StarMainWindow(QMainWindow):
             self.actions["Window>Cad"].setChecked(True)
             self.cmd_toggle_cad()
         self.msg("三角化修复预览：填洞/缝边需 CAD 内核，当前仅记录请求", "nyi")
+
+    def cmd_cad_section(self):
+        if self.actions.get("Window>Cad"):
+            self.actions["Window>Cad"].setChecked(True)
+            self.cmd_toggle_cad()
+        self.cmd_create_derived()
+        self.msg("3D-CAD 剖面：已创建会话 Plane Section（三角化预览）")
+
+    def cmd_cad_transform(self):
+        if self.actions.get("Window>Cad"):
+            self.actions["Window>Cad"].setChecked(True)
+            self.cmd_toggle_cad()
+        self.cmd_transform()
 
     def cmd_transform(self):
         obj = self._selected_obj()
