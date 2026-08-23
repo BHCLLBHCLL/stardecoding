@@ -47,6 +47,8 @@ def test_painted_view_icons(app):
     assert not ic.get("view_+x").isNull()
     assert not ic.get("view_iso").isNull()
     assert not ic.get("solid").isNull()
+    assert ic.get("view_+x").pixmap(24, 24).toImage() != ic.get("view_+z").pixmap(24, 24).toImage()
+    assert ic.get("solid").pixmap(24, 24).toImage() != ic.get("wire").pixmap(24, 24).toImage()
 
 
 def test_i18n_tr():

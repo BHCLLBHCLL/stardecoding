@@ -20,6 +20,48 @@ def work_dir():
     return d
 
 
+def test_starccm_light_background():
+    import vtk
+    from star_gui_vtk import apply_starccm_background, STARCCM_BG_BOTTOM, STARCCM_BG_TOP
+    ren = vtk.vtkRenderer()
+    apply_starccm_background(ren)
+    bg = ren.GetBackground()
+    assert bg[0] >= 0.95 and bg[1] >= 0.95 and bg[2] >= 0.95
+    bg2 = ren.GetBackground2()
+    assert bg2[0] > 0.75 and bg2[0] < 0.95
+    assert STARCCM_BG_BOTTOM[0] == 1.0
+    assert STARCCM_BG_TOP[0] < 1.0
+
+
+def test_orbit_around_click_not_origin():
+    """旋转必须绕按下点，不能绕原点（VTK Azimuth 默认绕 FocalPoint≈原点）。"""
+    import vtk
+    from star_gui_interactor import (
+        StarCCMInteractorStyle, _rodrigues, orbit_camera, install_starccm_interactor,
+        _display_to_world,
+    )
+    cam = vtk.vtkCamera()
+    cam.SetPosition(10.0, 0.0, 20.0)
+    cam.SetFocalPoint(10.0, 0.0, 0.0)
+    cam.SetViewUp(0.0, 1.0, 0.0)
+    click = (10.0, 2.0, 0.0)
+    pos0 = np.array(cam.GetPosition(), dtype=float)
+    d0 = np.linalg.norm(pos0 - np.array(click))
+    assert orbit_camera(cam, click, 30.0, 0.0)
+    pos1 = np.array(cam.GetPosition(), dtype=float)
+    assert abs(np.linalg.norm(pos1 - np.array(click)) - d0) < 1e-6
+    # 若绕原点转，||pos|| 不变；绕 click 转则相机到原点的距离会变
+    assert abs(np.linalg.norm(pos1) - np.linalg.norm(pos0)) > 0.1
+    rotated = _rodrigues(np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 90.0)
+    assert abs(rotated[0]) < 1e-9 and abs(rotated[1] - 1.0) < 1e-9
+    s = StarCCMInteractorStyle()
+    assert hasattr(s, "OnMiddleButtonDown") and hasattr(s, "OnRightButtonDown")
+    iren = vtk.vtkRenderWindowInteractor()
+    style = install_starccm_interactor(iren)
+    assert iren.GetInteractorStyle() is style
+    assert callable(_display_to_world)
+
+
 def test_mesh_polydata_has_normals():
     from star_gui_vtk import mesh_polydata
     verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)

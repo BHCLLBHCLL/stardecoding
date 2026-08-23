@@ -21,7 +21,11 @@ def test_theme_qss_exists():
     qss = os.path.join(ROOT, "star_gui_theme.qss")
     assert os.path.exists(qss)
     with open(qss, encoding="utf-8") as f:
-        assert "QTreeWidget" in f.read()
+        text = f.read()
+    assert "QTreeWidget" in text
+    assert "#005f78" in text
+    assert "#f0f0f0" in text
+    assert "#cde8f6" in text
 
 
 def test_theme_applies(app):
@@ -36,6 +40,12 @@ def test_icons():
     assert not icons.get("open").isNull()
     assert not icons.get("part").isNull()
     assert not icons.get("layer_physics").isNull()
+    # 不同功能应画出不同像素，避免再退化成同一套通用图标
+    pm_open = icons.get("open").pixmap(24, 24)
+    pm_play = icons.get("play").pixmap(24, 24)
+    pm_scene = icons.get("scene").pixmap(24, 24)
+    assert pm_open.toImage() != pm_play.toImage()
+    assert pm_play.toImage() != pm_scene.toImage()
 
 
 def test_about_message(app):

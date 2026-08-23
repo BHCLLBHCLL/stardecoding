@@ -792,6 +792,36 @@ def print_tree(roots, children, indent=0, max_depth=12, show_nm_leaves=False):
                 print_tree([c], children, indent + 1, max_depth, show_nm_leaves)
 
 
+def compact_face_indices(faces, nverts):
+    """把面顶点编号映射到 [0, nverts)。
+
+    STAR-CCM+ 面索引常见三种形态:
+      - 0 基连续: min=0, max=n-1
+      - 1 基连续: min=1, max=n（或 max<=n）
+      - 分块偏移: min=k, max=k+n-1（如 genericHelicopter Wind Tunnel 的 k=195）
+
+    旧逻辑一律按 1 基减 1 再 clip 到 [0, n-1]。偏移块的超界下标会被钉到最后一个
+    顶点，3D 上外框拧成星形。返回 (faces0, ok)。
+    """
+    if _np is None or faces is None or int(nverts) <= 0:
+        return faces, False
+    f = _np.asarray(faces, dtype=_np.int64)
+    if f.size == 0:
+        return f, True
+    lo, hi = int(f.min()), int(f.max())
+    n = int(nverts)
+    span = hi - lo + 1
+    if span == n:
+        return f - lo, True
+    if lo >= 1 and hi <= n:
+        return f - 1, True
+    if lo >= 0 and hi < n:
+        return f, True
+    if lo >= 1:
+        f = f - 1
+    return _np.clip(f, 0, n - 1), False
+
+
 # ----------------------------------------------------------------------------
 # 5. 顶层 SimFile
 # ----------------------------------------------------------------------------
@@ -1154,10 +1184,10 @@ class SimFile:
         启发式:
           - 面索引 = Unsigned4/Integer4 数组，count == 某 part 的 TriangleCount×3
             （优先最大 part）；否则取最大的 count%3==0 的 U4/I4 数组。
-          - 顶点坐标 = Float8 数组，count/3 与面索引最大值吻合（1 基 => == max_index，
-            0 基 => == max_index+1）；否则取 count%3==0 且数值绝对值 >1 的最大
-            Float8 数组（法向量数组的值 ≤1，可区分）。
-        返回 dict: vertices(N,3), faces(M,3), meta, flags(推断置信度)。
+          - 顶点坐标 = Float8 数组，count/3 优先等于面索引跨度 (max-min+1)
+            （分块偏移编号），其次 1 基 max / 0 基 max+1；否则取 count%3==0
+            且数值绝对值 >1 的最大 Float8 数组（法向量数组的值 ≤1，可区分）。
+        返回 dict: vertices(N,3), faces(M,3)（0 基）, meta, flags(推断置信度)。
         """
         if _np is None:
             raise RuntimeError("网格抽取需要 numpy")
@@ -1181,15 +1211,21 @@ class SimFile:
                 i, a = max(cands2, key=lambda c: c[1]["count"])
                 faces = self.array_data(i).reshape(-1, 3).astype("int64")
                 fflags = "heuristic"
-        # 顶点（按面索引最大值确定规模）
+        # 顶点（跨度优先，再按面索引最大值确定规模）
         cands = [(i, a) for i, a in enumerate(self.arrays) if a["type"] == "Float8"]
         if faces is not None and faces.size:
             mx = int(faces.max())
-            for want in (mx, mx + 1):
+            lo = int(faces.min())
+            span = mx - lo + 1
+            wants = []
+            for want in (span, mx, mx + 1):
+                if want > 0 and want not in wants:
+                    wants.append(want)
+            for want in wants:
                 for i, a in cands:
                     if a["count"] == want * 3:
                         verts = self.array_data(i).reshape(-1, 3)
-                        vflags = "face-max:%d" % want
+                        vflags = "face-span:%d" % want if want == span else "face-max:%d" % want
                         break
                 if verts is not None:
                     break
@@ -1203,9 +1239,16 @@ class SimFile:
         res = {"vertices": verts, "faces": faces, "meta": meta,
                "vertex_flag": vflags, "face_flag": fflags}
         if verts is not None and faces is not None:
-            res["max_index"] = int(faces.max()) if faces.size else 0
+            raw_max = int(faces.max()) if faces.size else 0
+            faces, ok = compact_face_indices(faces, verts.shape[0])
+            res["faces"] = faces
+            res["max_index"] = raw_max
             res["n_vertices"] = int(verts.shape[0])
-            res["consistent"] = bool(res["max_index"] <= res["n_vertices"])
+            res["consistent"] = bool(
+                ok and faces.size and int(faces.min()) >= 0
+                and int(faces.max()) < verts.shape[0])
+            if not faces.size:
+                res["consistent"] = True
         return res
 
     def export_stl(self, out_path):
@@ -1214,9 +1257,7 @@ class SimFile:
         if m["vertices"] is None or m["faces"] is None:
             raise RuntimeError("无法抽取网格（缺少顶点/面数组）")
         v, f = m["vertices"], m["faces"]
-        one_based = bool(f.size and int(f.min()) >= 1)
-        idx = f - 1 if one_based else f
-        idx = _np.clip(idx, 0, v.shape[0] - 1)
+        idx, _ok = compact_face_indices(f, v.shape[0])
         with open(out_path, "w", encoding="ascii") as fh:
             fh.write("solid sim\n")
             for tri in idx:

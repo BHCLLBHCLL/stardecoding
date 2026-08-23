@@ -78,6 +78,31 @@ def test_sim_tree_scene_displayer():
     assert "Physics 1" in labels
 
 
+def _child(node, label):
+    for c in node.children:
+        if c.label == label:
+            return c
+    return None
+
+
+def test_sim_tree_scene_parts_filter():
+    """Scenes → Mesh Scene 1 → Mesh 1 → Parts 列出显示器筛选的部件。"""
+    m = _load_model()
+    root = m.sim_tree()[0]
+    scenes = _child(root, "Scenes")
+    mesh_scene = _child(scenes, "Mesh Scene 1")
+    mesh1 = _child(mesh_scene, "Mesh 1")
+    parts = _child(mesh1, "Parts")
+    assert parts is not None, [c.label for c in mesh1.children]
+    names = [c.label for c in parts.children]
+    assert "Fluid Domain" in names
+    fd = _child(parts, "Fluid Domain")
+    surfs = [c.label for c in fd.children]
+    assert "Inlet" in surfs
+    assert "Far Field" in surfs
+    assert "Wing Lower Element" in surfs
+
+
 def test_sim_tree_solvers_friendly_names():
     m = _load_model()
     labels = [l for _, l, _, _ in _walk_labels(m.sim_tree())]
@@ -97,6 +122,9 @@ def test_gui_tree_uses_sim_tree(app):
         app.processEvents()
         time.sleep(0.02)
     assert win.tree_widget.tree.headerItem().text(0) == "模型 / 场景/绘图"
+    assert win.split_right is not None
+    assert win.graphics_block.objectName() == "BlockFrame"
+    assert win.output_block.objectName() == "BlockFrame"
     top = [win.tree_widget.tree.topLevelItem(i).text(0)
            for i in range(win.tree_widget.tree.topLevelItemCount())]
     assert top == ["adjointWing_start"]

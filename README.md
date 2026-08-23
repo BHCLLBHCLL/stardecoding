@@ -11,6 +11,12 @@
 | `semantic_dict.py` | 对象图语义字典（包→语义层、别名表、属性引用方向） |
 | `README.md` | 本说明（格式逆向文档） |
 | `function_gap_analysis.md` | **功能完整性与深度差距分析**（21 文件实测，按节推进改进） |
+| `star_gui.py` / `star_gui_panes.py` / `star_gui_model.py` | GUI 查看器 + 编辑器（菜单/树/属性/3D） |
+| `star_gui_commands.py` / `star_gui_document.py` | 可撤销命令总线与会话文档模型 |
+| `sim_writer.py` | 对象图 repr 回写（Save / Save As） |
+| `star_gui_plots.py` | 绘图/报告查看窗 |
+| `star_gui_parity.md` | 对标 STAR-CCM+ 20.02 能力表（view / session / persist / needs_kernel） |
+| `star_gui_next.md` | **E0–E8 后完整度复盘与 F0–F8 改进规划** |
 | `star_gui_design.md` / `star_gui_plan.md` | GUI 查看器架构设计与 M0–M6 开发计划 |
 | `star_gui_upgrade.md` | **GUI 升级规划 U1–U5**（STAR-CCM+ 用户树 / 双行工具栏 / 专业 3D 视口） |
 | `self_test.py` / `batch_parse.py` / `mesh_validate.py` / `check_length_all.py` | 回归与校验工具 |
@@ -21,7 +27,11 @@
 > 187KB–13MB）：容器/分区/数组/对象图全部可解析；状态表含 ASCII 与二进制两种编码变体，
 > 且存在嵌套 TRANSMIT 子块——详见 function_gap_analysis.md。
 
-## 图形界面 star_gui（GUI 查看器）
+## 图形界面 star_gui（GUI 查看器 / 编辑器）
+
+不启动求解器的 STAR-CCM+ 客户端替代品：打开 `.sim`、按官方用户树浏览、编辑会话属性/
+场景/几何，并把可写字段回写对象图。求解运算（Run / Initialize 等）菜单保留并禁用。
+能力分级见 `star_gui_parity.md`。
 
 安装依赖后即可运行：
 
@@ -32,11 +42,12 @@ python star_gui.py adjointWing_start.sim --cli --export-dir out --stl mesh.stl  
 python tests/run_all.py                        :: GUI 测试（逐文件子进程）
 ```
 
-功能：STAR-CCM+ 风格仿真树（Geometry / Continua / Regions / Solvers / Scenes / Tools）·
-两列属性检查器（筛选、对象标题）· 3D 场景标签页（分 Part 着色、法向、左下方向指示器、
-六向/等轴测视图、保存相机）· Part 显隐勾选 · Region/Boundary 高亮 · 中文菜单与双行工具栏 ·
-消息/进度/状态栏 · 导出 STL/摘要/报告 · 深色主题。详见 `star_gui_upgrade.md`（U1–U5）
-与 `star_gui_plan.md`（M0–M6）。
+功能：STAR-CCM+ 风格仿真树（Geometry / Operations / Derived Parts / 3D-CAD / Continua /
+Regions / Solvers / Scenes / Tools）· 可编辑属性检查器（Undo/Redo）· 3D 场景标签页
+（分 Part 着色、法向、左下方向指示器、六向/等轴测、右键视图）· 树/3D 右键 ·
+导入表面 / 变换 / 指定到区域 · Save / Save As / Reload · 绘图/报告标签 · 中文菜单与
+多行工具栏 · 导出 STL/摘要/报告。网格生成与完整 3D-CAD 标为 `needs_kernel`。
+详见 `star_gui_parity.md`、`star_gui_upgrade.md`（U1–U5）与 `star_gui_plan.md`（M0–M6）。
 
 ## 快速上手
 

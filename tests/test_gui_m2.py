@@ -34,7 +34,15 @@ def test_part_meshes():
     assert len(parts) >= 3  # Fluid Domain + 2 blocks
     total = sum(p["triangles"] for p in parts)
     assert total == 2848  # 2824 + 12 + 12
-    assert any(p["name"] == "Fluid Domain" for p in parts)
+    by = {p["name"]: p for p in parts}
+    assert by["Fluid Domain"]["vertices"].shape[0] == 1412
+    assert int(by["Fluid Domain"]["faces"].max()) < 1412
+    for name in ("Small Block", "Large Block"):
+        assert by[name]["vertices"].shape[0] == 8
+        assert by[name]["triangles"] == 12
+        assert int(by[name]["faces"].max()) < 8
+        ext = by[name]["vertices"].max(0) - by[name]["vertices"].min(0)
+        assert float(ext.min()) > 0.05
 
 
 def test_build_actors_and_offscreen_render(work_dir):

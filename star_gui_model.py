@@ -66,6 +66,9 @@ def friendly_name(obj):
 # STAR-CCM+ 用户树文件夹 → 语义层（图标）
 _FOLDER_LAYER = {
     "Geometry": "cad-geometry",
+    "Operations": "meshing",
+    "Derived Parts": "visualization",
+    "3D-CAD": "cad-geometry",
     "Continua": "physics",
     "Regions": "core",
     "Solvers": "solver",
@@ -209,9 +212,40 @@ class StarSceneModel:
 
     def _scene_node(self, obj):
         dm = self.objmap.get(obj.dict.get("DisplayerManager") or -1)
-        disp = [self._obj_node(d) for d in self._keys(dm)
+        disp = [self._displayer_node(d) for d in self._keys(dm)
                 if (d.class_name or "").startswith("star.vis")]
         return self._obj_node(obj, children=disp)
+
+    def _displayer_node(self, obj):
+        """PartDisplayer：下级 Parts 筛选列表（对齐 STAR-CCM+ 场景树）。"""
+        col = self.objmap.get(obj.dict.get("Collector") or -1)
+        kids = []
+        if col is not None and (col.dict.get("Keys") or []):
+            kids.append(self._parts_filter_node(col))
+        return self._obj_node(obj, children=kids)
+
+    def _parts_filter_node(self, part_group):
+        """Collector.Keys 按所属几何 Part / Region 分组。"""
+        grouped = []  # (parent_obj, [child_obj, ...])
+        seen_parent = {}
+        loose = []
+        for src in self._keys(part_group):
+            parent = owning_mesh_part(self.sim, src)
+            if parent is None:
+                loose.append(src)
+                continue
+            if parent.id not in seen_parent:
+                seen_parent[parent.id] = len(grouped)
+                grouped.append((parent, []))
+            # 自身就是网格 Part 时不再嵌一层同名
+            if src.id != parent.id:
+                grouped[seen_parent[parent.id]][1].append(src)
+        kids = []
+        for parent, children in grouped:
+            kids.append(self._obj_node(parent, children=[self._obj_node(c) for c in children]))
+        for src in loose:
+            kids.append(self._obj_node(src))
+        return self._obj_node(part_group, children=kids, label="Parts")
 
     def sim_tree(self):
         """STAR-CCM+ 用户仿真树（Geometry / Regions / Scenes / …）。
@@ -229,6 +263,12 @@ class StarSceneModel:
                               self._group_children(
                                   self._manager("SimulationPartManager", "PartManager"),
                                   self._part_node)),
+            self._folder_node("Operations", "Operations",
+                              self._group_children(
+                                  self._manager("MeshOperationManager")),
+                              layer="meshing"),
+            self._derived_folder(),
+            self._cad_folder(),
             self._folder_node("Continua", "Continua",
                               self._group_children(self._manager("ContinuumManager"),
                                                    self._continuum_node)),
@@ -252,6 +292,37 @@ class StarSceneModel:
             return folders
         root = self._obj_node(sim_obj, children=folders)
         return [root]
+
+    def _derived_folder(self):
+        mgr = self._manager("DerivedPartManager")
+        if mgr is not None:
+            return self._folder_node("Derived Parts", "Derived Parts",
+                                     self._group_children(mgr), layer="visualization")
+        kids = []
+        seen = set()
+        for o in self.sim.objects:
+            cn = o.class_name or ""
+            if "Manager" in cn:
+                continue
+            if any(tag in cn for tag in ("PlaneSection", "ThresholdPart", "IsoPart",
+                                         "DerivedPart", "ProbePart")):
+                if o.id not in seen:
+                    seen.add(o.id)
+                    kids.append(self._obj_node(o))
+        return self._folder_node("Derived Parts", "Derived Parts", kids,
+                                 layer="visualization")
+
+    def _cad_folder(self):
+        kids = []
+        mgr = self._manager("CadModelManager", "CadObjectManager")
+        if mgr is not None:
+            kids.extend(self._group_children(mgr))
+        if not kids:
+            for o in self.sim.objects:
+                cn = o.class_name or ""
+                if cn.endswith("CadModel") or cn == "star.cadmodeler.CadModel":
+                    kids.append(self._obj_node(o))
+        return self._folder_node("3D-CAD", "3D-CAD", kids, layer="cad-geometry")
 
     def _tools_folder(self):
         kids = []
@@ -291,6 +362,13 @@ class StarSceneModel:
         if isinstance(v, dict):
             return "{...%d keys}" % len(v)
         if isinstance(v, list):
+            if v and all(isinstance(x, int) for x in v) and objmap:
+                names = []
+                for x in v[:8]:
+                    o = objmap.get(x)
+                    names.append((o.name or short_class(o.class_name)) if o else str(x))
+                extra = ", …" if len(v) > 8 else ""
+                return "[" + ", ".join(names) + extra + "]"
             return "[%d items]" % len(v)
         if isinstance(v, bool):
             return "true" if v else "false"
@@ -337,3 +415,126 @@ class StarSceneModel:
 
 def short_text(v):
     return StarSceneModel._fmt_value(v, {})
+
+
+def _psm_to_part_map(sim):
+    """PartSurfaceManager id → 拥有它的几何 Part（MeshPart / CadPart / Block）。"""
+    cache = getattr(sim, "_psm_to_part", None)
+    if cache is not None:
+        return cache
+    cache = {}
+    for o in sim.objects:
+        cn = o.class_name or ""
+        if "Part" not in cn and not isinstance(o.dict.get("TriangleCount"), int):
+            continue
+        for attr in ("PartSurfaces", "PartSurfaceManager"):
+            v = o.dict.get(attr)
+            if isinstance(v, int):
+                cache[v] = o
+    sim._psm_to_part = cache
+    return cache
+
+
+def owning_mesh_part(sim, obj):
+    """把 Displayer Parts 里的 Boundary / PartSurface / Part 解析到带网格的几何 Part。"""
+    if obj is None:
+        return None
+    om = sim.objmap
+    cn = obj.class_name or ""
+    if isinstance(obj.dict.get("TriangleCount"), int) and obj.dict["TriangleCount"] > 0:
+        return obj
+    if "PartSurface" in cn and "Manager" not in cn and "Group" not in cn:
+        psm_id = obj.dict.get("Parent")
+        if isinstance(psm_id, int):
+            return _psm_to_part_map(sim).get(psm_id)
+        return None
+    if cn.endswith("Boundary") or cn == "star.common.Boundary":
+        psg = om.get(obj.dict.get("PartSurfaces") or -1)
+        for k in (psg.dict.get("Keys") if psg is not None else None) or []:
+            ps = om.get(k)
+            part = owning_mesh_part(sim, ps)
+            if part is not None:
+                return part
+        region = om.get(obj.dict.get("Region") or -1)
+        pg = om.get(region.dict.get("Parts") or -1) if region is not None else None
+        for k in (pg.dict.get("Keys") if pg is not None else None) or []:
+            p = om.get(k)
+            if p is not None and isinstance(p.dict.get("TriangleCount"), int) and p.dict["TriangleCount"] > 0:
+                return p
+        return None
+    if cn.endswith("Region") or cn == "star.common.Region":
+        pg = om.get(obj.dict.get("Parts") or -1)
+        for k in (pg.dict.get("Keys") if pg is not None else None) or []:
+            p = om.get(k)
+            if p is not None and isinstance(p.dict.get("TriangleCount"), int) and p.dict["TriangleCount"] > 0:
+                return p
+    return None
+
+
+def collector_sources(sim, displayer):
+    """PartDisplayer.Collector.Keys → 源对象列表。"""
+    if displayer is None:
+        return []
+    om = sim.objmap
+    col = om.get(displayer.dict.get("Collector") or -1)
+    if col is None:
+        return []
+    out = []
+    for k in col.dict.get("Keys") or []:
+        o = om.get(k)
+        if o is not None:
+            out.append(o)
+    return out
+
+
+def mesh_part_ids_for_displayer(sim, displayer):
+    """该显示器 Parts 筛选对应的网格 Part id 集合。"""
+    ids = []
+    seen = set()
+    for src in collector_sources(sim, displayer):
+        part = owning_mesh_part(sim, src)
+        if part is not None and part.id not in seen:
+            seen.add(part.id)
+            ids.append(part.id)
+    return ids
+
+
+def _surface_patch_types(sim):
+    cache = getattr(sim, "_surface_patch_types", None)
+    if cache is not None:
+        return cache
+    cache = {}
+    for o in sim.objects:
+        if o.class_name != "star.meshing.PartSurfacePatches":
+            continue
+        psid = o.dict.get("PartSurface")
+        types = o.dict.get("Types") or []
+        if not isinstance(psid, int) or not types:
+            continue
+        s = set(int(x) for x in types)
+        if psid not in cache or len(s) > len(cache[psid]):
+            cache[psid] = s
+    sim._surface_patch_types = cache
+    return cache
+
+
+def part_surface_cad_ids(sim, obj):
+    """Boundary / PartSurface → CAD FaceTypes 集合（用于从整 Part 网格里切面子块）。"""
+    if obj is None:
+        return set()
+    om = sim.objmap
+    cn = obj.class_name or ""
+    surfaces = []
+    if "PartSurface" in cn and "Manager" not in cn and "Group" not in cn:
+        surfaces = [obj]
+    elif cn.endswith("Boundary") or cn == "star.common.Boundary":
+        psg = om.get(obj.dict.get("PartSurfaces") or -1)
+        for k in (psg.dict.get("Keys") if psg is not None else None) or []:
+            s = om.get(k)
+            if s is not None:
+                surfaces.append(s)
+    patches = _surface_patch_types(sim)
+    ids = set()
+    for s in surfaces:
+        ids |= patches.get(s.id, set())
+    return ids

@@ -1,16 +1,9 @@
 # -*- coding: utf-8 -*-
-"""star_gui.py — STAR-CCM+ .sim 项目查看器。
+"""star_gui.py — STAR-CCM+ .sim 项目查看器 / 编辑器。
 
 布局对齐 STAR-CCM+ 20.02（模型树 / 图形窗口 / 属性 / 输出 / 状态栏），
 技术路线对齐 cabdecoding（PyQt5 + VTK + numpy）。
-
-用法:
-    python star_gui.py                    # 空窗口
-    python star_gui.py adjointWing_start.sim   # 打开 .sim
-
-升级（star_gui_upgrade.md）:
-    U1 分组仿真树  U2 中文菜单/双行工具栏  U3 专业 3D 视口
-    U4 两列属性检查器  U5 文档/回归
+求解运算不实现（菜单保留并禁用）。见 star_gui_parity.md。
 """
 
 import os
@@ -25,8 +18,8 @@ HEADLESS = os.environ.get("QT_QPA_PLATFORM", "").lower() in ("minimal", "offscre
 from PyQt5.QtCore import QObject, QSettings, QSize, QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QFileDialog, QMainWindow, QMessageBox, QSplitter,
-    QTabWidget, QToolBar, QVBoxLayout, QWidget,
+    QAction, QApplication, QFileDialog, QFrame, QInputDialog, QMainWindow,
+    QMessageBox, QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -80,37 +73,53 @@ class StarMainWindow(QMainWindow):
         super().__init__(parent)
         from star_gui_i18n import tr
         self.tr = tr
-        self.setWindowTitle("STAR-CCM+ .sim Viewer (star_gui)")
+        self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor")
         self.resize(1280, 820)
         self.sim = None
         self.sim_path = None
         self._thread = None
         self._worker = None
+        from star_gui_document import SimDocument
+        self.document = SimDocument()
+        self.document.bus.on_change = self._sync_edit_actions
+        self.document.add_listener(self._on_document_event)
         self._build_actions()
         self._build_ui()
         self._build_menus()
         self._build_toolbar()
-        self.msg("STAR-CCM+ .sim Viewer 就绪 — 文件>打开 加载项目")
+        self._wire_editor_ui()
+        self._sync_edit_actions()
+        self.msg("STAR-CCM+ .sim Viewer / Editor 就绪 — 文件>打开 加载项目")
 
     # ---------------- UI ----------------
     def _build_ui(self):
+        """2×2 块状布局：左(树/属性) | 右(3D 场景/输出)，对齐 STAR-CCM+ 停靠窗。"""
         central = QWidget()
+        central.setObjectName("workspace")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(3, 3, 3, 3)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(0)
 
-        self.split_main = QSplitter()          # 左(树/属性) | 右(图形+底部)
-        self.split_left = QSplitter()          # 树 | 属性（M1 填充）
-        self.split_left.setOrientation(1)      # 垂直
+        self.split_main = QSplitter(Qt.Horizontal)
+        self.split_main.setObjectName("splitMain")
+        self.split_main.setChildrenCollapsible(False)
+        self.split_main.setHandleWidth(4)
 
-        # M1：仿真树 + 属性面板
+        self.split_left = QSplitter(Qt.Vertical)
+        self.split_left.setObjectName("splitLeft")
+        self.split_left.setChildrenCollapsible(False)
+        self.split_left.setHandleWidth(4)
+
         from star_gui_panes import PropertiesPanel, SimulationTree
         self.model = None
         self.tree_widget = SimulationTree(icons=icons())
         self.props_widget = PropertiesPanel()
         self.tree_widget.object_selected.connect(self.on_object_selected)
-        self.tree_widget.check_changed.connect(self.on_part_visibility)
+        self.tree_widget.check_changed.connect(self.on_tree_check)
         self.props_widget.reference_activated.connect(self.on_object_selected)
+        self.tree_widget.context_command.connect(self.on_tree_context)
+        self.props_widget.property_edited.connect(self.on_property_edited)
         self.tree_pane = PaneFrame("模型 / 场景/绘图")
         self.tree_pane.set_body(self.tree_widget)
         self.props_pane = PaneFrame("属性")
@@ -118,16 +127,21 @@ class StarMainWindow(QMainWindow):
         self.props_widget.title_changed.connect(self.props_pane.set_title)
         self.split_left.addWidget(self.tree_pane)
         self.split_left.addWidget(self.props_pane)
-        self.split_left.setSizes([420, 260])
+        self.split_left.setStretchFactor(0, 3)
+        self.split_left.setStretchFactor(1, 2)
+        self.split_left.setSizes([480, 280])
 
-        right = QSplitter()
-        right.setOrientation(1)                # 垂直：图形区 / 底部输出
+        self.split_right = QSplitter(Qt.Vertical)
+        self.split_right.setObjectName("splitRight")
+        self.split_right.setChildrenCollapsible(False)
+        self.split_right.setHandleWidth(4)
+
         self.summary_pane = SummaryPane()
         from star_gui_panes import GraphicsTabs, Star3DViewport
         self.graphics_tabs = GraphicsTabs()
         self.graphics_tabs.add_info_tab(self.summary_pane)
+        self.graphics_tabs.currentChanged.connect(self._on_graphics_tab_changed)
         if HEADLESS:
-            from PyQt5.QtCore import Qt
             from PyQt5.QtWidgets import QLabel
             self.viewport = QLabel("3D 视口（无头模式禁用 QVTK）")
             self.viewport.setAlignment(Qt.AlignCenter)
@@ -135,23 +149,41 @@ class StarMainWindow(QMainWindow):
         else:
             self.viewport = Star3DViewport()
             self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
-        self.graphics_pane = PaneFrame("图形窗口")
-        self.graphics_pane.set_body(self.graphics_tabs)
-        right.addWidget(self.graphics_pane)
+        self.graphics_block = QFrame()
+        self.graphics_block.setObjectName("BlockFrame")
+        gbl = QVBoxLayout(self.graphics_block)
+        gbl.setContentsMargins(0, 0, 0, 0)
+        gbl.setSpacing(0)
+        gbl.addWidget(self.graphics_tabs)
+        self.graphics_pane = self.graphics_block
+        self.split_right.addWidget(self.graphics_block)
 
         bottom = QTabWidget()
         self.bottom_tabs = bottom
         self.messages = MessageWindow()
         self.progress = ProgressPanel()
         from star_gui_i18n import tr
+        from star_gui_plots import PlotPane
+        self.plot_pane = PlotPane()
         bottom.addTab(self.messages, tr("Messages"))
         bottom.addTab(self.progress, tr("Progress"))
-        right.addWidget(bottom)
-        right.setSizes([560, 170])
+        bottom.addTab(self.plot_pane, tr("Plots Window"))
+        self.output_block = QFrame()
+        self.output_block.setObjectName("BlockFrame")
+        obl = QVBoxLayout(self.output_block)
+        obl.setContentsMargins(0, 0, 0, 0)
+        obl.setSpacing(0)
+        obl.addWidget(bottom)
+        self.split_right.addWidget(self.output_block)
+        self.split_right.setStretchFactor(0, 5)
+        self.split_right.setStretchFactor(1, 1)
+        self.split_right.setSizes([640, 150])
 
         self.split_main.addWidget(self.split_left)
-        self.split_main.addWidget(right)
-        self.split_main.setSizes([380, 900])
+        self.split_main.addWidget(self.split_right)
+        self.split_main.setStretchFactor(0, 0)
+        self.split_main.setStretchFactor(1, 1)
+        self.split_main.setSizes([300, 980])
         root.addWidget(self.split_main)
 
         self.status_helper = StatusBarHelper()
@@ -161,31 +193,72 @@ class StarMainWindow(QMainWindow):
     def _build_actions(self):
         from star_gui_i18n import tr
         self.actions = {}
+        self._add("File>New", tr("New"), self.cmd_new, "file")
         self._add("File>Open", tr("Open..."), self.open_file, "open", QKeySequence.Open)
-        self._add("File>Close", tr("Close"), self.close_sim, "file")
-        self._add("File>Exit", tr("Exit"), self.close, "file", QKeySequence.Quit)
+        self._add("File>Close", tr("Close"), self.close_sim, "close")
+        self._add("File>Reload", tr("Reload"), self.cmd_reload, "open")
+        self._add("File>Exit", tr("Exit"), self.close, "close", QKeySequence.Quit)
         self._add("File>Export>STL", tr("Export STL..."), self.cmd_export_stl, "mesh")
         self._add("File>Export>Summary", tr("Export Summary..."), self.cmd_export_summary, "file")
         self._add("File>Export>Report", tr("Export Report (JSON)..."), self.cmd_export_report, "report")
+        self._add("File>Save", tr("Save"), self.cmd_save, "save", QKeySequence.Save)
+        self._add("File>Save As", tr("Save As..."), self.cmd_save_as, "save")
+        self._add("File>Save All", tr("Save All"), lambda: self._nyi("File>Save All"), "save")
+        self._add("File>Import>Surface", tr("Import Surface..."), self.cmd_import_surface, "mesh")
+        self._add("File>Import>CAD", tr("Import CAD..."), self.cmd_import_cad, "mesh")
+        self._add("File>Import>Volume", tr("Import Volume Mesh..."),
+                  lambda: self._kernel_nyi("导入体网格"), "mesh")
+        self._add("Edit>Undo", tr("Undo"), self.cmd_undo, "undo", QKeySequence.Undo)
+        self._add("Edit>Redo", tr("Redo"), self.cmd_redo, "undo", QKeySequence.Redo)
+        self._add("Edit>Copy", tr("Copy"), self.cmd_copy, "file")
+        self._add("Edit>Paste", tr("Paste"), self.cmd_paste, "file")
+        self._add("Edit>Delete", tr("Delete"), self.cmd_delete, "close")
+        self._add("Edit>Rename", tr("Rename"), self.cmd_rename, "file")
+        self._add("Edit>Search", tr("Search Names"), self.cmd_search, "field")
+        self._add("Edit>Prev", tr("Previous Selection"), self.cmd_sel_prev, "file")
+        self._add("Edit>Next", tr("Next Selection"), self.cmd_sel_next, "file")
+        self._add("Mesh>Generate", tr("Generate Surface Mesh"), self.cmd_generate_mesh, "mesh")
+        self._add("Mesh>GenerateVolume", tr("Generate Volume Mesh"),
+                  lambda: self._kernel_nyi("生成体网格"), "mesh")
+        self._add("Mesh>Clear", tr("Clear Generated Meshes"),
+                  lambda: self._kernel_nyi("清除已生成网格"), "mesh")
+        self._add("Mesh>Scale", tr("Scale Mesh..."), self.cmd_scale_mesh, "mesh")
+        self._add("Mesh>Diagnostics", tr("Mesh Diagnostics"), self.cmd_mesh_diag, "ruler")
+        self._add("Mesh>Convert2D", tr("Convert to 2D"),
+                  lambda: self._kernel_nyi("转换为 2D"), "mesh")
+        self._add("Mesh>Repair", tr("Surface Repair"), self.cmd_cad_repair, "mesh")
+        self._add("Plot>NYI", tr("Plot"), self.cmd_show_plots, "plot")
+        self._add("Scene>New", tr("New Scene"), self.cmd_new_scene, "scene")
+        self._add("Scene>AddDisplayer", tr("Add Displayer"), self.cmd_add_displayer, "displayer")
+        self._add("Vis>SaveView", tr("Save View"), self.cmd_save_view, "reset")
+        self._add("Vis>RestoreView", tr("Restore View"), self.cmd_restore_view, "fit")
         for path, label in [
-            ("File>Save", tr("Save")),
-            ("File>Save As", tr("Save As...")),
-            ("Edit>Undo", "撤销"),
-            ("Mesh>Generate", "生成网格"),
-            ("Plot>NYI", tr("Plot")),
             ("Solution>Run", tr("Run")),
             ("Solution>Pause", tr("Pause")),
             ("Solution>Step", tr("Step")),
             ("Solution>Stop", tr("Stop")),
             ("Connection>Server", tr("Connect to Server")),
         ]:
-            icon = {"Solution>Run": "play", "Solution>Pause": "pause",
-                    "Solution>Step": "step", "Solution>Stop": "stop",
-                    "File>Save": "save", "File>Save As": "save"}.get(path, "unknown")
+            icon = {
+                "Solution>Run": "play", "Solution>Pause": "pause",
+                "Solution>Step": "step", "Solution>Stop": "stop",
+                "Connection>Server": "server",
+            }.get(path, "unknown")
             self._add(path, label, lambda checked=False, p=path: self._nyi(p), icon)
-        self._add("Tools>Fingerprint", tr("Version Fingerprint"), self.cmd_fingerprint, "info")
-        self._add("Tools>Check Length", tr("State Length Check"), self.cmd_check_length, "info")
-        self._add("Tools>Validate", tr("ClassVersions Validate"), self.cmd_validate, "info")
+            self.actions[path].setEnabled(False)
+        self._add("Tools>Fingerprint", tr("Version Fingerprint"), self.cmd_fingerprint, "fingerprint")
+        self._add("Tools>Check Length", tr("State Length Check"), self.cmd_check_length, "ruler")
+        self._add("Tools>Validate", tr("ClassVersions Validate"), self.cmd_validate, "validate")
+        self._add("Tools>Options", tr("Options"), self.cmd_options, "properties")
+        self._add("Vis>MeshOn", tr("Mesh On"), lambda: self.cmd_vis_mesh(True), "edges")
+        self._add("Vis>MeshOff", tr("Mesh Off"), lambda: self.cmd_vis_mesh(False), "solid")
+        self._add("Vis>Derived", tr("Create Derived Part"), self.cmd_create_derived, "part")
+        self._add("Vis>Rubber", tr("Rubber Zoom"), self.cmd_rubber_zoom, "fit")
+        self._add("Window>Plots", tr("Plots Window"), self._toggle_plots, "plot")
+        self._add("Window>Cad", tr("3D-CAD Mode"), self.cmd_toggle_cad, "layer_geometry")
+        self.actions["Window>Cad"].setCheckable(True)
+        self.actions["Window>Plots"].setCheckable(True)
+        self.actions["Window>Plots"].setChecked(True)
         self._add("Scene>Fit", tr("Fit View"), self.cmd_fit, "fit", "Ctrl+F")
         self._add("Scene>Reset", tr("Reset View"), self.cmd_reset, "reset")
         self._add("Scene>Solid", tr("Solid"), self.cmd_solid, "solid")
@@ -231,15 +304,23 @@ class StarMainWindow(QMainWindow):
             return m
 
         file_menu = menu(tr("File") + "(&F)", [
-            "File>Open", "File>Close", None, "File>Save", "File>Save As",
-            None, "File>Export>STL", "File>Export>Summary", "File>Export>Report"])
+            "File>New", "File>Open", "File>Reload", "File>Close", None,
+            "File>Save", "File>Save As", "File>Save All", None,
+            "File>Import>Surface", "File>Import>CAD", "File>Import>Volume", None,
+            "File>Export>STL", "File>Export>Summary", "File>Export>Report"])
         self._recent_menu = file_menu.addMenu(tr("Recent Files"))
         self._rebuild_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction(self.actions["File>Exit"])
-        menu(tr("Edit") + "(&E)", ["Edit>Undo"])
-        menu(tr("Mesh") + "(&M)", ["Mesh>Generate"])
+        menu(tr("Edit") + "(&E)", [
+            "Edit>Undo", "Edit>Redo", None, "Edit>Copy", "Edit>Paste",
+            "Edit>Delete", "Edit>Rename", None, "Edit>Prev", "Edit>Next",
+            "Edit>Search"])
+        menu(tr("Mesh") + "(&M)", [
+            "Mesh>Generate", "Mesh>GenerateVolume", "Mesh>Clear", None,
+            "Mesh>Scale", "Mesh>Diagnostics", "Mesh>Convert2D", "Mesh>Repair"])
         menu(tr("Scene") + "(&S)", [
+            "Scene>New", "Scene>AddDisplayer", None,
             "Scene>Fit", "Scene>Reset", None,
             "Scene>View>+x", "Scene>View>-x", "Scene>View>+y", "Scene>View>-y",
             "Scene>View>+z", "Scene>View>-z", "Scene>View>iso", None,
@@ -247,9 +328,13 @@ class StarMainWindow(QMainWindow):
         menu(tr("Solution") + "(&N)", [
             "Solution>Run", "Solution>Pause", "Solution>Step", "Solution>Stop"])
         menu(tr("Tools") + "(&T)", [
+            "Tools>Options", None,
             "Tools>Fingerprint", "Tools>Check Length", "Tools>Validate"])
         menu(tr("Connection") + "(&C)", ["Connection>Server"])
-        menu(tr("Window") + "(&W)", ["Window>Tree", "Window>Props", "Window>Output"])
+        menu(tr("Plot") + "(&P)", ["Plot>NYI"])
+        menu(tr("Window") + "(&W)", [
+            "Window>Tree", "Window>Props", "Window>Output", "Window>Plots",
+            "Window>Cad"])
         menu(tr("Help") + "(&H)", ["Help>About"])
 
     def _build_toolbar(self):
@@ -258,14 +343,21 @@ class StarMainWindow(QMainWindow):
             tb = QToolBar(name)
             tb.setObjectName(name)
             tb.setMovable(False)
-            tb.setIconSize(QSize(20, 20))
+            tb.setIconSize(QSize(22, 22))
             tb.setToolButtonStyle(_Qt.ToolButtonIconOnly)
             self.addToolBar(tb)
             return tb
 
         self.tb_file = make_tb("File")
-        for key in ("File>Open", "File>Close", "File>Save"):
+        for key in ("File>New", "File>Open", "File>Close", "File>Save"):
             self.tb_file.addAction(self.actions[key])
+        self.tb_edit = make_tb("Edit")
+        for key in ("Edit>Copy", "Edit>Paste", "Edit>Prev", "Edit>Next"):
+            self.tb_edit.addAction(self.actions[key])
+        self.tb_mesh = make_tb("MeshGen")
+        for key in ("File>Import>CAD", "File>Import>Surface", "Mesh>Repair",
+                    "Mesh>Generate", "Mesh>GenerateVolume", "Mesh>Diagnostics"):
+            self.tb_mesh.addAction(self.actions[key])
         self.tb_solve = make_tb("Solve")
         for key in ("Solution>Run", "Solution>Pause", "Solution>Step", "Solution>Stop"):
             self.tb_solve.addAction(self.actions[key])
@@ -277,8 +369,15 @@ class StarMainWindow(QMainWindow):
         for name in ("+x", "-x", "+y", "-y", "+z", "-z", "iso"):
             self.tb_view.addAction(self.actions["Scene>View>%s" % name])
         self.tb_disp = make_tb("Display")
-        for key in ("Scene>Solid", "Scene>Wireframe", "Scene>Edges", "Scene>Transparency"):
+        for key in ("Scene>Solid", "Scene>Wireframe", "Scene>Edges",
+                    "Scene>Transparency", "Vis>MeshOn", "Vis>MeshOff",
+                    "Vis>Derived", "Vis>SaveView", "Vis>RestoreView", "Vis>Rubber"):
             self.tb_disp.addAction(self.actions[key])
+        self.tb_cad = make_tb("Cad")
+        self.tb_cad.addAction(self.actions["Window>Cad"])
+        self.tb_cad.addAction(self.actions["Vis>Derived"])
+        self.tb_cad.addAction(self.actions["Mesh>Repair"])
+        self.tb_cad.setVisible(False)
 
     def _toggle_tree(self, on=True):
         self.split_left.setVisible(bool(self.actions["Window>Tree"].isChecked()
@@ -291,7 +390,113 @@ class StarMainWindow(QMainWindow):
         self.props_pane.setVisible(self.actions["Window>Props"].isChecked())
 
     def _toggle_output(self, on=True):
-        self.bottom_tabs.setVisible(self.actions["Window>Output"].isChecked())
+        block = getattr(self, "output_block", self.bottom_tabs)
+        block.setVisible(self.actions["Window>Output"].isChecked())
+
+    def _toggle_plots(self, on=True):
+        pane = getattr(self, "plot_pane", None)
+        if pane is None:
+            return
+        vis = self.actions["Window>Plots"].isChecked()
+        self.bottom_tabs.setTabVisible(self.bottom_tabs.indexOf(pane), vis) if hasattr(
+            self.bottom_tabs, "setTabVisible") else None
+        if vis:
+            self.bottom_tabs.setCurrentWidget(pane)
+
+    def _wire_editor_ui(self):
+        vp = getattr(self, "viewport", None)
+        if vp is not None and hasattr(vp, "context_command"):
+            vp.context_command.connect(self.on_view_context)
+
+    def _sync_edit_actions(self):
+        bus = getattr(self, "document", None)
+        if bus is None:
+            return
+        self.actions["Edit>Undo"].setEnabled(self.document.bus.can_undo())
+        self.actions["Edit>Redo"].setEnabled(self.document.bus.can_redo())
+        title = "STAR-CCM+ .sim Viewer / Editor"
+        if self.sim_path:
+            title += " — %s" % self.sim_path
+            if self.document.dirty:
+                title += " *"
+        self.setWindowTitle(title)
+
+    def _on_document_event(self, kind, **kw):
+        if kind in ("property", "transform", "created", "deleted", "undeleted"):
+            self._refresh_after_edit(kind, **kw)
+        if kind == "visibility":
+            oid = kw.get("obj_id")
+            if oid is not None:
+                vis = kw.get("visible", True)
+                if hasattr(self.tree_widget, "set_check"):
+                    self.tree_widget.set_check(oid, vis)
+                self.on_part_visibility(oid, vis)
+
+    def _refresh_after_edit(self, kind, **kw):
+        if self.model is None:
+            return
+        oid = kw.get("obj_id")
+        if kind == "property" and oid is not None:
+            obj = self.document.object(oid)
+            if obj is not None and self.props_widget._current is obj:
+                self.props_widget.show_object(obj)
+            self._apply_live_property(obj, kw.get("key"), kw.get("value"))
+            if kw.get("key") in ("PresentationName", "name"):
+                self.tree_widget.rebuild()
+            if kw.get("key") in ("Mesh", "Keys", "Collector", "Representation",
+                                 "Opacity", "DisplayerColor"):
+                if kw.get("key") in ("Mesh", "Keys", "Collector", "Representation"):
+                    self._rebuild_graphics()
+        if kind == "transform":
+            self._apply_doc_transforms()
+        if kind in ("created", "deleted", "undeleted"):
+            self.tree_widget.rebuild()
+            if getattr(self, "plot_pane", None) is not None:
+                self.plot_pane.show_sim(self.sim)
+            self._rebuild_graphics()
+
+    def _rebuild_graphics(self):
+        if HEADLESS or self.sim is None or self.model is None:
+            return
+        try:
+            self._build_3d()
+        except Exception as exc:
+            self.msg("3D 刷新失败: %s" % exc, "warn")
+
+    def _apply_live_property(self, obj, key, value):
+        if obj is None or key is None:
+            return
+        if key in ("Opacity", "DisplayerColor", "Color", "MeshColor") or "Color" in str(key):
+            for vp in self._iter_viewports():
+                for _k, name, pid, actor in vp.actors:
+                    if pid == obj.id or name == (obj.name or ""):
+                        if key == "Opacity":
+                            try:
+                                actor.GetProperty().SetOpacity(float(value))
+                            except Exception:
+                                pass
+                        elif isinstance(value, (list, tuple)) and len(value) >= 3:
+                            actor.GetProperty().SetColor(float(value[0]), float(value[1]),
+                                                         float(value[2]))
+                if hasattr(vp, "render"):
+                    vp.render()
+
+    def _apply_doc_transforms(self):
+        from star_gui_vtk import apply_actor_transform
+        for vp in self._iter_viewports():
+            for _k, _n, pid, actor in vp.actors:
+                t = self.document.transforms.get(pid)
+                if t:
+                    apply_actor_transform(actor, t[:3], t[3:6])
+            if hasattr(vp, "render"):
+                vp.render()
+
+    def _kernel_nyi(self, what):
+        self.msg("%s 需要网格/CAD 内核或 STAR-CCM+ 宏，当前禁用。见 star_gui_parity.md" % what,
+                 "nyi")
+
+    def _selected_obj(self):
+        return self.tree_widget.current_object() if hasattr(self.tree_widget, "current_object") else None
 
     def _recent_paths(self):
         s = QSettings("stardecoding", "star_gui")
@@ -371,7 +576,7 @@ class StarMainWindow(QMainWindow):
         self.progress.done("已加载 %s" % os.path.basename(sim.path))
         self.set_status("对象 %d · 分区 %d · 数组 %d" % (
             len(sim.objects), len(sim.sections), len(sim.arrays)))
-        self.setWindowTitle("STAR-CCM+ .sim Viewer — %s" % sim.path)
+        self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor — %s" % sim.path)
         base = os.path.splitext(os.path.basename(sim.path))[0]
         self.bottom_tabs.setTabText(0, base)
         self.msg("starccm+ viewer  %s" % os.path.basename(sim.path))
@@ -383,10 +588,14 @@ class StarMainWindow(QMainWindow):
         """文件加载后的后续构建（M1 建树/属性，M2 建 3D）。"""
         from star_gui_model import StarSceneModel
         self.model = StarSceneModel(self.sim)
+        self.document.bind(self.sim, self.sim_path)
         self.tree_widget.set_model(self.model)
         self.props_widget.set_model(self.model)
+        if getattr(self, "plot_pane", None) is not None:
+            self.plot_pane.show_sim(self.sim)
         self.msg("仿真树已构建：%d 个顶层节点" % self.tree_widget.tree.topLevelItemCount())
         self._build_3d()
+        self._sync_edit_actions()
 
     def _build_3d(self):
         """M2/M3：按场景构建 3D 标签页（场景→显示器颜色→视图相机）。
@@ -395,17 +604,10 @@ class StarMainWindow(QMainWindow):
         """
         try:
             from star_gui_vtk import (apply_camera, build_mesh_actors,
-                                      build_scene_actors, scene_background)
+                                      build_scene_actors)
             self.progress.set_progress(10, "构建 3D 场景 ...")
             scenes = self.model.scenes() if self.model else []
-            # 清掉默认 mesh 标签页
-            while self.graphics_tabs.count() > 1:
-                w = self.graphics_tabs.widget(self.graphics_tabs.count() - 1)
-                self.graphics_tabs.removeTab(self.graphics_tabs.count() - 1)
-                try:
-                    w.close()
-                except Exception:
-                    pass
+            self._clear_extra_graphics_tabs()
             if scenes:
                 for sc in scenes:
                     from star_gui_panes import Star3DViewport
@@ -418,17 +620,30 @@ class StarMainWindow(QMainWindow):
                         vp.setAlignment(Qt.AlignCenter)
                     else:
                         vp = Star3DViewport()
-                        bg = scene_background(self.sim, scene_obj)
-                        vp.renderer.SetBackground(*bg["solid"])
+                    self.graphics_tabs.add_mesh_tab(sc["name"] or "Scene", vp)
+                    if not HEADLESS:
                         vp.set_actors(actors)
                         apply_camera(vp.renderer, cam)
                         vp.picked.connect(self.on_picked)
-                    self.graphics_tabs.add_mesh_tab(sc["name"] or "Scene", vp)
+                        if hasattr(vp, "context_command"):
+                            vp.context_command.connect(self.on_view_context)
                 self.graphics_tabs.setCurrentIndex(1)
+                vp1 = self.graphics_tabs.widget(1)
+                if vp1 is not None and hasattr(vp1, "set_actors"):
+                    self.viewport = vp1
                 self.msg("3D 场景：%d 个（含显示器/视图相机）" % len(scenes))
             else:
                 actors = build_mesh_actors(self.sim)
-                if not HEADLESS:
+                if HEADLESS:
+                    from PyQt5.QtWidgets import QLabel
+                    self.viewport = QLabel("3D（无头）")
+                    self.viewport.setAlignment(Qt.AlignCenter)
+                    self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
+                else:
+                    from star_gui_panes import Star3DViewport
+                    if self.viewport is None or not hasattr(self.viewport, "set_actors"):
+                        self.viewport = Star3DViewport()
+                        self.graphics_tabs.add_mesh_tab("3D Mesh", self.viewport)
                     self.viewport.set_actors(actors)
                     if hasattr(self.viewport, "picked"):
                         try:
@@ -437,6 +652,7 @@ class StarMainWindow(QMainWindow):
                             pass
                 self.msg("3D 网格：%d 个 Part" % len(actors))
             self.progress.done("3D 就绪")
+            self._apply_doc_transforms()
             try:
                 m = self.sim.extract_mesh()
                 nv = 0 if m.get("vertices") is None else len(m["vertices"])
@@ -447,15 +663,71 @@ class StarMainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             self.msg("3D 构建失败: %s" % exc, "warn")
 
+    def _clear_extra_graphics_tabs(self):
+        """关掉 Info 以外的 3D 页，先 Finalize OpenGL 再丢控件。"""
+        while self.graphics_tabs.count() > 1:
+            w = self.graphics_tabs.widget(self.graphics_tabs.count() - 1)
+            self.graphics_tabs.removeTab(self.graphics_tabs.count() - 1)
+            self._dispose_3d_widget(w)
+
+    def _dispose_3d_widget(self, w):
+        if w is None:
+            return
+        try:
+            w.hide()
+        except Exception:
+            pass
+        try:
+            if hasattr(w, "shutdown"):
+                w.shutdown()
+        except Exception:
+            pass
+        if getattr(self, "viewport", None) is w:
+            self.viewport = None
+        try:
+            w.setParent(None)
+            w.deleteLater()
+        except Exception:
+            pass
+
+    def _on_graphics_tab_changed(self, idx):
+        w = self.graphics_tabs.widget(idx)
+        if w is not None and hasattr(w, "_on_shown"):
+            w._show_tries = 0
+            w._on_shown()
+
+    def closeEvent(self, event):
+        if not self.confirm_discard_dirty("未保存", "文档已修改，是否保存？"):
+            event.ignore()
+            return
+        try:
+            self._clear_extra_graphics_tabs()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def on_object_selected(self, obj):
         self.props_widget.show_object(obj)
         if obj is not None:
             self.set_status("选中 %s %s (id %d, %s)" % (
                 obj.class_name or "?", obj.name or "", obj.id, obj.layer))
             self.status_helper.set_mode(obj.name or obj.class_name.split(".")[-1])
+            if getattr(self, "document", None) is not None:
+                self.document.push_selection(obj.id)
+            if obj.class_name == "star.vis.Scene":
+                self._activate_scene_tab(obj.name)
         else:
             self.status_helper.set_mode("对象")
         self._highlight_selection(obj)
+
+    def _activate_scene_tab(self, name):
+        tabs = getattr(self, "graphics_tabs", None)
+        if tabs is None or not name:
+            return
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == name:
+                tabs.setCurrentIndex(i)
+                return
 
     def on_picked(self, info, xyz):
         """3D 拾取 → 状态栏坐标 + 树同步选中。"""
@@ -500,20 +772,93 @@ class StarMainWindow(QMainWindow):
         vp.render()
         self.msg("高亮 %d 个 Part（Region→Parts 链接；边界→面片映射未做）" % len(names))
 
+    def on_tree_check(self, obj_id, checked):
+        """树勾选走 VisibilityCommand，避免绕过 Undo。"""
+        if obj_id is None or getattr(self, "document", None) is None:
+            return
+        if self.document.is_visible(obj_id) == bool(checked):
+            self.on_part_visibility(obj_id, checked)
+            return
+        from star_gui_commands import VisibilityCommand
+        self.document.execute(VisibilityCommand(obj_id, checked))
+
+    def confirm_discard_dirty(self, title, text):
+        """脏文档确认。无头测试直接丢弃以免挂起对话框。"""
+        if getattr(self, "document", None) is None or not self.document.dirty:
+            return True
+        if HEADLESS:
+            return True
+        ans = QMessageBox.question(
+            self, title, text,
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        if ans == QMessageBox.Cancel:
+            return False
+        if ans == QMessageBox.Save:
+            return bool(self.cmd_save())
+        return True
+
     def on_part_visibility(self, obj_id, checked):
-        """树勾选 Part → 显隐对应 3D actor。"""
-        if obj_id is None or HEADLESS:
+        """树勾选 → 按 Scene / Displayer / Parts / Part 显隐 3D actor。"""
+        if obj_id is None or HEADLESS or self.sim is None:
             return
         obj = self.sim.objmap.get(obj_id)
-        if obj is None or not obj.name:
+        if obj is None:
             return
-        vp = self.current_viewport()
-        if vp is None:
+        from star_gui_model import owning_mesh_part
+        cn = obj.class_name or ""
+        viewports = list(self._iter_viewports())
+        if not viewports:
             return
-        for key, name, pid, actor in vp.actors:
-            if name == obj.name:
-                actor.SetVisibility(checked)
-        vp.render()
+
+        def apply(pred):
+            for vp in viewports:
+                for key, name, pid, actor in vp.actors:
+                    if pred(key, name, pid):
+                        actor.SetVisibility(checked)
+                if hasattr(vp, "render"):
+                    vp.render()
+
+        if cn == "star.vis.Scene":
+            tabs = self.graphics_tabs
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == (obj.name or ""):
+                    w = tabs.widget(i)
+                    if hasattr(w, "actors"):
+                        for _k, _n, _p, actor in w.actors:
+                            actor.SetVisibility(checked)
+                        if hasattr(w, "render"):
+                            w.render()
+            return
+        if "Displayer" in cn:
+            suf = ":%d" % obj.id
+            apply(lambda key, name, pid: (key or "").endswith(suf))
+            return
+        if cn.endswith("PartGroup") or cn == "star.common.PartGroup":
+            for o in self.sim.objects:
+                if o.dict.get("Collector") == obj.id and "Displayer" in (o.class_name or ""):
+                    suf = ":%d" % o.id
+                    apply(lambda key, name, pid, s=suf: (key or "").endswith(s))
+            return
+        if "PlaneSection" in cn:
+            apply(lambda key, name, pid: pid == obj.id or name == (obj.name or ""))
+            return
+        if "PartSurface" in cn or cn.endswith("Boundary") or cn == "star.common.Boundary":
+            apply(lambda key, name, pid: pid == obj.id or name == (obj.name or ""))
+            return
+        part = owning_mesh_part(self.sim, obj)
+        target_id = part.id if part is not None else obj.id
+        target_name = (part.name if part is not None else obj.name) or ""
+        apply(lambda key, name, pid: pid == target_id or pid == obj.id
+              or name == target_name or name == (obj.name or ""))
+
+    def _iter_viewports(self):
+        tabs = getattr(self, "graphics_tabs", None)
+        if tabs is None:
+            return
+        for i in range(tabs.count()):
+            w = tabs.widget(i)
+            if hasattr(w, "actors") and hasattr(w, "set_actors"):
+                yield w
 
     def _on_failed(self, path, err):
         self._finish_thread()
@@ -527,7 +872,468 @@ class StarMainWindow(QMainWindow):
         self.sim_path = None
         self.summary_pane.show_summary("")
         self.set_status("已关闭")
-        self.setWindowTitle("STAR-CCM+ .sim Viewer")
+        self.document.bind(None, None)
+        self.model = None
+        self.tree_widget.set_model(None)
+        self.props_widget.set_model(None)
+        self.props_widget.show_object(None)
+        try:
+            self._clear_extra_graphics_tabs()
+        except Exception:
+            pass
+        self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor")
+        if getattr(self, "plot_pane", None) is not None:
+            self.plot_pane.show_sim(None)
+
+    def cmd_new(self):
+        if not self.confirm_discard_dirty("新建", "文档已修改，是否保存？"):
+            return
+        self.document.mark_clean()
+        self.close_sim()
+        self.msg("新建空会话（尚未写入 .sim）")
+
+    def cmd_reload(self):
+        if not self.sim_path:
+            return self.msg("没有可重新加载的路径", "warn")
+        if not self.confirm_discard_dirty("重新加载", "文档已修改，重新加载将丢失未保存改动，是否保存？"):
+            return
+        path = self.sim_path
+        self.document.mark_clean()
+        self.load_file(path)
+
+    def cmd_save(self):
+        if not self.sim_path:
+            return self.cmd_save_as()
+        return self._write_sim(self.sim_path)
+
+    def cmd_save_as(self):
+        path, _ = QFileDialog.getSaveFileName(self, "另存为", self.sim_path or "untitled.sim",
+                                              "STAR-CCM+ (*.sim)")
+        if not path:
+            return False
+        return self._write_sim(path)
+
+    def _write_sim(self, path):
+        if self.sim is None:
+            self.msg("请先打开文件", "warn")
+            return False
+        try:
+            from sim_writer import save_sim
+            save_sim(self.sim, path, patches=self.document.patches,
+                     created=self.document.created, src_path=self.sim_path)
+            self.sim_path = path
+            self.document.mark_clean()
+            self.document.path = path
+            self.msg("已保存 %s" % path)
+            self._sync_edit_actions()
+            return True
+        except Exception as exc:
+            self.msg("保存失败: %s" % exc, "error")
+            QMessageBox.warning(self, "保存失败", str(exc))
+            return False
+
+    def cmd_undo(self):
+        if self.document.undo():
+            self.msg("撤销 %s" % self.document.bus.peek_redo())
+            self._sync_edit_actions()
+
+    def cmd_redo(self):
+        if self.document.redo():
+            self.msg("重做 %s" % self.document.bus.peek_undo())
+            self._sync_edit_actions()
+
+    def cmd_copy(self):
+        obj = self._selected_obj()
+        if obj is None:
+            return
+        self.document.clipboard = obj.id
+        self.msg("已复制 %s" % (obj.name or obj.id))
+
+    def cmd_paste(self):
+        oid = self.document.clipboard
+        if oid is None:
+            return self.msg("剪贴板为空", "warn")
+        from star_gui_commands import CopyObjectCommand
+        self.document.execute(CopyObjectCommand(oid))
+        self.msg("已粘贴副本")
+
+    def cmd_delete(self):
+        obj = self._selected_obj()
+        if obj is None:
+            return
+        from star_gui_commands import DeleteObjectCommand
+        self.document.execute(DeleteObjectCommand(obj.id))
+        self.msg("已删除 %s（会话）" % (obj.name or obj.id))
+
+    def cmd_rename(self):
+        obj = self._selected_obj()
+        if obj is None:
+            return
+        key = "PresentationName" if "PresentationName" in obj.dict else "name"
+        old = obj.dict.get(key) or ""
+        text, ok = QInputDialog.getText(self, "重命名", "名称:", text=str(old))
+        if not ok or not text:
+            return
+        from star_gui_commands import RenameCommand
+        self.document.execute(RenameCommand(obj.id, text, old, key))
+        self.tree_widget.rebuild()
+        self.tree_widget.select_object(obj.id)
+
+    def cmd_search(self):
+        if self.sim is None:
+            return
+        text, ok = QInputDialog.getText(self, "按名称搜索", "名称包含:")
+        if not ok or not text:
+            return
+        needle = text.lower()
+        for o in self.sim.objects:
+            if o.name and needle in o.name.lower():
+                self.tree_widget.select_object(o.id)
+                self.on_object_selected(o)
+                return
+        self.msg("未找到 %s" % text, "warn")
+
+    def cmd_sel_prev(self):
+        oid = self.document.select_prev()
+        if oid:
+            self.tree_widget.select_object(oid)
+
+    def cmd_sel_next(self):
+        oid = self.document.select_next()
+        if oid:
+            self.tree_widget.select_object(oid)
+
+    def cmd_generate_mesh(self):
+        self._try_star_macro("生成表面网格")
+
+    def _find_starccm(self):
+        env = os.environ.get("STARCCM_HOME") or ""
+        names = ("starccmw.exe", "starccm+.exe", "starccm.exe")
+        candidates = []
+        if env:
+            for n in names:
+                candidates.append(os.path.join(env, "star", "bin", n))
+                candidates.append(os.path.join(env, n))
+        for root in (r"D:\training\starccm", r"C:\Program Files\Siemens"):
+            if not os.path.isdir(root):
+                continue
+            for n in names:
+                candidates.append(os.path.join(root, n))
+        for p in candidates:
+            if p and os.path.isfile(p):
+                return p
+        return None
+
+    def _try_star_macro(self, what):
+        exe = self._find_starccm()
+        if exe is None:
+            return self._kernel_nyi(what)
+        self.msg("%s：已找到 STAR-CCM+（%s），未自动启动宏（避免改写原文件）" % (what, exe),
+                 "nyi")
+
+    def cmd_scale_mesh(self):
+        obj = self._selected_obj()
+        if obj is None:
+            return
+        from star_gui_model import owning_mesh_part
+        part = owning_mesh_part(self.sim, obj) if self.sim else obj
+        if part is None:
+            return self.msg("请选择一个部件", "warn")
+        factor, ok = QInputDialog.getDouble(self, "缩放网格", "比例:", 1.0, 0.001, 1000.0, 4)
+        if not ok:
+            return
+        from star_gui_commands import TransformPartCommand
+        self.document.execute(TransformPartCommand(part.id, scale=(factor, factor, factor)))
+        self.msg("已缩放 %s × %g" % (part.name or part.id, factor))
+
+    def cmd_mesh_diag(self):
+        if self.sim is None:
+            return
+        try:
+            m = self.sim.extract_mesh()
+            ok = bool(m.get("consistent"))
+            self.msg("网格诊断: faces=%s verts=%s consistent=%s flag=%s/%s" % (
+                None if m.get("faces") is None else len(m["faces"]),
+                None if m.get("vertices") is None else len(m["vertices"]),
+                ok, m.get("face_flag"), m.get("vertex_flag")))
+        except Exception as exc:
+            self.msg("网格诊断失败: %s" % exc, "error")
+
+    def cmd_import_surface(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入表面", "", "STL (*.stl);;All (*)")
+        if not path:
+            return
+        self.import_surface_from_path(path)
+
+    def import_surface_from_path(self, path):
+        """导入 STL/表面 → 会话 MeshPart（无数组回写则只占位）。"""
+        name = os.path.splitext(os.path.basename(path))[0]
+        self.msg("已记录导入 %s（会话部件，保存时需数组回写）" % path)
+        if self.sim is None:
+            return None
+        src = None
+        for o in self.sim.objects:
+            if (o.class_name or "").endswith("MeshPart"):
+                src = o
+                break
+        if src is None:
+            oid = self.document.create_session_object(
+                "star.meshing.MeshPart", name)
+            return oid
+        from star_gui_commands import CopyObjectCommand
+        cmd = CopyObjectCommand(src.id)
+        self.document.execute(cmd)
+        if cmd.new_id:
+            self.document.set_property(cmd.new_id, "PresentationName", name)
+        return cmd.new_id
+
+    def cmd_import_cad(self):
+        self.cmd_import_surface()
+        self.msg("无 Parasolid 时 CAD 导入按表面三角化处理", "warn")
+
+    def cmd_options(self):
+        QMessageBox.information(self, "选项",
+                                "语言: 中文\n对标表: star_gui_parity.md\n求解运算: 禁用")
+
+    def cmd_show_plots(self):
+        self.actions["Window>Plots"].setChecked(True)
+        self._toggle_plots()
+
+    def cmd_toggle_cad(self, on=False):
+        show = self.actions["Window>Cad"].isChecked()
+        if hasattr(self, "tb_cad"):
+            self.tb_cad.setVisible(show)
+        self.msg("3D-CAD 模式 %s（外壳；草图/拉伸需几何内核）" % ("开" if show else "关"))
+
+    def cmd_vis_mesh(self, on):
+        vp = self.current_viewport()
+        if vp is None:
+            return
+        vp.set_representation("edges" if on else "solid")
+
+    def cmd_create_derived(self):
+        if self.sim is None:
+            return self.msg("请先打开文件", "warn")
+        parent = None
+        for o in self.sim.objects:
+            if (o.class_name or "").endswith("DerivedPartManager"):
+                parent = o.id
+                break
+        oid = self.document.create_session_object(
+            "star.vis.PlaneSection", "Plane Section", parent=parent)
+        self.msg("已创建派生零件 Plane Section（会话）")
+        if hasattr(self.tree_widget, "select_object"):
+            self.tree_widget.select_object(oid)
+        return oid
+
+    def cmd_new_scene(self):
+        if self.sim is None:
+            return
+        src = None
+        for o in self.sim.objects:
+            if o.class_name == "star.vis.Scene":
+                src = o
+                break
+        if src is None:
+            return self.document.create_session_object("star.vis.Scene", "Scene")
+        from star_gui_commands import CopyObjectCommand
+        cmd = CopyObjectCommand(src.id)
+        self.document.execute(cmd)
+        self.msg("已新建场景（会话）")
+        return cmd.new_id
+
+    def cmd_add_displayer(self):
+        if self.sim is None:
+            return
+        src = None
+        obj = self._selected_obj()
+        if obj is not None and "Displayer" in (obj.class_name or ""):
+            src = obj
+        if src is None:
+            for o in self.sim.objects:
+                if "Displayer" in (o.class_name or "") and "Manager" not in (o.class_name or ""):
+                    src = o
+                    break
+        if src is None:
+            return self.msg("没有可复制的显示器", "warn")
+        from star_gui_commands import CopyObjectCommand
+        cmd = CopyObjectCommand(src.id)
+        self.document.execute(cmd)
+        self.msg("已添加显示器（会话）")
+        return cmd.new_id
+
+    def cmd_representation(self):
+        obj = self._selected_obj()
+        if obj is None or "Displayer" not in (obj.class_name or ""):
+            return self.msg("请选择显示器", "warn")
+        cur = bool(obj.dict.get("Mesh"))
+        from star_gui_commands import SetPropertyCommand
+        self.document.execute(SetPropertyCommand(obj.id, "Mesh", (not cur), cur))
+        self.msg("Representation Mesh=%s" % (not cur))
+
+    def cmd_save_view(self):
+        vp = self.current_viewport()
+        if vp is None or not hasattr(vp, "renderer"):
+            return
+        cam = vp.renderer.GetActiveCamera()
+        self.document.saved_views["default"] = {
+            "position": cam.GetPosition(),
+            "focal": cam.GetFocalPoint(),
+            "view_up": cam.GetViewUp(),
+            "parallel_scale": cam.GetParallelScale(),
+        }
+        self.msg("已保存视图")
+
+    def cmd_restore_view(self):
+        cam = self.document.saved_views.get("default")
+        vp = self.current_viewport()
+        if cam is None or vp is None or not hasattr(vp, "renderer"):
+            return self.msg("没有已保存的视图", "warn")
+        from star_gui_vtk import apply_camera
+        apply_camera(vp.renderer, cam)
+        if hasattr(vp, "render"):
+            vp.render()
+        self.msg("已恢复视图")
+
+    def cmd_cad_repair(self):
+        if self.actions.get("Window>Cad") and not self.actions["Window>Cad"].isChecked():
+            self.actions["Window>Cad"].setChecked(True)
+            self.cmd_toggle_cad()
+        self.msg("三角化修复预览：填洞/缝边需 CAD 内核，当前仅记录请求", "nyi")
+
+    def cmd_transform(self):
+        obj = self._selected_obj()
+        if obj is None or self.sim is None:
+            return
+        from star_gui_model import owning_mesh_part
+        part = owning_mesh_part(self.sim, obj) or obj
+        text, ok = QInputDialog.getText(
+            self, "变换", "平移 dx,dy,dz  缩放 sx,sy,sz:", text="0,0,0  1,1,1")
+        if not ok or not text:
+            return
+        parts = text.replace(";", " ").split()
+        def triple(s, default):
+            xs = [p.strip() for p in s.replace(",", " ").split() if p.strip()]
+            if len(xs) != 3:
+                return default
+            try:
+                return tuple(float(x) for x in xs)
+            except ValueError:
+                return default
+        translate = triple(parts[0] if parts else "0,0,0", (0.0, 0.0, 0.0))
+        scale = triple(parts[1] if len(parts) > 1 else "1,1,1", (1.0, 1.0, 1.0))
+        from star_gui_commands import TransformPartCommand
+        self.document.execute(TransformPartCommand(part.id, translate=translate, scale=scale))
+        self.msg("已变换 %s" % (part.name or part.id))
+
+    def cmd_rubber_zoom(self):
+        self.msg("框选缩放：在 3D 视口按住中键拖动画框（VTK 橡胶带后续接入）")
+
+    def on_property_edited(self, obj, key, value):
+        if obj is None:
+            return
+        from star_gui_commands import SetPropertyCommand
+        self.document.execute(SetPropertyCommand(obj.id, key, value, obj.dict.get(key)))
+
+    def on_tree_context(self, key, obj):
+        dispatch = {
+            "edit": lambda: self.on_object_selected(obj),
+            "rename": self.cmd_rename,
+            "copy": self.cmd_copy,
+            "paste": self.cmd_paste,
+            "delete": self.cmd_delete,
+            "hide": lambda: self._ctx_vis(obj, False),
+            "show": lambda: self._ctx_vis(obj, True),
+            "show_only": lambda: self._ctx_show_only(obj),
+            "highlight": lambda: self._highlight_selection(obj),
+            "transform": self.cmd_transform,
+            "assign_region": lambda: self.cmd_assign_region(obj),
+            "execute_mesh": lambda: self._try_star_macro("执行网格操作"),
+            "new_automesh": lambda: self._kernel_nyi("新建自动网格"),
+            "cad_mode": lambda: (self.actions["Window>Cad"].setChecked(True),
+                                 self.cmd_toggle_cad()),
+            "add_displayer": self.cmd_add_displayer,
+            "representation": self.cmd_representation,
+        }
+        fn = dispatch.get(key)
+        if fn:
+            fn()
+
+    def _ctx_vis(self, obj, visible):
+        if obj is None:
+            return
+        from star_gui_commands import VisibilityCommand
+        self.document.execute(VisibilityCommand(obj.id, visible))
+
+    def _ctx_show_only(self, obj):
+        if obj is None:
+            return
+        ids = []
+        for vp in self._iter_viewports():
+            for _k, _n, pid, _a in vp.actors:
+                if pid is not None:
+                    ids.append(pid)
+        if not ids:
+            ids = [obj.id]
+        from star_gui_commands import ShowOnlyCommand
+        self.document.execute(ShowOnlyCommand(obj.id, ids))
+
+    def cmd_assign_region(self, obj=None):
+        obj = obj or self._selected_obj()
+        if obj is None or self.sim is None:
+            return
+        regions = [o for o in self.sim.objects if o.class_name == "star.common.Region"]
+        if not regions:
+            return self.msg("没有区域", "warn")
+        names = [r.name or str(r.id) for r in regions]
+        name, ok = QInputDialog.getItem(self, "指定到区域", "区域:", names, 0, False)
+        if not ok:
+            return
+        region = regions[names.index(name)]
+        pg = self.sim.objmap.get(region.dict.get("Parts") or -1)
+        if pg is None:
+            return
+        keys = list(pg.dict.get("Keys") or [])
+        if obj.id not in keys:
+            keys.append(obj.id)
+            from star_gui_commands import SetPropertyCommand
+            self.document.execute(SetPropertyCommand(pg.id, "Keys", keys, list(pg.dict.get("Keys") or [])))
+        self.msg("已将 %s 指定到 %s" % (obj.name or obj.id, name))
+
+    def on_view_context(self, key):
+        if key == "fit":
+            return self.cmd_fit()
+        if key == "reset":
+            return self.cmd_reset()
+        if key.startswith("view:"):
+            return self.cmd_view(key.split(":", 1)[1])
+        if key == "solid":
+            return self.cmd_solid()
+        if key == "wire":
+            return self.cmd_toggle_wire()
+        if key == "edges":
+            return self.cmd_edges_only()
+        if key == "transp":
+            return self.cmd_transparency()
+        if key == "mesh_on":
+            return self.cmd_vis_mesh(True)
+        if key == "mesh_off":
+            return self.cmd_vis_mesh(False)
+        if key == "copy_image":
+            vp = self.current_viewport()
+            if vp is not None and hasattr(vp, "copy_image_to_clipboard"):
+                vp.copy_image_to_clipboard()
+                self.msg("图像已复制")
+            return
+        if key == "align_normal":
+            vp = self.current_viewport()
+            if vp is not None:
+                vp.set_view("+z")
+            return
+        if key == "derived":
+            return self.cmd_create_derived()
+        if key == "distance":
+            self.msg("测距：在两点间拾取（后续接入）")
 
     def cmd_fingerprint(self):
         if not self.sim:
@@ -646,8 +1452,10 @@ class StarMainWindow(QMainWindow):
 
     def cmd_about(self):
         QMessageBox.about(self, "About",
-                          "STAR-CCM+ .sim Viewer\nPyQt5 + VTK\n"
-                          "数据层: sim_parser.py（21 文件语料验证）")
+                          "STAR-CCM+ .sim Viewer / Editor\nPyQt5 + VTK\n"
+                          "查看 + 编辑几何/网格操作/场景/属性；求解运算禁用。\n"
+                          "数据层: sim_parser.py · 回写: sim_writer.py\n"
+                          "对标: star_gui_parity.md")
 
 
 def cli_main(argv=None):
@@ -682,7 +1490,11 @@ def cli_main(argv=None):
 
 
 def _apply_theme(app):
-    """应用 QSS 深色主题（文件存在时加载，否则内嵌回退）。"""
+    """应用 STAR-CCM+ 浅色块状主题（Fusion 以便菜单栏吃到青绿 QSS）。"""
+    try:
+        app.setStyle("Fusion")
+    except Exception:
+        pass
     qss = os.path.join(os.path.dirname(os.path.abspath(__file__)), "star_gui_theme.qss")
     if os.path.exists(qss):
         with open(qss, encoding="utf-8") as f:
@@ -703,6 +1515,7 @@ def main(argv=None):
                         (["--export-dir", args.export_dir] if args.export_dir else []) +
                         (["--stl", args.stl] if args.stl else []))
 
+    _install_qt_message_filter()
     app = QApplication(sys.argv)
     _apply_theme(app)
     win = StarMainWindow()
@@ -710,6 +1523,22 @@ def main(argv=None):
     if args.file:
         win.load_file(args.file)
     return app.exec_()
+
+
+def _install_qt_message_filter():
+    """过滤 Windows 上无害的 EUDC 字体警告。"""
+    try:
+        from PyQt5.QtCore import qInstallMessageHandler, qt_message_handler
+    except Exception:
+        return
+
+    def handler(mode, context, message):
+        msg = str(message)
+        if "EUDC" in msg and "font" in msg.lower():
+            return
+        qt_message_handler(mode, context, message)
+
+    qInstallMessageHandler(handler)
 
 
 if __name__ == "__main__":
