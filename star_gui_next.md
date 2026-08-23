@@ -138,7 +138,7 @@ flowchart TB
 
 验收：导入立方体 STL → Save As → 重开体积/面数一致。
 
-### F4 场景与 Vis 做完（会话+能写的字段）
+### F4 场景与 Vis 做完（会话+能写的字段） ✅
 
 - Parts 过滤器编辑器（勾选 Part/PartSurface → Keys）。
 - Representation：Geometry vs Remesh 用已有 `representation_source_id`，改完重建该场景页。

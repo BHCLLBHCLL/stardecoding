@@ -83,6 +83,9 @@ _T = {
     ("zh", "Surface Repair"): "手工修复",
     ("zh", "New Scene"): "新建场景",
     ("zh", "Add Displayer"): "添加显示器",
+    ("zh", "Measure Distance"): "测距",
+    ("zh", "Edit Parts Filter"): "编辑 Parts 过滤器",
+    ("zh", "Scalar Coloring"): "标量着色",
 }
 
 

@@ -36,7 +36,7 @@
 | 网格生成：导入/修复/生成 | session / needs_kernel |
 | 求解 | disabled |
 | Vis：适配/视图/透明/网格开闭/派生零件 | view + session |
-| 选择：框选 | view |
+| 选择：框选缩放 / 测距 / Parts 过滤器 | session→persist（Keys） |
 | 3D-CAD | session 外壳 |
 
 ## 树 / 3D 右键

@@ -254,6 +254,9 @@ class StarMainWindow(QMainWindow):
         self._add("Vis>MeshOff", tr("Mesh Off"), lambda: self.cmd_vis_mesh(False), "solid")
         self._add("Vis>Derived", tr("Create Derived Part"), self.cmd_create_derived, "part")
         self._add("Vis>Rubber", tr("Rubber Zoom"), self.cmd_rubber_zoom, "fit")
+        self._add("Vis>Distance", tr("Measure Distance"), self.cmd_distance, "ruler")
+        self._add("Vis>PartsFilter", tr("Edit Parts Filter"), self.cmd_edit_parts_filter, "part")
+        self._add("Vis>Scalar", tr("Scalar Coloring"), self.cmd_scalar_color, "field")
         self._add("Window>Plots", tr("Plots Window"), self._toggle_plots, "plot")
         self._add("Window>Cad", tr("3D-CAD Mode"), self.cmd_toggle_cad, "layer_geometry")
         self.actions["Window>Cad"].setCheckable(True)
@@ -371,7 +374,8 @@ class StarMainWindow(QMainWindow):
         self.tb_disp = make_tb("Display")
         for key in ("Scene>Solid", "Scene>Wireframe", "Scene>Edges",
                     "Scene>Transparency", "Vis>MeshOn", "Vis>MeshOff",
-                    "Vis>Derived", "Vis>SaveView", "Vis>RestoreView", "Vis>Rubber"):
+                    "Vis>Derived", "Vis>SaveView", "Vis>RestoreView", "Vis>Rubber",
+                    "Vis>Distance", "Vis>PartsFilter"):
             self.tb_disp.addAction(self.actions[key])
         self.tb_cad = make_tb("Cad")
         self.tb_cad.addAction(self.actions["Window>Cad"])
@@ -730,8 +734,20 @@ class StarMainWindow(QMainWindow):
                 return
 
     def on_picked(self, info, xyz):
-        """3D 拾取 → 状态栏坐标 + 树同步选中。"""
+        """3D 拾取 → 状态栏坐标 + 树同步选中。测距模式累计两点。"""
         self.status_helper.set_coord(xyz)
+        if getattr(self, "_measure_pts", None) is not None:
+            self._measure_pts.append(tuple(xyz))
+            if len(self._measure_pts) >= 2:
+                a, b = self._measure_pts[0], self._measure_pts[1]
+                dist = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
+                self.msg("测距: %.6g （(%.4g,%.4g,%.4g) → (%.4g,%.4g,%.4g)）" % (
+                    dist, a[0], a[1], a[2], b[0], b[1], b[2]))
+                self._measure_pts = None
+                self.set_status("测距 %.6g" % dist)
+                return
+            self.set_status("测距：再拾取第二点")
+            return
         pid = info[2] if info and len(info) > 2 else None
         name = info[1] if info and len(info) > 1 else ""
         if pid:
@@ -1279,7 +1295,72 @@ class StarMainWindow(QMainWindow):
         self.msg("已变换 %s" % (part.name or part.id))
 
     def cmd_rubber_zoom(self):
-        self.msg("框选缩放：在 3D 视口按住中键拖动画框（VTK 橡胶带后续接入）")
+        vp = self.current_viewport()
+        if vp is not None and hasattr(vp, "enable_rubber_zoom"):
+            vp.enable_rubber_zoom(True)
+            self.msg("框选缩放：在 3D 视口拖出矩形后松开（再点适配视图恢复）")
+        else:
+            self.msg("框选缩放需要 3D 视口")
+
+    def cmd_distance(self):
+        self._measure_pts = []
+        self.msg("测距：连续拾取两个 3D 点")
+
+    def apply_parts_filter(self, group_id, keys):
+        obj = self.document.object(group_id) if self.document else None
+        if obj is None:
+            return False
+        from star_gui_commands import SetPropertyCommand
+        self.document.execute(SetPropertyCommand(
+            group_id, "Keys", list(keys), list(obj.dict.get("Keys") or [])))
+        return True
+
+    def cmd_edit_parts_filter(self):
+        if self.sim is None:
+            return
+        obj = self._selected_obj()
+        pg = None
+        if obj is not None and (obj.class_name or "").endswith("PartGroup"):
+            pg = obj
+        elif obj is not None and "Displayer" in (obj.class_name or ""):
+            pg = self.sim.objmap.get(obj.dict.get("Collector") or -1)
+        if pg is None:
+            return self.msg("请选择显示器或 Parts 组", "warn")
+        parts = [o for o in self.sim.objects
+                 if (o.class_name or "").endswith("MeshPart")
+                 or (o.class_name or "").endswith("CadPart")
+                 or "PartSurface" in (o.class_name or "")]
+        names = [("%s (%d)" % (p.name or "?", p.id)) for p in parts]
+        if not names:
+            return self.msg("没有可选零件", "warn")
+        if HEADLESS:
+            return
+        name, ok = QInputDialog.getItem(self, "Parts 过滤器", "切换零件（再开一次继续）:",
+                                        names, 0, False)
+        if not ok:
+            return
+        part = parts[names.index(name)]
+        keys = list(pg.dict.get("Keys") or [])
+        if part.id in keys:
+            keys = [k for k in keys if k != part.id]
+        else:
+            keys.append(part.id)
+        self.apply_parts_filter(pg.id, keys)
+        self.msg("Parts 过滤器 Keys=%s" % keys)
+
+    def cmd_scalar_color(self):
+        if self.sim is None:
+            return
+        found = False
+        for a in self.sim.arrays:
+            if a.get("type") in ("Float8", "Float4") and a.get("count") not in (None, 0):
+                if a["count"] % 3 != 0:
+                    found = True
+                    break
+        if not found:
+            self.msg("无解场数组，标量着色禁用", "nyi")
+            return
+        self.msg("已识别候选标量数组，着色尚未绑定到显示器（无 .simh 解场）", "nyi")
 
     def on_property_edited(self, obj, key, value):
         if obj is None:
@@ -1306,6 +1387,7 @@ class StarMainWindow(QMainWindow):
                                  self.cmd_toggle_cad()),
             "add_displayer": self.cmd_add_displayer,
             "representation": self.cmd_representation,
+            "parts_filter": self.cmd_edit_parts_filter,
         }
         fn = dispatch.get(key)
         if fn:
@@ -1385,7 +1467,9 @@ class StarMainWindow(QMainWindow):
         if key == "derived":
             return self.cmd_create_derived()
         if key == "distance":
-            self.msg("测距：在两点间拾取（后续接入）")
+            return self.cmd_distance()
+        if key == "rubber":
+            return self.cmd_rubber_zoom()
 
     def cmd_fingerprint(self):
         if not self.sim:

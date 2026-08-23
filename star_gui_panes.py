@@ -409,12 +409,27 @@ class Star3DViewport(QWidget):
         add("align_normal", "对齐到零件法向")
         add("derived", "创建派生零件")
         add("distance", "测距")
+        add("rubber", "框选缩放")
         add("copy_image", "复制图像")
         try:
             w = self.vtk_widget if self.vtk_widget is not None else self
             menu.exec_(w.mapToGlobal(pos))
         except Exception:
             menu.exec_(self.mapToGlobal(pos))
+
+    def enable_rubber_zoom(self, on=True):
+        """临时换成 VTK 橡胶带缩放；适配视图后可回到 STAR 键位。"""
+        if not on or self.vtk_widget is None:
+            return False
+        try:
+            from vtkmodules.vtkInteractionStyle import vtkInteractorStyleRubberBandZoom
+            iren = self.vtk_widget.GetRenderWindow().GetInteractor()
+            style = vtkInteractorStyleRubberBandZoom()
+            iren.SetInteractorStyle(style)
+            self._style = style
+            return True
+        except Exception:
+            return False
 
     def copy_image_to_clipboard(self):
         try:
@@ -767,6 +782,7 @@ class SimulationTree(QWidget):
             menu.addSeparator()
             add("add_displayer", "添加到显示器")
             add("representation", "Representation")
+            add("parts_filter", "编辑 Parts 过滤器")
         if "MeshOperation" in cn or (item is not None and item.text(0) == "Operations"):
             menu.addSeparator()
             add("execute_mesh", "执行网格操作")

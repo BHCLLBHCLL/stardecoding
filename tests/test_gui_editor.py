@@ -365,6 +365,30 @@ def test_writer_inserts_copied_object():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_parts_filter_and_measure(app):
+    from star_gui import StarMainWindow
+
+    win = StarMainWindow()
+    win.show()
+    win.load_file(SIM)
+    _wait_loaded(win, app)
+    disp = next(o for o in win.sim.objects if o.name == "Mesh 1"
+                and "Displayer" in (o.class_name or ""))
+    pg = win.sim.objmap[disp.dict["Collector"]]
+    keys = list(pg.dict.get("Keys") or [])
+    assert keys
+    assert win.apply_parts_filter(pg.id, keys[:-1])
+    assert pg.dict.get("Keys") == keys[:-1]
+    win._measure_pts = []
+    win.on_picked(("k", "a", 1), (0.0, 0.0, 0.0))
+    win.on_picked(("k", "b", 1), (3.0, 4.0, 0.0))
+    assert "测距" in win.messages.view.toPlainText()
+    win.cmd_scalar_color()
+    assert "标量着色" in win.messages.view.toPlainText() or "解场" in win.messages.view.toPlainText()
+    win.document.mark_clean()
+    win.close()
+
+
 def test_visibility_and_show_only_undo():
     from sim_parser import SimFile
     from star_gui_commands import ShowOnlyCommand, VisibilityCommand
