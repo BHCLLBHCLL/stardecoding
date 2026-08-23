@@ -119,6 +119,17 @@ def cube_mesh(size=1.0):
     return v, f
 
 
+def export_part_stl(sim, part_id, path):
+    """按 Part 导出 STL；找不到分块网格则失败。"""
+    from star_gui_vtk import part_meshes
+    for p in part_meshes(sim):
+        if p.get("id") == part_id:
+            verts = [list(map(float, row)) for row in p["vertices"]]
+            faces = [list(map(int, row)) for row in p["faces"]]
+            return write_ascii_stl(path, verts, faces, p.get("name") or "part")
+    raise RuntimeError("没有 id=%s 的分块网格" % part_id)
+
+
 def transform_vertices(vertices, translate=(0, 0, 0), scale=(1, 1, 1)):
     tx, ty, tz = translate
     sx, sy, sz = scale

@@ -146,7 +146,7 @@ flowchart TB
 - 硬拷贝已有；保存/恢复视图走 F1 的 CurrentView。
 - 无解场则标量着色保持禁用。
 
-### F5 查看器加深（解析向）
+### F5 查看器加深（解析向） ✅
 
 - 边界 ↔ FaceTypes 精确高亮/拾取（直升机 Geometry 已有子集经验，推到 Boundary）。
 - 按 Part / 按场景导出 STL，替代全局 `extract_mesh` 一份文件。

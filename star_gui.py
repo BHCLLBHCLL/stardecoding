@@ -756,14 +756,27 @@ class StarMainWindow(QMainWindow):
                 name, pid, xyz[0], xyz[1], xyz[2]))
 
     def _highlight_selection(self, obj):
-        """选中 Region/Boundary → 高亮其所属 Part 的网格（边界→面片映射未做，
-        按 Region→Parts 链接高亮；其余 Part 降透明度）。"""
+        """选中 Region/Boundary → 高亮对应 actor。Boundary 优先按名称/id
+        （场景里已按 FaceTypes 切面子块），否则退回 Region→Parts。"""
         if obj is None or HEADLESS:
             return
         if obj.class_name not in ("star.common.Region", "star.common.Boundary"):
             return
-        # Region → Parts 名称集合
         names = set()
+        if obj.class_name == "star.common.Boundary":
+            vp = self.current_viewport()
+            if vp is not None:
+                hit = 0
+                for key, name, pid, actor in vp.actors:
+                    show = pid == obj.id or name == (obj.name or "")
+                    actor.SetVisibility(show)
+                    if show:
+                        hit += 1
+                if hit:
+                    vp.render()
+                    self.msg("高亮边界 %s（%d 个 actor，FaceTypes 面子块）" % (
+                        obj.name or obj.id, hit))
+                    return
         if obj.class_name == "star.common.Region":
             rep = {"regions": [{"parts": []}]}
             parts = self.sim.objmap.get(obj.dict.get("Parts")) if obj.dict.get("Parts") else None
@@ -786,7 +799,7 @@ class StarMainWindow(QMainWindow):
         for key, name, pid, actor in vp.actors:
             actor.SetVisibility(name in names)
         vp.render()
-        self.msg("高亮 %d 个 Part（Region→Parts 链接；边界→面片映射未做）" % len(names))
+        self.msg("高亮 %d 个 Part（Region→Parts；边界优先 FaceTypes）" % len(names))
 
     def on_tree_check(self, obj_id, checked):
         """树勾选走 VisibilityCommand，避免绕过 Undo。"""
@@ -1072,10 +1085,13 @@ class StarMainWindow(QMainWindow):
         try:
             m = self.sim.extract_mesh()
             ok = bool(m.get("consistent"))
-            self.msg("网格诊断: faces=%s verts=%s consistent=%s flag=%s/%s" % (
+            vol = self.sim.extract_volume_mesh()
+            self.msg("网格诊断: faces=%s verts=%s consistent=%s flag=%s/%s  volume=%s" % (
                 None if m.get("faces") is None else len(m["faces"]),
                 None if m.get("vertices") is None else len(m["vertices"]),
-                ok, m.get("face_flag"), m.get("vertex_flag")))
+                ok, m.get("face_flag"), m.get("vertex_flag"),
+                ("%s %s" % (vol.get("kind"), vol.get("count"))) if vol.get("ok")
+                else vol.get("reason")))
         except Exception as exc:
             self.msg("网格诊断失败: %s" % exc, "error")
 
@@ -1504,6 +1520,16 @@ class StarMainWindow(QMainWindow):
         if sim is None:
             return
         try:
+            obj = self._selected_obj()
+            if obj is not None:
+                from star_gui_model import owning_mesh_part
+                part = owning_mesh_part(sim, obj)
+                if part is not None:
+                    from mesh_io import export_part_stl
+                    export_part_stl(sim, part.id, path)
+                    self.msg("已按 Part 导出 STL: %s (%s)" % (path, part.name or part.id))
+                    self.progress.done("STL 导出完成")
+                    return
             sim.export_stl(path)
             self.msg("STL 已导出: %s" % path)
             self.progress.done("STL 导出完成")

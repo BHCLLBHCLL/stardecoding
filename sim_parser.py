@@ -1269,6 +1269,42 @@ class SimFile:
             fh.write("endsolid sim\n")
         return out_path
 
+    def extract_volume_mesh(self):
+        """尝试抽取体单元表（tet/hex）。对不上则返回原因，不假装成功。"""
+        if _np is None:
+            return {"ok": False, "reason": "需要 numpy"}
+        face_counts = set()
+        meta = self.mesh_metadata()
+        for t in meta.get("TriangleCount") or []:
+            if isinstance(t, int) and t > 0:
+                face_counts.add(t * 3)
+        best = None
+        kind = None
+        for i, a in enumerate(self.arrays):
+            if a["type"] not in ("Unsigned4", "Integer4"):
+                continue
+            n = a["count"]
+            if not n or n in face_counts:
+                continue
+            if n % 8 == 0 and n // 8 >= 8:
+                cand = ("hex", i, n // 8)
+            elif n % 4 == 0 and n // 4 >= 8:
+                cand = ("tet", i, n // 4)
+            else:
+                continue
+            if best is None or cand[2] > best[2]:
+                best = cand
+                kind = cand[0]
+        if best is None:
+            return {"ok": False, "reason": "没有与面表区分开的 tet/hex 索引数组",
+                    "cells": None, "kind": None}
+        _kind, idx, ncell = best
+        data = self.array_data(idx)
+        w = 8 if kind == "hex" else 4
+        cells = data.reshape(-1, w)
+        return {"ok": True, "kind": kind, "cells": cells, "count": int(ncell),
+                "array_index": idx, "reason": ""}
+
     # ---- 汇总 ----
     def summary(self):
         L = []

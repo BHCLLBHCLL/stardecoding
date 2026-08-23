@@ -389,6 +389,26 @@ def test_parts_filter_and_measure(app):
     win.close()
 
 
+def test_part_stl_export_and_volume_extract():
+    from mesh_io import export_part_stl
+    from sim_parser import SimFile
+
+    sim = SimFile(SIM)
+    part = next(o for o in sim.objects if isinstance(o.dict.get("TriangleCount"), int)
+                and o.dict["TriangleCount"] > 0)
+    tmp = tempfile.mkdtemp(prefix="star_f5_")
+    try:
+        path = os.path.join(tmp, "part.stl")
+        export_part_stl(sim, part.id, path)
+        assert os.path.isfile(path) and os.path.getsize(path) > 80
+        vol = sim.extract_volume_mesh()
+        assert "ok" in vol
+        if not vol["ok"]:
+            assert vol.get("reason")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_visibility_and_show_only_undo():
     from sim_parser import SimFile
     from star_gui_commands import ShowOnlyCommand, VisibilityCommand

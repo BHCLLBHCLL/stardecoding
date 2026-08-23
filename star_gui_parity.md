@@ -13,7 +13,7 @@
 | 文件>保存/另存为 | persist |
 | 文件>全部保存/自动保存/模板 | disabled |
 | 文件>导入 CAD/表面/体网格 | persist（真读 STL/OBJ → ImportedVertices/Faces）；体网格 needs_kernel |
-| 文件>导出 STL/摘要/报告 | view |
+| 文件>导出 STL/摘要/报告 | view（选中 Part 时按分块导出） |
 | 文件>宏 | disabled |
 | 编辑>撤销/重做 | session |
 | 编辑>复制/粘贴/删除/重命名 | persist（复制插入对象图行；删除改 Keys） |
