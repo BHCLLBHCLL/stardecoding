@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import re
+import struct as _struct
 import sys
 
 try:
@@ -863,6 +864,7 @@ class SimFile:
         self.roots = []
         self.children = {}
         self.objmap = {}
+        self._storage_pos = {}   # G3：存储键(数组 s0/ps) -> 数组记录 缓存
 
         for d, payload, s0, ps in self.sections:
             if isinstance(d, dict) and d.get("ClassName") == "Array":
@@ -916,6 +918,94 @@ class SimFile:
     # ---- 便捷访问 ----
     def object_by_id(self, oid):
         return self.objmap.get(oid)
+
+    # ---- 边界 → 面片映射 ----
+    def _parts_with_mesh(self):
+        """[(name, part_id, face_array_index, patch_array, faces)]，按 part 分组。
+
+        每个 part 有自己的面索引数组（count==TriangleCount×3）与每面 patch id 数组
+        （Integer4、count==面数、小范围 patch 号）。
+        """
+        if _np is None:
+            return []
+        tris = {}
+        for o in self.objects:
+            t = o.dict.get("TriangleCount")
+            if isinstance(t, int) and t > 0:
+                tris.setdefault(t, []).append(o)
+        parts = []
+        for t, objs in sorted(tris.items(), reverse=True):
+            fi = None
+            for i, a in enumerate(self.arrays):
+                if a["type"] in ("Unsigned4", "Integer4") and a["count"] == t * 3:
+                    fi = i
+                    break
+            if fi is None:
+                continue
+            nf = t
+            patch = None
+            for i, a in enumerate(self.arrays):
+                if a["type"] != "Integer4" or a["count"] != nf:
+                    continue
+                d = self.array_data(i)
+                if d.size and int(d.min()) >= 1 and int(d.max()) <= max(1000, nf * 4):
+                    patch = d
+                    break
+            obj = objs[0]
+            parts.append({"name": obj.name or "part%d" % obj.id, "id": obj.id,
+                          "triangles": t, "face_array": fi, "patch": patch})
+        return parts
+
+    def part_surface_patches(self):
+        """part 表面 patch 表：per-face patch id 数组（按 part 分组）。
+
+        返回 {"parts": [{name, id, triangles, face_array, patch: {patch_id: count}}],
+              "boundary_refs": {boundary_name: [patch_ids]}}。
+        """
+        out = {"parts": [], "boundary_refs": {}}
+        from collections import Counter
+        for p in self._parts_with_mesh():
+            rec = {"name": p["name"], "id": p["id"], "triangles": p["triangles"],
+                   "face_array": p["face_array"], "patch": {}}
+            if p["patch"] is not None:
+                rec["patch"] = dict(Counter(int(x) for x in p["patch"].tolist()))
+            out["parts"].append(rec)
+        for o in self.objects:
+            if o.class_name == "star.common.Boundary":
+                ps = self.objmap.get(o.dict.get("PartSurfaces") or -1)
+                ids = []
+                for k in (ps.dict.get("Keys") or []) if ps is not None else []:
+                    p = self.objmap.get(k)
+                    if p is not None and isinstance(p.dict.get("Index"), int):
+                        ids.append(p.dict["Index"])
+                if ids:
+                    out["boundary_refs"][o.name or "boundary%d" % o.id] = ids
+        return out
+
+    def boundary_faces(self):
+        """每个 Boundary 的面索引列表（1 基）。
+
+        规则（按 part 分组）：Boundary → PartSurfaces → PartSurface.Index →
+        该 part 的每面 patch id 数组匹配。若一个边界跨多 part，逐 part 累加。
+        返回 {"by_boundary": {name: {part: [face_index]}}, "total": n_faces}。
+        """
+        parts = self._parts_with_mesh()
+        if not parts:
+            return None
+        br = self.part_surface_patches()["boundary_refs"]
+        by_boundary = {}
+        total = 0
+        for p in parts:
+            if p["patch"] is None:
+                continue
+            total += len(p["patch"])
+            ids = set(int(x) for x in p["patch"].tolist())
+            for bname, bpatch in br.items():
+                matched = [i + 1 for i, x in enumerate(int(v) for v in p["patch"].tolist())
+                           if x in bpatch]
+                if matched:
+                    by_boundary.setdefault(bname, {})[p["name"]] = matched
+        return {"by_boundary": by_boundary, "total": total}
 
     def _parse_state_segments(self):
         """多 id 魔数（N>1）声明的表内分段：长度为"banner+表体"折行文本的字节区间。
@@ -1269,41 +1359,279 @@ class SimFile:
             fh.write("endsolid sim\n")
         return out_path
 
+    def _storage_array(self, key):
+        """把存储对象的键（dataKey/countKey/listKey...）解析为数组记录。
+
+        支持两种形态（G3 侦察结论）：
+          - 直接键：key 就是数组分区字典行的起始位置（s0）或载荷起始（ps）
+            （pipeBlockage / airfoil / pipeMixingBlockage 等新版文件）；
+          - 对象链：key 是 MasterArray/ScatterableArray 对象 id，其 dataKey/
+            sizesKey 指向的「指针数组」（Unsigned4 n=1 / Integer8 n=1）的
+            载荷值才是真实数据数组的 s0（methaneOnPt 等旧版文件）。
+        解析失败返回 None。
+        """
+        if not isinstance(key, int):
+            return None
+        pos = self._storage_pos
+        if not pos:
+            arr_by_ps = {}
+            for a in self.arrays:
+                s = a.get("start")
+                if isinstance(s, int):
+                    arr_by_ps[s] = a
+            for _d, _p, s0, ps in self.sections:
+                if isinstance(_d, dict) and _d.get("ClassName") == "Array":
+                    a = arr_by_ps.get(ps)
+                    if a is not None:
+                        pos.setdefault(s0, a)
+            for a in self.arrays:
+                s = a.get("start")
+                if isinstance(s, int):
+                    pos.setdefault(s, a)
+        arr = pos.get(key)
+        if arr is not None:
+            return arr
+        obj = self.objmap.get(key)
+        if obj is not None and (obj.class_name or "").startswith(
+                ("MasterArray", "ScatterableArray")):
+            for f in ("dataKey", "sizesKey"):
+                k = obj.dict.get(f)
+                if not isinstance(k, int):
+                    continue
+                pa = self._storage_array(k)
+                if pa is None:
+                    continue
+                data = pa["data"]
+                try:
+                    if pa["type"] == "Integer8" and len(data) >= 8:
+                        val = _np.frombuffer(data[:8], dtype="<i8")[0] if _np is not None \
+                            else _struct.unpack("<q", data[:8])[0]
+                    elif pa["type"] == "Unsigned4" and len(data) >= 4:
+                        val = _np.frombuffer(data[:4], dtype="<u4")[0] if _np is not None \
+                            else _struct.unpack("<I", data[:4])[0]
+                    else:
+                        continue
+                except Exception:
+                    continue
+                return self._storage_array(int(val))
+        return None
+
     def extract_volume_mesh(self):
-        """尝试抽取体单元表（tet/hex）。对不上则返回原因，不假装成功。"""
+        """抽取体网格：存储体系驱动（DuplicateStorageManager + 键解析）+ 面→单元反演。
+
+        识别顶点/面/单元三个主存储组：
+          - Coord(Float8×3)     -> 顶点坐标
+          - VertexList(CSR)     -> 每面顶点环（count/offset + 扁平索引）
+          - FaceCellIndex       -> 每面左右单元对（负值/0xFFFFFFFF=边界）
+        由面邻接反演每个单元的节点集合（任意多面体），单元数精确等于存储组
+        SerialSize。无存储体系/缺组/连通性失败 -> ok=False + 原因，不假装成功
+        （替换旧版"猜最大整型数组"启发式——它曾把顶点标志表误判为四面体表）。
+
+        返回 {ok, kind:"poly", count, points, face_verts, face_cells,
+              cell_faces, cell_loops, cells, groups, reason[, elem_types]}
+        """
         if _np is None:
-            return {"ok": False, "reason": "需要 numpy"}
-        face_counts = set()
-        meta = self.mesh_metadata()
-        for t in meta.get("TriangleCount") or []:
-            if isinstance(t, int) and t > 0:
-                face_counts.add(t * 3)
-        best = None
-        kind = None
-        for i, a in enumerate(self.arrays):
-            if a["type"] not in ("Unsigned4", "Integer4"):
-                continue
-            n = a["count"]
-            if not n or n in face_counts:
-                continue
-            if n % 8 == 0 and n // 8 >= 8:
-                cand = ("hex", i, n // 8)
-            elif n % 4 == 0 and n // 4 >= 8:
-                cand = ("tet", i, n // 4)
+            return {"ok": False, "kind": None, "count": 0, "reason": "需要 numpy"}
+        dups = [o for o in self.objects
+                if (o.class_name or "") == "DuplicateStorageManager"]
+        if not dups:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "无 DuplicateStorageManager 存储体系（纯表面网格文件？）"}
+        stor_by_id = {o.id: o for o in self.objects
+                      if (o.class_name or "").startswith(("SimpleStorage", "ListStorage"))}
+
+        def stor_in(d, tag):
+            i = (d.dict.get("map") or {}).get(tag)
+            return stor_by_id.get(i)
+
+        vert_d = face_d = cell_d = None
+        for d in dups:
+            m = d.dict.get("map") or {}
+            sz = d.dict.get("SerialSize") or 0
+            if "Coord" in m:
+                if vert_d is None or sz > (vert_d.dict.get("SerialSize") or 0):
+                    vert_d = d
+            elif "FaceCellIndex" in m and "VertexList" in m:
+                if not any(t in m for t in
+                           ("FacePartSurfaceIndex", "ProstarBounId", "ProstarFaceId")):
+                    if face_d is None or sz > (face_d.dict.get("SerialSize") or 0):
+                        face_d = d
+            elif any(t in m for t in
+                     ("ElemType", "ProstarCellIndex", "ProstarCellType",
+                      "CellGeometryPartIndex", "WallDistance", "PrismLayerCells")):
+                if cell_d is None or sz > (cell_d.dict.get("SerialSize") or 0):
+                    cell_d = d
+
+        missing = "、".join(n for d, n in (
+            (vert_d, "顶点"), (face_d, "面"), (cell_d, "单元")) if d is None)
+        if vert_d is None or face_d is None or cell_d is None:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "缺少体网格存储组：%s" % missing}
+
+        nvert = int(vert_d.dict.get("SerialSize") or 0)
+        nface = int(face_d.dict.get("SerialSize") or 0)
+        ncell = int(cell_d.dict.get("SerialSize") or 0)
+        if nvert <= 0 or nface <= 0 or ncell <= 0:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "存储组实体数为空（%d/%d/%d）" % (nvert, nface, ncell)}
+
+        def first_key(o, *fields):
+            for f in fields:
+                v = o.dict.get(f)
+                if isinstance(v, int):
+                    return v
+                if isinstance(v, list) and v:
+                    return v[0]
+            return None
+
+        coord_o = stor_in(vert_d, "Coord")
+        vl_o = stor_in(face_d, "VertexList")
+        fci_o = stor_in(face_d, "FaceCellIndex")
+        et_o = stor_in(cell_d, "ElemType")
+        if coord_o is None or vl_o is None or fci_o is None:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "主组缺少 Coord/VertexList/FaceCellIndex 存储"}
+
+        arr_coord = self._storage_array(first_key(coord_o, "dataKey", "dataKeys"))
+        arr_vl_c = self._storage_array(first_key(vl_o, "countKey", "offsetKeys"))
+        arr_vl_l = self._storage_array(first_key(vl_o, "listKey", "listKeys"))
+        arr_fci = self._storage_array(first_key(fci_o, "dataKey", "dataKeys"))
+        if arr_coord is None or arr_vl_c is None or arr_vl_l is None or arr_fci is None:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "存储键解析失败（未命中数组块）"}
+
+        try:
+            pts = _np.frombuffer(arr_coord["data"], dtype="<f8")
+            if pts.size >= 3 * nvert:
+                pts = pts[: 3 * nvert].reshape(-1, 3)
             else:
-                continue
-            if best is None or cand[2] > best[2]:
-                best = cand
-                kind = cand[0]
-        if best is None:
-            return {"ok": False, "reason": "没有与面表区分开的 tet/hex 索引数组",
-                    "cells": None, "kind": None}
-        _kind, idx, ncell = best
-        data = self.array_data(idx)
-        w = 8 if kind == "hex" else 4
-        cells = data.reshape(-1, w)
-        return {"ok": True, "kind": kind, "cells": cells, "count": int(ncell),
-                "array_index": idx, "reason": ""}
+                pts = _np.pad(pts, (0, 3 * nvert - pts.size)).reshape(-1, 3)
+        except Exception as _e:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "顶点坐标解码失败：%r" % _e}
+
+        vcounts = _np.frombuffer(arr_vl_c["data"], dtype="<u4")
+        vlist = _np.frombuffer(arr_vl_l["data"], dtype="<u4")
+        if vcounts.size >= nface:
+            vcounts = vcounts[:nface]
+        else:
+            vcounts = _np.pad(vcounts, (0, nface - vcounts.size))
+        if int(vcounts.sum()) != vlist.size:
+            # 旧式 CSR 变体（methaneOnPt）：offset 数组是前缀和（含 0、单调递增、
+            # 无尾哨兵）。转成每面顶点数再校验。
+            if (vcounts.size >= 2 and int(vcounts[0]) == 0
+                    and int(vcounts[-1]) < vlist.size
+                    and bool((_np.diff(vcounts.astype("<i8")) > 0).all())):
+                last_off = int(vcounts[-1])
+                vcounts = _np.diff(vcounts.astype("<i8"))
+                vcounts = _np.append(vcounts, vlist.size - last_off)
+        if int(vcounts.sum()) != vlist.size:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "面顶点数总和不等于索引表长度（%d != %d）"
+                             % (int(vcounts.sum()), vlist.size)}
+        fci = _np.frombuffer(arr_fci["data"], dtype="<u4").astype("<i8")
+        fci = fci[: 2 * nface]
+        fci[fci >= 0x80000000] = -1   # 0xFFFFFFFF（无符号存储）-> 边界
+
+        # ---- 面→单元反演 ----
+        offs = _np.concatenate(([0], _np.cumsum(vcounts))).astype("<i8")
+        cell_faces = [[] for _ in range(ncell)]
+        for fi in range(nface):
+            a, b = int(fci[2 * fi]), int(fci[2 * fi + 1])
+            for c in (a, b):
+                if 0 <= c < ncell:
+                    cell_faces[c].append(fi)
+        orphan = sum(1 for fs in cell_faces if not fs)
+        if orphan:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "拓扑反演失败：%d/%d 单元无面" % (orphan, ncell)}
+
+        if vlist.size and int(vlist.max()) >= nvert:
+            return {"ok": False, "kind": None, "count": 0,
+                    "reason": "面顶点下标超出顶点表（%d >= %d）"
+                             % (int(vlist.max()), nvert)}
+        cells, cell_loops = [], []
+        for fs in cell_faces:
+            nodes, loops = [], []
+            for fi in fs:
+                loop = vlist[offs[fi]:offs[fi + 1]].tolist()
+                loops.append(loop)
+                for v in loop:
+                    if v not in nodes:
+                        nodes.append(v)
+            cells.append(nodes)
+            cell_loops.append(loops)
+
+        groups = {"verts": str(vert_d.dict.get("groupTag")),
+                  "faces": str(face_d.dict.get("groupTag")),
+                  "cells": str(cell_d.dict.get("groupTag"))}
+        extra = {}
+        if et_o is not None:
+            arr_et = self._storage_array(first_key(et_o, "dataKey", "dataKeys"))
+            if arr_et is not None:
+                txt = arr_et["data"].decode("latin-1")
+                if len(txt) >= ncell:
+                    extra["elem_types"] = txt[:ncell]
+        return {"ok": True, "kind": "poly", "count": ncell,
+                "points": pts, "face_verts": vlist, "face_cells": fci,
+                "cell_faces": cell_faces, "cell_loops": cell_loops,
+                "cells": cells, "groups": groups, "reason": "", **extra}
+
+    def export_volume_vtu(self, path, vol=None):
+        """把体网格写为 VTK XML UnstructuredGrid（VTK_POLYHEDRON 任意多面体）。
+
+        单元以"面环"定义（每个面一个顶点索引环），ParaView 可直接打开。
+        抽取失败返回 None，成功返回 path。
+        """
+        if vol is None:
+            vol = self.extract_volume_mesh()
+        if not vol.get("ok"):
+            return None
+        pts = vol.get("points")
+        loops = vol.get("cell_loops")
+        if pts is None or not loops:
+            return None
+        npt = int(pts.shape[0])
+        ncell = int(vol.get("count") or len(loops))
+        conn, offs = [], []
+        acc = 0
+        for cell in loops:
+            conn.append(len(cell))          # 面数
+            for loop in cell:
+                conn.append(len(loop))      # 该面顶点数
+                conn.extend(int(v) for v in loop)
+            acc += 1 + sum(1 + len(l) for l in cell)
+            offs.append(acc)
+        L = []
+        L.append('<?xml version="1.0"?>')
+        L.append('<VTKFile type="UnstructuredGrid" version="1.0" '
+                 'byte_order="LittleEndian" header_type="UInt64">')
+        L.append('  <UnstructuredGrid>')
+        L.append('    <Piece NumberOfPoints="%d" NumberOfCells="%d">' % (npt, ncell))
+        L.append('      <Points>')
+        L.append('        <DataArray type="Float64" Name="Points" '
+                 'NumberOfComponents="3" format="ascii">')
+        for x, y, z in pts:
+            L.append("          %.10g %.10g %.10g" % (x, y, z))
+        L.append('        </DataArray>')
+        L.append('      </Points>')
+        L.append('      <Cells>')
+        L.append('        <DataArray type="Int64" Name="connectivity" format="ascii">')
+        L.append("          " + " ".join(str(v) for v in conn))
+        L.append('        </DataArray>')
+        L.append('        <DataArray type="Int64" Name="offsets" format="ascii">')
+        L.append("          " + " ".join(str(v) for v in offs))
+        L.append('        </DataArray>')
+        L.append('        <DataArray type="UInt8" Name="types" format="ascii">')
+        L.append("          " + " ".join(["41"] * ncell))
+        L.append('        </DataArray>')
+        L.append('      </Cells>')
+        L.append('    </Piece>')
+        L.append('  </UnstructuredGrid>')
+        L.append('</VTKFile>')
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(L) + "\n")
+        return path
 
     # ---- 汇总 ----
     def summary(self):
@@ -1375,6 +1703,417 @@ class SimFile:
 
 
 # ----------------------------------------------------------------------------
+# 5.5 G1 状态表结构化语义树（T/V/S/Z/J/L 块 + ?指针 + 标记流）
+# ----------------------------------------------------------------------------
+# 依据 21 文件语料（16 个 ASCII 状态表）的 token 频率与上下文模式审计：
+#   - ?N 三分法：N 命中 objmap → 对象图引用；N<4 → 结构类型标记；
+#     其余 → 状态表内部实体 id（如 face/edge 流的递增 id，1097/1098...）
+#   - 29 元素：`29, A, B, 0, C, D, E, f0, f1, f2, 18, ...`，f 三元组在
+#     adjointWing 上 27/39 命中 Float8 顶点表坐标（几何元素，B-Rep 候选）
+#   - 135 元素：前面必跟 3 个数字（顶点索引，7/8 验证）→ face 族标记
+#   - 255：T 块分段分隔 + 元素边界
+# 置信度：confirmed = 多文件交叉验证；likely = 单文件强模式；unknown = 保留结构。
+
+STATE_MARKERS = {
+    81: ("container-open", "likely"),      # `81, 1, <id>` 块头模式；81/82 不严格配对
+    82: ("container-close", "likely"),
+    83: ("container-mark", "likely"),
+    29: ("geometry-element", "confirmed"),  # A,B,0,C,D,E + 3 浮点(顶点表相关)
+    134: ("face-family", "likely"),
+    135: ("face-family", "confirmed"),      # 前跟 v0,v1,v2 顶点索引
+    204: ("element-mark", "likely"),
+    255: ("separator", "confirmed"),        # T 块分段 + 元素边界
+    17: ("field-mark", "likely"),
+    18: ("field-mark", "likely"),
+    11: ("field-mark", "likely"),
+    16: ("field-mark", "likely"),
+    30: ("field-mark", "likely"),
+    -15: ("negative-mark", "likely"),
+    -17: ("negative-mark", "likely"),
+    -18: ("negative-mark", "confirmed"),    # ?1 face 流固定偏移出现
+}
+
+
+def _sc_float(tok):
+    """STAR-CORE 数值表示法 → float（.xxx 无前导 0 / 定点整数+指数 600494083547542e-31）。"""
+    try:
+        return float(tok)
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_pointer(rec, objmap):
+    """?N 指针三分法：对象引用 / 结构类型标记 / 内部实体 id。"""
+    ref = rec.get("ref")
+    if not isinstance(ref, int):
+        return {"role": "raw", "ref": ref, "conf": "unknown"}
+    if ref in objmap:
+        o = objmap[ref]
+        return {"role": "object-ref", "ref": ref, "conf": "confirmed",
+                "target": {"class": o.class_name, "name": o.name,
+                           "layer": o.layer}}
+    if ref < 4:
+        return {"role": "type-tag", "ref": ref, "conf": "confirmed",
+                "meaning": {0: "type-0", 1: "face-element", 2: "type-2",
+                            3: "type-3"}.get(ref, "?")}
+    return {"role": "entity-ref", "ref": ref, "conf": "likely",
+            "meaning": "状态表内部实体 id（face/edge 流）"}
+
+
+def _decode_elements(values, markers=None):
+    """把记录 values 切成类型化元素序列（标记/int/float/+-元素）。"""
+    markers = markers or STATE_MARKERS
+    out = []
+    for v in values:
+        val = v.get("value")
+        if v.get("kind") == "element":
+            out.append({"t": "element", "v": val, "conf": "confirmed"})
+            continue
+        if isinstance(val, int) and not isinstance(val, bool) and val in markers:
+            meaning, conf = markers[val]
+            out.append({"t": "marker", "v": val, "meaning": meaning, "conf": conf})
+        elif isinstance(val, int) and not isinstance(val, bool):
+            out.append({"t": "int", "v": val, "conf": "confirmed"})
+        elif isinstance(val, float):
+            out.append({"t": "float", "v": val, "conf": "confirmed"})
+        else:
+            out.append({"t": "other", "v": val, "conf": "unknown"})
+    return out
+
+
+def decode_state_tree(sim, max_records=0, vertex_check=True):
+    """状态表 → 结构化语义树（G1）。
+
+    每个记录产出：
+      head    记录头（kind/name/id/flags/version/fmt/value）
+      ref     pointer 记录的三分法引用解析
+      elements 类型化元素流（标记字典标注 + 置信度）
+      segments T 块按 255 分段
+      geometry_check 29 元素浮点三元组命中 Float8 顶点表的数量（可选）
+    未知字段保留原始结构并标 conf=unknown —— 任意记录可解码，无丢失。
+    """
+    vset = None
+    if vertex_check and _np is not None:
+        merged = set()
+        for a in sim.arrays:
+            # 多网格文件含多张顶点表：合并全部 Float8 候选再判定命中
+            if (a.get("type") == "Float8" and a.get("count")
+                    and a["count"] % 3 == 0 and 0 < a["count"] <= 300000):
+                d = sim.array_data(a["index"])
+                if d is not None and hasattr(d, "dtype"):
+                    verts = d.reshape(-1, 3)
+                    merged.update(map(tuple, _np.round(verts, 9)))
+        if merged:
+            vset = merged
+    tree = []
+    for rec in sim.records[:max_records or None]:
+        node = {"head": {k: rec.get(k) for k in
+                         ("kind", "name", "id", "flags", "version", "fmt", "value")}}
+        if rec.get("kind") == "pointer":
+            node["ref"] = _decode_pointer(rec, sim.objmap)
+        if rec.get("kind") == "banner":
+            node["message"] = rec.get("message")
+            tree.append(node)
+            continue
+        if rec.get("raw") is not None:
+            node["raw_hex"] = rec["raw"][:96]
+            if rec.get("values_decoded"):
+                node["elements"] = _decode_elements(
+                    [{"kind": "d", "value": v} for v in rec["values_decoded"]])
+            tree.append(node)
+            continue
+        elements = _decode_elements(rec.get("values", []))
+        node["elements"] = elements
+        node["n_elements"] = len(elements)
+        # T 块：按 255 分段
+        if rec.get("fmt") == "T" and rec.get("kind") == "anonymous":
+            segs, cur = [], []
+            for e in elements:
+                cur.append(e)
+                if e.get("t") == "marker" and e.get("v") == 255:
+                    segs.append(cur)
+                    cur = []
+            if cur:
+                segs.append(cur)
+            node["segments"] = [{"n": len(s),
+                                 "head": [e.get("v") for e in s[:6]]} for s in segs]
+        # 29 元素几何验证：其后第 7-9 个值为浮点三元组
+        if vset is not None:
+            els = elements
+            hits = tot = 0
+            for i, e in enumerate(els):
+                if e.get("t") == "marker" and e.get("v") == 29 and i + 9 < len(els):
+                    tri = [els[i + j].get("v") for j in (7, 8, 9)]
+                    if all(isinstance(x, float) for x in tri):
+                        tot += 1
+                        if tuple(round(x, 9) for x in tri) in vset:
+                            hits += 1
+            if tot:
+                node["geometry_check"] = {"vertex_hits": hits, "triples": tot}
+        tree.append(node)
+    return tree
+
+
+def state_grammar_report(sim):
+    """G1 文法统计：记录/fmt 分布、标记频率、指针解析率、几何验证率。"""
+    from collections import Counter
+    fmts = Counter()
+    roles = Counter()
+    marker_freq = Counter()
+    markers = set(STATE_MARKERS)
+    geo = Counter()
+    for rec in sim.records:
+        if rec.get("fmt"):
+            fmts[rec["fmt"]] += 1
+        if rec.get("kind") == "pointer":
+            ref = rec.get("ref")
+            if isinstance(ref, int):
+                roles["object-ref" if ref in sim.objmap else
+                       ("type-tag" if ref < 4 else "entity-ref")] += 1
+            else:
+                roles["raw-pointer"] += 1
+        for v in rec.get("values", []):
+            val = v.get("value")
+            if isinstance(val, int) and not isinstance(val, bool) and val in markers:
+                marker_freq[val] += 1
+    tree = decode_state_tree(sim, vertex_check=True)
+    for node in tree:
+        gc = node.get("geometry_check")
+        if gc:
+            geo["triples"] += gc["triples"]
+            geo["hits"] += gc["vertex_hits"]
+    n_ptr = sum(roles.values())
+    return {
+        "state_mode": sim.state_mode,
+        "n_records": len(sim.records),
+        "fmt_distribution": dict(sorted(fmts.items(), key=lambda kv: -kv[1])),
+        "pointer_roles": dict(roles),
+        "pointer_resolved_pct": round(100.0 * roles.get("object-ref", 0) / n_ptr, 1) if n_ptr else None,
+        "marker_frequency": {str(k): v for k, v in
+                             sorted(marker_freq.items(), key=lambda kv: -kv[1])[:15]},
+        "geometry_vertex_check": dict(geo) if geo else None,
+    }
+
+
+# ----------------------------------------------------------------------------
+# 5.6 G2 数组块语义标注（A<n> 引用 × 网格规模自洽性交叉验证）
+# ----------------------------------------------------------------------------
+# 三类证据源：
+#   a) 结构：Character1 = 主状态表 / 嵌套 TRANSMIT 子块（__init__ 已切分）
+#   b) 引用：ascii 状态表中 fmt 含 "A" 的记录，值 = 文件级数组块下标
+#      （binary 变体的单字母 "A" 是字符串类型码，不作引用解释）
+#   c) 规模自洽性：count == part.TriangleCount*3 → 面索引表；
+#      nverts 匹配面索引跨度 → 顶点坐标表；|max|<=1 → 法向；
+#      Integer8 count==1 递增 → 字节偏移表；其余按内容给候选拍注。
+ARRAY_ROLES_CN = {
+    "state-table": "主状态表",
+    "nested-transmit": "嵌套 TRANSMIT 子状态表",
+    "state-referenced": "状态表 A<n> 引用数组",
+    "face-indices": "面索引表",
+    "vertex-coords": "顶点坐标表",
+    "normals": "法向量表",
+    "cell-indices-hex": "体单元表候选(hex)",
+    "cell-indices-tet": "体单元表候选(tet)",
+    "scalar-table-f64": "Float8 标量表",
+    "scalar-table-f32": "Float4 标量表",
+    "byte-offsets": "字节偏移表(Integer8)",
+    "param-vector": "参数向量",
+    "index-permutation": "排序/恒等映射表",
+    "type-id-table": "类型/材质 ID 表（边界映射线索）",
+    "char-blob": "字符数据块",
+    "unclassified": "未分类",
+}
+
+# 角色优先级（小者先）：引用证据 > 结构匹配 > 内容猜测
+_ROLE_ORDER = {r: k for k, r in enumerate([
+    "state-table", "nested-transmit", "state-referenced", "face-indices",
+    "vertex-coords", "normals", "byte-offsets", "scalar-table-f32",
+    "scalar-table-f64", "cell-indices-hex", "cell-indices-tet",
+    "index-permutation", "type-id-table", "param-vector",
+    "char-blob", "unclassified"])}
+
+
+def annotate_arrays(sim):
+    """给每个数组块标 role/names/refs/evidence。返回与 sim.arrays 等长的 list。"""
+    n = len(sim.arrays)
+    anns = [{"index": i, "type": a["type"], "count": a["count"],
+             "role": None, "role_cn": None, "names": [],
+             "refs": [], "evidence": []} for i, a in enumerate(sim.arrays)]
+
+    def tag(i, role, ev=None):
+        a = anns[i]
+        if ev:
+            a["evidence"].append(ev)
+        if a["role"] is None or _ROLE_ORDER[role] < _ROLE_ORDER[a["role"]]:
+            a["role"] = role
+            a["role_cn"] = ARRAY_ROLES_CN.get(role, role)
+
+    # a) Character1：主状态表 / 嵌套子块 / 其余字符块
+    state_seen = False
+    for i, a in enumerate(sim.arrays):
+        if a["type"] == "Character1":
+            if not state_seen:
+                state_seen = True
+                tag(i, "state-table", "首个 Character1（parse_state_table 输入）")
+            else:
+                tag(i, "char-blob")
+    for nt in sim.nested_transmits:
+        ai = nt.get("array_index")
+        if isinstance(ai, int) and 0 <= ai < n:
+            nrec = len(nt.get("records") or [])
+            tag(ai, "nested-transmit", "嵌套 TRANSMIT 子表（记录数 %d）" % nrec)
+
+    # b) ascii A<n> 引用
+    if sim.state_mode == "ascii":
+        for rec in sim.records:
+            fmt = rec.get("fmt") or ""
+            v = rec.get("value")
+            if "A" not in fmt or not isinstance(v, int) or isinstance(v, bool):
+                continue
+            if not (0 <= v < n):
+                continue
+            name = rec.get("name")
+            oid = rec.get("id")
+            o = sim.objmap.get(oid) if oid is not None else None
+            anns[v]["refs"].append({
+                "record": name or "<anon>", "id": oid, "fmt": fmt,
+                "owner_class": o.class_name if o else None})
+            if name and name not in anns[v]["names"]:
+                anns[v]["names"].append(name)
+            tag(v, "state-referenced", "A%d <- %s(id=%s%s)" % (
+                v, name or "<anon>", oid,
+                ", %s" % o.class_name if o else ""))
+
+    # c) 规模自洽性（需要 numpy 解码内容）
+    if _np is not None:
+        meta = sim.mesh_metadata()
+        tri_by_count = {}
+        for t in sorted(set(x for x in meta["TriangleCount"]
+                            if isinstance(x, int) and x > 0), reverse=True):
+            tri_by_count[t * 3] = t
+        face_tabs = []
+        for i, a in enumerate(sim.arrays):
+            c = a["count"]
+            if (a["type"] in ("Unsigned4", "Integer4") and isinstance(c, int)
+                    and c > 0 and c in tri_by_count):
+                face_tabs.append((i, tri_by_count[c]))
+                tag(i, "face-indices", "count==TriangleCount(%d)*3" % tri_by_count[c])
+        spans = []
+        for i, tc in face_tabs:
+            d = sim.array_data(i)
+            if hasattr(d, "dtype") and d.size:
+                f = d.ravel().astype("int64")
+                spans.append((i, int(f.min()), int(f.max())))
+        # 顶点坐标：nverts 与某面表跨度/最大索引匹配
+        vhit = 0
+        for i, a in enumerate(sim.arrays):
+            if a["type"] != "Float8":
+                continue
+            c = a["count"] or 0
+            if c % 3 or c == 0:
+                continue
+            nv = c // 3
+            for fi, lo, hi in spans:
+                if nv in (hi - lo + 1, hi + 1, hi):
+                    tag(i, "vertex-coords", "nverts=%d 匹配面表[%d](min=%d,max=%d)"
+                        % (nv, fi, lo, hi))
+                    vhit += 1
+                    break
+        # 其余 Float8：法向 / 顶点候选 / 参数向量 / 标量
+        for i, a in enumerate(sim.arrays):
+            if a["type"] != "Float8" or anns[i]["role"] is not None:
+                continue
+            c = a["count"] or 0
+            d = sim.array_data(i)
+            flat = getattr(d, "ravel", lambda: [])()
+            if not len(flat):
+                tag(i, "unclassified", "空表")
+                continue
+            mx = float(_np.abs(_np.asarray(flat)).max())
+            if c % 3 == 0 and mx <= 1.0 + 1e-9:
+                tag(i, "normals", "|max|=%.3g<=1 且 count%%3==0（n=%d）" % (mx, c // 3))
+            elif c % 3 == 0 and c >= 24:
+                tag(i, "vertex-coords", "count%%3==0 无跨度证据（|max|=%.3g）" % mx)
+            elif c <= 16:
+                tag(i, "param-vector", "小表 count=%d" % c)
+            else:
+                tag(i, "scalar-table-f64", "|max|=%.3g count=%d" % (mx, c))
+        # Integer8：字节偏移
+        for i, a in enumerate(sim.arrays):
+            if a["type"] != "Integer8":
+                continue
+            d = sim.array_data(i)
+            if hasattr(d, "dtype"):
+                flat = d.ravel()
+                mono = bool(flat.size > 1 and _np.all(_np.diff(flat) > 0)) \
+                    or bool(flat.size == 1)
+                tag(i, "byte-offsets", "Integer8 count=%s 递增=%s sample=%s"
+                    % (a["count"], mono, flat[:2].tolist()))
+            else:
+                tag(i, "unclassified", "Integer8 无法解码")
+        # Float4：标量表
+        for i, a in enumerate(sim.arrays):
+            if a["type"] != "Float4":
+                continue
+            d = sim.array_data(i)
+            if hasattr(d, "dtype"):
+                flat = d.ravel()
+                mx = float(_np.abs(flat).max()) if flat.size else 0.0
+                tag(i, "scalar-table-f32", "|max|=%.3g count=%s" % (mx, a["count"]))
+        # 剩余 U4/I4：体单元表候选
+        claimed = {i for i, tc in face_tabs}
+        for i, a in enumerate(sim.arrays):
+            if (a["type"] not in ("Unsigned4", "Integer4")
+                    or i in claimed or anns[i]["role"] is not None):
+                continue
+            c = a["count"] or 0
+            d = sim.array_data(i)
+            flat = d.ravel().astype("int64") if hasattr(d, "dtype") else []
+            mx = int(flat.max()) if len(flat) else 0
+            mn = int(flat.min()) if len(flat) else 0
+            if len(flat) and mn > 0 and _np.array_equal(
+                    _np.sort(flat), _np.arange(1, c + 1)):
+                tag(i, "index-permutation", "值为 1..%d 的排列" % c)
+            elif len(flat) and mn >= -10 ** 6 and mx < 10 ** 6 \
+                    and len(_np.unique(flat)) <= 64:
+                u = _np.unique(flat)
+                tag(i, "type-id-table", "%d 个相异值 %s（逐元素类别）"
+                    % (len(u), u[:8].tolist()))
+            elif c >= 32 and c % 8 == 0:
+                tag(i, "cell-indices-hex", "count%%8==0 ncell=%d max=%d（弱证据）"
+                    % (c // 8, mx))
+            elif c >= 32 and c % 4 == 0:
+                tag(i, "cell-indices-tet", "count%%4==0 ncell=%d max=%d（弱证据）"
+                    % (c // 4, mx))
+            else:
+                tag(i, "unclassified", "count=%d max=%d" % (c, mx))
+    for i in range(n):
+        tag(i, "unclassified")
+    return anns
+
+
+def array_annotation_report(sim):
+    """G2 汇总：角色分布 / 覆盖率 / 面表↔顶点表自洽计数。"""
+    anns = annotate_arrays(sim)
+    from collections import Counter
+    roles = Counter(a["role"] for a in anns)
+    labeled = sum(1 for a in anns if a["role"] != "unclassified")
+    n_face = sum(1 for a in anns if a["role"] == "face-indices")
+    n_vhit = sum(1 for a in anns if a["role"] == "vertex-coords"
+                 and any("匹配面表" in e for e in a["evidence"]))
+    n_ref = sum(len(a["refs"]) for a in anns)
+    return {
+        "n_arrays": len(anns),
+        "labeled_pct": round(100.0 * labeled / len(anns), 1) if anns else 100.0,
+        "roles": dict(sorted(roles.items(), key=lambda kv: kv[0])),
+        "a_refs_resolved": n_ref,
+        "face_tables": n_face,
+        "vertex_span_matched": n_vhit,
+        "annotations": anns,
+    }
+
+
+# ----------------------------------------------------------------------------
 # 6. CLI
 # ----------------------------------------------------------------------------
 def _fmt_rec(rec, objmap=None):
@@ -1436,11 +2175,18 @@ def main(argv=None):
     ap.add_argument("--validate", action="store_true", help="校验 ClassVersions 尾部统计与对象图一致性")
     ap.add_argument("--mesh", action="store_true", help="抽取网格并输出统计（顶点/面）")
     ap.add_argument("--mesh-export", metavar="STL", help="把抽取出的网格写为 ASCII STL")
+    ap.add_argument("--volume-mesh", action="store_true",
+                    help="抽取体网格（存储体系驱动）并输出统计")
+    ap.add_argument("--volume-export", metavar="VTU",
+                    help="把体网格写为 VTK XML UnstructuredGrid（VTK_POLYHEDRON）")
     ap.add_argument("--fingerprint", action="store_true", help="输出版本指纹（banner/release/编码/头部）")
     ap.add_argument("--check-length", action="store_true", help="状态表长度自校验")
     ap.add_argument("--report", action="store_true", help="语义层报告（Region/Continuum/Scene/Part）")
+    ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
+    ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
+    ap.add_argument("--grammar", action="store_true", help="状态表文法统计报告（G1）")
     args = ap.parse_args(argv)
 
     sim = SimFile(args.file)
@@ -1448,8 +2194,10 @@ def main(argv=None):
     if args.summary or not any([args.sections, args.arrays, args.state,
                                 args.objects, args.tree, args.layers,
                                 args.validate, args.mesh, args.mesh_export,
+                                args.volume_mesh, args.volume_export,
                                 args.fingerprint, args.check_length,
-                                args.report, args.export]):
+                                args.report, args.export, args.state_tree,
+                                args.grammar, args.arrays]):
         print(sim.summary())
 
     if args.fingerprint:
@@ -1477,8 +2225,14 @@ def main(argv=None):
             print("%4d @%-8d %-40s%s" % (i, s0, cls, extra))
 
     if args.arrays:
-        print("\n== 数组表 ==")
+        rep = array_annotation_report(sim)
+        ann_by_idx = {a["index"]: a for a in rep["annotations"]}
+        print("\n== 数组表（G2 语义标注 | 覆盖率 %.1f%% | A引用解析 %d 条"
+              " | 面表 %d 张 / 顶点跨度配对 %d 张）==" % (
+                  rep["labeled_pct"], rep["a_refs_resolved"],
+                  rep["face_tables"], rep["vertex_span_matched"]))
         for a in sim.arrays:
+            ann = ann_by_idx.get(a["index"]) or {}
             data = sim.array_data(a["index"])
             if _np is not None and hasattr(data, "dtype"):
                 preview = ", ".join("%r" % v for v in data[:6].tolist())
@@ -1486,8 +2240,14 @@ def main(argv=None):
                 preview = data[:40]
             else:
                 preview = repr(data[:24])
-            print("%3d  %-10s n=%-6d @%-8d  [%s ...]" % (
-                a["index"], a["type"], a["count"], a["start"], preview))
+            sem = ann.get("role") or "-"
+            names = ",".join(ann.get("names") or [])
+            ev = "; ".join((ann.get("evidence") or [])[:2])
+            print("%3d  %-10s n=%-6s @%-8d %-18s %-24s [%s ...]" % (
+                a["index"], a["type"], a["count"], a["start"], sem,
+                ("name=%s" % names) if names else "", preview))
+            if ev:
+                print("     -> %s" % ev)
 
     if args.state:
         print("\n== STAR-CORE 状态表（%d 记录）==" % len(sim.records))
@@ -1497,6 +2257,59 @@ def main(argv=None):
                 break
             print("%5d  %s" % (k, _fmt_rec(rec, sim.objmap)))
 
+    if args.state_tree:
+        print("\n== 状态表结构化语义树（G1）==")
+        tree = decode_state_tree(sim, max_records=args.max_records)
+        for k, node in enumerate(tree):
+            head = node["head"]
+            parts = ["#%d" % k, head.get("kind") or "?"]
+            if head.get("fmt") is not None:
+                parts.append("fmt=%s" % head["fmt"])
+            if head.get("name") is not None:
+                parts.append("name=%s" % head["name"])
+            if head.get("value") is not None:
+                parts.append("val=%s" % head["value"])
+            if node.get("ref"):
+                r = node["ref"]
+                parts.append("ref=%s(%s)" % (r.get("role"), r.get("ref")))
+                if r.get("target"):
+                    parts.append("-> %s%s" % (r["target"]["class"],
+                                 (" name=%r" % r["target"]["name"]) if r["target"]["name"] else ""))
+            if node.get("message"):
+                parts.append("msg=%r" % node["message"])
+            if node.get("n_elements") is not None:
+                parts.append("n_el=%d" % node["n_elements"])
+            if node.get("segments"):
+                parts.append("segments=%d" % len(node["segments"]))
+            if node.get("geometry_check"):
+                gc = node["geometry_check"]
+                parts.append("geo=%d/%d" % (gc["vertex_hits"], gc["triples"]))
+            print("  " + "  ".join(str(x) for x in parts))
+            if node.get("raw_hex"):
+                print("      raw=%s..." % node["raw_hex"][:40])
+            if args.max_records and k >= args.max_records - 1 and k + 1 < len(tree):
+                print("... 共 %d 条，其余略" % len(tree))
+                break
+
+    if args.grammar:
+        print("\n== 状态表文法统计（G1）==")
+        rep = state_grammar_report(sim)
+        print("  编码: %s   记录数: %d" % (rep["state_mode"], rep["n_records"]))
+        print("  fmt 分布: %s" % ", ".join(
+            "%s:%d" % (f, c) for f, c in rep["fmt_distribution"].items()))
+        if rep["pointer_roles"]:
+            print("  指针角色: %s" % ", ".join(
+                "%s:%d" % (r, c) for r, c in rep["pointer_roles"].items()))
+            if rep["pointer_resolved_pct"] is not None:
+                print("  对象引用解析率: %.1f%%" % rep["pointer_resolved_pct"])
+        if rep["marker_frequency"]:
+            print("  高频标记: %s" % ", ".join(
+                "?%s×%d" % (m, c) for m, c in rep["marker_frequency"].items()))
+        if rep["geometry_vertex_check"]:
+            g = rep["geometry_vertex_check"]
+            h, t = g.get("hits", 0), g.get("triples", 0)
+            print("  几何验证: %d/%d 顶点三元组命中 Float8 顶点表（%.1f%%）" % (
+                h, t, 100.0 * h / t if t else 0))
     if args.objects:
         print("\n== 对象图（%d）==" % len(sim.objects))
         for o in sim.objects:
@@ -1569,6 +2382,20 @@ def main(argv=None):
                 p["name"], p["class"], p["triangles"],
                 (" %s 顶点" % p["vertices"]) if p["vertices"] else ""))
 
+    if args.boundaries:
+        bf = sim.boundary_faces()
+        print("== 边界 → 面片映射 ==")
+        if bf is None:
+            print("  无网格或无法定位每面 patch 数组")
+        else:
+            assigned = 0
+            for name, per in sorted(bf["by_boundary"].items()):
+                n = sum(len(v) for v in per.values())
+                assigned += n
+                print("  %-22s faces=%d parts=%s" % (name, n, list(per.keys())))
+            print("  已指派面数: %d / %d" % (assigned, bf["total"]))
+            print("  （未指派 = part 表面 patch 未被列出的 region 边界引用，见文档说明）")
+
     if args.mesh:
         m = sim.extract_mesh()
         meta = m["meta"]
@@ -1587,6 +2414,38 @@ def main(argv=None):
     if args.mesh_export:
         out = sim.export_stl(args.mesh_export)
         print("\nSTL 已导出到 %s" % out)
+
+    if args.volume_mesh:
+        vol = sim.extract_volume_mesh()
+        print("\n== 体网格抽取（G3 存储体系驱动） ==")
+        if not vol.get("ok"):
+            print("  未匹配: %s" % vol.get("reason"))
+        else:
+            pts = vol.get("points")
+            fv = vol.get("face_verts")
+            loops = vol.get("cell_loops") or []
+            nfaces = len(vol.get("cell_faces") or [])
+            print("  顶点: %d  面: %d  单元: %d" % (pts.shape[0], nfaces,
+                                                    vol.get("count")))
+            print("  存储组: %s" % vol.get("groups"))
+            if fv is not None:
+                print("  面顶点跨度: 0..%d  索引总数: %d" % (int(fv.max()) if fv.size else -1,
+                                                        int(fv.size)))
+            shapes = {}
+            for cell in loops:
+                k = (len(cell), sum(len(l) for l in cell))
+                shapes[k] = shapes.get(k, 0) + 1
+            top = ", ".join("%d面/%d点 x%d" % (k[0], k[1], v)
+                            for k, v in sorted(shapes.items(),
+                                               key=lambda kv: -kv[1])[:8])
+            print("  单元形状(面数/节点数): %s" % top)
+            et = vol.get("elem_types")
+            if et:
+                print("  ElemType 编码: %r" % sorted(set(et)))
+
+    if args.volume_export:
+        out = sim.export_volume_vtu(args.volume_export)
+        print("\n体网格 VTU 已导出到 %s" % out)
 
     if args.export:
         sim.export(args.export)

@@ -170,7 +170,8 @@ def part_meshes(sim):
             iff = np.asarray(o.dict["ImportedFaces"], dtype=np.int64)
             parts.append({"name": o.name or "part%d" % o.id, "id": o.id,
                           "triangles": int(iff.shape[0]), "vertices": iv,
-                          "faces": iff, "face_types": None, "one_based": False})
+                          "faces": iff, "face_types": None, "one_based": False,
+                          "vert_index": None, "face_index": None})
             if o.name:
                 seen.add(o.name)
             continue
@@ -215,7 +216,8 @@ def part_meshes(sim):
                       "id": o.id, "triangles": t, "vertices": verts,
                       "faces": np.asarray(faces, dtype=np.int64),
                       "face_types": face_types,
-                      "one_based": False})
+                      "one_based": False,
+                      "vert_index": vert_i, "face_index": face_i})
     sim._part_meshes_cache = parts
     return parts
 
@@ -267,7 +269,7 @@ def _bind_ssm(sim, ssm, used):
                 ft = data
     return {"vertices": verts, "faces": np.asarray(faces, dtype=np.int64),
             "face_types": ft, "one_based": False, "triangles": int(faces.shape[0]),
-            "ssm_id": ssm.id}
+            "ssm_id": ssm.id, "vert_index": vert_i, "face_index": face_i}
 
 
 def serializable_surface_meshes(sim):
@@ -822,6 +824,155 @@ def build_scene_actors(sim, scene_obj, fallback_palette=True):
             actors.append(("part:%s" % p["name"], p["name"], p["id"],
                            _actor(pd, color)))
     return actors + edges, scene_camera(sim, scene_obj)
+
+
+def volume_mesh_actors(sim):
+    """体网格线框。对不上或单元过多则返回空列表 + 原因。"""
+    vol = sim.extract_volume_mesh() if sim is not None else {"ok": False, "reason": "无仿真"}
+    if not vol.get("ok"):
+        return [], vol
+    ncell = int(vol.get("count") or 0)
+    if ncell <= 0:
+        return [], {"ok": False, "reason": vol.get("reason") or "没有体单元"}
+    if ncell > 20000:
+        out = dict(vol)
+        out["reason"] = "体单元过多，线框已跳过（%d）" % ncell
+        return [], out
+    verts = vol.get("points")
+    if verts is None:
+        out = dict(vol)
+        out["ok"] = False
+        out["reason"] = "没有配套顶点表"
+        return [], out
+    verts = np.asarray(verts)
+    fv = vol.get("face_verts")
+    if fv is not None and int(np.asarray(fv).max()) >= verts.shape[0]:
+        out = dict(vol)
+        out["ok"] = False
+        out["reason"] = "体单元下标超出顶点表"
+        return [], out
+    import vtk
+    nps = _numpy_support()
+    pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(verts), deep=True))
+    pd.SetPoints(pts)
+    kind = vol.get("kind")
+    lines = vtk.vtkCellArray()
+    if kind == "poly":
+        # 任意多面体：按每单元的面环画多边形边
+        for loops in vol.get("cell_loops") or []:
+            for loop in loops:
+                n = len(loop)
+                for i in range(n):
+                    lines.InsertNextCell(2)
+                    lines.InsertCellPoint(int(loop[i]))
+                    lines.InsertCellPoint(int(loop[(i + 1) % n]))
+    else:
+        # 旧 hex/tet 兼容分支
+        cells = np.asarray(vol.get("cells"), dtype=np.int64)
+        if kind == "hex":
+            edges = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
+                     (0, 4), (1, 5), (2, 6), (3, 7))
+        else:
+            edges = ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3))
+        for cell in cells:
+            for a, b in edges:
+                lines.InsertNextCell(2)
+                lines.InsertCellPoint(int(cell[a]))
+                lines.InsertCellPoint(int(cell[b]))
+    pd.SetLines(lines)
+    actor = _actor(pd, (0.15, 0.15, 0.18), wireframe=True, line_width=1.0)
+    return [("volume:wire", "Volume Mesh", -1, actor)], vol
+
+
+def color_actors_by_array(actors, values, on_points=True):
+    """把一维标量绑到点数或面数吻合的 actor。返回着色数量。"""
+    import vtk
+    nps = _numpy_support()
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return 0
+    lo, hi = float(arr.min()), float(arr.max())
+    if hi <= lo:
+        hi = lo + 1.0
+    lut = vtk.vtkLookupTable()
+    lut.SetHueRange(0.667, 0.0)
+    lut.SetTableRange(lo, hi)
+    lut.Build()
+    n = 0
+    for _k, _name, _pid, actor in actors or []:
+        mapper = actor.GetMapper()
+        pd = mapper.GetInput() if mapper is not None else None
+        if pd is None:
+            continue
+        vtk_arr = nps.numpy_to_vtk(np.ascontiguousarray(arr), deep=True)
+        vtk_arr.SetName("scalar")
+        if on_points and pd.GetNumberOfPoints() == arr.size:
+            pd.GetPointData().SetScalars(vtk_arr)
+            mapper.SetScalarModeToUsePointData()
+        elif (not on_points) and pd.GetNumberOfCells() == arr.size:
+            pd.GetCellData().SetScalars(vtk_arr)
+            mapper.SetScalarModeToUseCellData()
+        elif pd.GetNumberOfPoints() == arr.size:
+            pd.GetPointData().SetScalars(vtk_arr)
+            mapper.SetScalarModeToUsePointData()
+        elif pd.GetNumberOfCells() == arr.size:
+            pd.GetCellData().SetScalars(vtk_arr)
+            mapper.SetScalarModeToUseCellData()
+        else:
+            continue
+        mapper.SetLookupTable(lut)
+        mapper.SetScalarRange(lo, hi)
+        mapper.ScalarVisibilityOn()
+        n += 1
+    return n
+
+
+def boundary_colored_polydata(sim):
+    """按边界着色的主 part 网格 polydata。
+
+    用 boundary_faces 的 per-face patch 匹配为面片着色（每边界一色），
+    未指派面用中性色。返回 {"polydata", "label_names", "main_part"} 或 None。
+    """
+    import vtk
+    bf = sim.boundary_faces()
+    if bf is None:
+        return None
+    parts = sim._parts_with_mesh()
+    main = max(parts, key=lambda p: p["triangles"], default=None) if parts else None
+    if main is None or main.get("patch") is None:
+        return None
+    m = sim.extract_mesh()
+    if m["vertices"] is None:
+        return None
+    v = np.asarray(m["vertices"], dtype=np.float64)
+    fi = main["face_array"]
+    faces = np.asarray(sim.array_data(fi), dtype=np.int64).reshape(-1, 3)
+    if faces.size and faces.min() >= 1:
+        faces = faces - 1
+    pd = mesh_polydata(v, faces, one_based=False)
+    patch = main["patch"]
+    br = sim.part_surface_patches()["boundary_refs"]
+    name_to_label = {n: k + 1 for k, n in enumerate(sorted(br))}
+    colors = vtk.vtkUnsignedCharArray()
+    colors.SetNumberOfComponents(3)
+    colors.SetName("boundary")
+    palette = [(0.95, 0.45, 0.25), (0.25, 0.80, 0.45), (0.30, 0.60, 0.95),
+               (0.90, 0.80, 0.20), (0.75, 0.35, 0.85), (0.30, 0.85, 0.85)]
+    neutral = (0.55, 0.55, 0.60)
+    for x in patch.tolist():
+        label = 0
+        for n, ids in br.items():
+            if int(x) in ids:
+                label = name_to_label[n]
+                break
+        c = palette[(label - 1) % len(palette)] if label else neutral
+        colors.InsertNextTuple3(int(c[0] * 255), int(c[1] * 255), int(c[2] * 255))
+    pd.GetCellData().SetScalars(colors)
+    return {"polydata": pd,
+            "label_names": {v: k for k, v in name_to_label.items()},
+            "main_part": main["name"]}
 
 
 def bounds_of(actors):

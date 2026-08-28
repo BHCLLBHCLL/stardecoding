@@ -77,10 +77,16 @@
   点/面表，**19 个有网格元数据的文件中 18 个面数精确匹配主 part 且索引自洽**
   （1 个顶点数组为启发式、2 个无网格的纯几何文件正确返回空）；STL 导出验证通过
   （adjointWing：2824 面/1412 顶点）。
-- **仍开放**：其余数组的字段级语义（法向、面积、单元/体表、边界映射、
-  index_map/node_id_index_map/schema_embedding_map/child 所指的表）未解。
-  语料中大量 `N, N, N*2` 式 Float8 三元组与 3 倍数之外的长度（如 cylinderBase 的
-  732/744/744）表明除顶点外还有面数据/向量场表。
+- ~~边界映射~~ ✅（本阶段改进①）：`boundary_faces()`/`part_surface_patches()`/`--boundaries`
+  按 part 分组：Boundary → PartSurfaces → PartSurface.Index → 每面 patch id 数组
+  （Integer4、长度==面数、小范围 patch 号）匹配。adjointWing 7 个边界指派
+  612/2836 面，checkValve 5 个边界 286/2256 面；GUI `boundary_colored_polydata`
+  按边界着色主 part 网格（2824 面/7 色标）。**注意**：未指派面 = part 表面 patch
+  未被列出的 region 边界引用（多为 part 内部/默认表面）；每个 part 的 patch 数组
+  识别为启发式，跨 part 边界面聚合尚需 per-part 细化。
+- **仍开放**：其余数组的字段级语义（法向、面积、单元/体表、index_map/node_id_index_map/
+  schema_embedding_map/child 所指的表）未解。语料中大量 `N, N, N*2` 式 Float8 三元组
+  与 3 倍数之外的长度（如 cylinderBase 的 732/744/744）表明除顶点外还有面数据/向量场表。
 - 状态表记录（`index_map82 0 A17` 等）与数组块的对应关系可做自动标注：
   在 21 文件上交叉验证"每个 A<n> 引用的数组"与"网格规模自洽性"——待做。
 
@@ -116,7 +122,7 @@
 | --- | --- | --- |
 | 文件元信息 | ✅ 版本/时间/对象数 | — |
 | CAD 几何（cadmodeler 顶点/边/面/名称引用） | ⚠️ 对象已解析，坐标在状态表 T 块/数组 | 未能重建 B-Rep/几何拓扑 |
-| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3） | 体网格（体单元表）待做 |
+| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3）；体网格已抽取（G3：DuplicateStorageManager 存储体系驱动 + 面→单元反演 → VTK_POLYHEDRON，21 文件 4 个体网格文件单元数精确、VTU 导出） | 边界↔面片映射见下行（G4） |
 | Region/Boundary/Interface | ✅ 已关联网格表（改进⑦ --report：Region→Part→三角数） | 边界↔面片映射未做 |
 | 场景/视图/Display/注记 | ✅ 已重建摘要（Scene→Displayer→视图，改进⑦） | 显示参数未解码 |
 | 绘图/监视器/报告 | ⚠️ 对象已解析 | 未重建曲线数据 |
