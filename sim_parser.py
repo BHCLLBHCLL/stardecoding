@@ -2183,6 +2183,7 @@ def main(argv=None):
     ap.add_argument("--check-length", action="store_true", help="状态表长度自校验")
     ap.add_argument("--report", action="store_true", help="语义层报告（Region/Continuum/Scene/Part）")
     ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
+    ap.add_argument("--binary-decode", type=int, default=0, help="二进制状态表：解码前 N 个带 raw 记录（int/double 段显示）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
@@ -2381,6 +2382,22 @@ def main(argv=None):
             print("    %r %s: %s 三角%s" % (
                 p["name"], p["class"], p["triangles"],
                 (" %s 顶点" % p["vertices"]) if p["vertices"] else ""))
+
+    if args.binary_decode:
+        print("== 二进制状态表数值流解码（启发式：2 字节整 + 8 字节双精度段） ==")
+        n = 0
+        for rec in sim.records:
+            if rec.get("values_decoded") and n < args.binary_decode:
+                vals = rec["values_decoded"]
+                ds = rec.get("decode_stats") or {}
+                head = " ".join("%s:%s" % (k, ("%.5g" % v) if k == "double" else v)
+                                for k, _o, v in vals[:14])
+                print("  rec %3d fmt=%s bits=%s stats=%s" % (
+                    rec.get("token_index", -1), rec.get("fmt"), rec.get("bits"), ds))
+                print("       %s..." % head)
+                n += 1
+        if n == 0:
+            print("  无带 raw 的二进制记录（文件可能为 ASCII 编码）")
 
     if args.boundaries:
         bf = sim.boundary_faces()
