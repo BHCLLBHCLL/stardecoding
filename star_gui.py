@@ -1496,6 +1496,62 @@ class StarMainWindow(QMainWindow):
         self.msg("标量着色：数组[%d] n=%d → %d 个 actor" % (
             idx, int(data.size if hasattr(data, "size") else len(data)), colored))
 
+    def cmd_official_lut(self):
+        """G8：按场景官方参数渲染——PredefinedLookupTable 色表 + 场全局范围。"""
+        if self.sim is None:
+            return
+        s8 = self.sim.extract_scene_display()
+        if not s8.get("ok"):
+            return self.msg("场景解码：%s" % s8.get("reason"), "nyi")
+        entry = None
+        for s in s8["scenes"]:
+            for d in s["displayers"]:
+                if d.get("colormap"):
+                    entry = (s, d)
+                    break
+            if entry:
+                break
+        if entry is None:
+            return self.msg("场景无 ScalarDisplayer 颜色映射", "nyi")
+        scene, disp = entry
+        cm = disp["colormap"]
+        from star_gui_vtk import color_actors_by_array, lut_from_colormap
+        lut = lut_from_colormap(cm.get("values"), cm.get("alphas"))
+        if lut is None:
+            return self.msg("颜色映射断点非法（%r）" % cm.get("name"), "nyi")
+        sf = self.sim.extract_solution_fields()
+        data = None
+        fname = (disp.get("field") or {}).get("name", "")
+        if sf.get("ok") and fname:
+            base = fname.split(":")[0].strip().lower()
+            want_mag = "magnitude" in fname.lower()
+            for f in sf["fields"]:
+                tag = f["name"].lower()
+                if base and base in tag and (not want_mag or "magnitude" in tag):
+                    data = sf["data"].get(f["name"])
+                    break
+        if data is None:
+            return self.msg("未找到解场数据匹配 %r（色表 %r 已就绪）" % (
+                fname, cm.get("name")), "nyi")
+        rng = (disp.get("field") or {}).get("range")
+        lo = hi = None
+        if isinstance(rng, list) and len(rng) == 2:
+            lo, hi = float(rng[0]), float(rng[1])
+        if lo is None:
+            import numpy as np
+            arr = np.asarray(data, dtype=np.float64).reshape(-1)
+            lo, hi = float(arr.min()), float(arr.max())
+        lut.SetTableRange(lo, hi)
+        colored = 0
+        if not HEADLESS:
+            for vp in self._iter_viewports():
+                colored += color_actors_by_array(
+                    vp.actors, data, on_points=False, lut=lut)
+                if hasattr(vp, "render"):
+                    vp.render()
+        self.msg("官方色表 %r（场 %r 范围 %.4g..%.4g）→ %d 个 actor（场景 %r）" % (
+            cm.get("name"), fname, lo, hi, colored, scene["name"]))
+
     def on_property_edited(self, obj, key, value):
         if obj is None:
             return

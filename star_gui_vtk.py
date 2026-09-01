@@ -886,20 +886,73 @@ def volume_mesh_actors(sim):
     return [("volume:wire", "Volume Mesh", -1, actor)], vol
 
 
-def color_actors_by_array(actors, values, on_points=True):
-    """把一维标量绑到点数或面数吻合的 actor。返回着色数量。"""
+def lut_from_colormap(values, alphas=None, lo=0.0, hi=1.0, samples=256):
+    """官方 PredefinedLookupTable.ColorMap → vtkLookupTable（G8）。
+
+    ColorValues 为 4n 组 (位置, R, G, B) 断点（blue-yellow-red 共 9 组，
+    位置单调 0→1 且非均匀，黄色≈0.5 处）。官方断点间距不等而
+    vtkLookupTable 只支持等距表，故按位置线性插值重采样为 samples 级。
+    AlphaValues 仅在与断点等长时逐断点生效，否则按不透明渲染（官方默认）。
+    断点不足 2 组或长度不合法时返回 None。
+    """
+    import bisect
+    import vtk
+    vals = [float(x) for x in (values or [])]
+    if len(vals) < 8 or len(vals) % 4:
+        return None
+    n = len(vals) // 4
+    pos = vals[0::4]
+    rgb = [(vals[4 * i + 1], vals[4 * i + 2], vals[4 * i + 3])
+           for i in range(n)]
+    if pos[0] > pos[-1]:
+        pos.reverse()
+        rgb.reverse()
+    al = [float(x) for x in (alphas or [])]
+    per_bp = len(al) == n
+    lut = vtk.vtkLookupTable()
+    m = max(2, int(samples))
+    lut.SetNumberOfTableValues(m)
+    for j in range(m):
+        t = j / float(m - 1)
+        k = min(max(bisect.bisect_right(pos, t) - 1, 0), n - 2)
+        span = pos[k + 1] - pos[k]
+        f = min(max((t - pos[k]) / span, 0.0), 1.0) if span > 0 else 0.0
+        a = al[k] + (al[k + 1] - al[k]) * f if per_bp else 1.0
+        lut.SetTableValue(j,
+                          rgb[k][0] + (rgb[k + 1][0] - rgb[k][0]) * f,
+                          rgb[k][1] + (rgb[k + 1][1] - rgb[k][1]) * f,
+                          rgb[k][2] + (rgb[k + 1][2] - rgb[k][2]) * f,
+                          a)
+    if hi <= lo:
+        hi = lo + 1.0
+    lut.SetTableRange(lo, hi)
+    return lut
+
+
+def color_actors_by_array(actors, values, on_points=True, lut=None):
+    """把一维标量绑到点数或面数吻合的 actor。返回着色数量。
+
+    lut 为 None 时用内置蓝→红 hue 渐变；传入 lut_from_colormap 产出的
+    官方色表则按断点映射（G8：场景按官方参数渲染）。
+    """
     import vtk
     nps = _numpy_support()
     arr = np.asarray(values, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         return 0
-    lo, hi = float(arr.min()), float(arr.max())
-    if hi <= lo:
-        hi = lo + 1.0
-    lut = vtk.vtkLookupTable()
-    lut.SetHueRange(0.667, 0.0)
-    lut.SetTableRange(lo, hi)
-    lut.Build()
+    if lut is None:
+        lo, hi = float(arr.min()), float(arr.max())
+        if hi <= lo:
+            hi = lo + 1.0
+        lut = vtk.vtkLookupTable()
+        lut.SetHueRange(0.667, 0.0)
+        lut.SetTableRange(lo, hi)
+        lut.Build()
+    else:
+        rng = lut.GetTableRange()
+        lo, hi = float(rng[0]), float(rng[1])
+        if hi <= lo:
+            hi = lo + 1.0
     n = 0
     for _k, _name, _pid, actor in actors or []:
         mapper = actor.GetMapper()

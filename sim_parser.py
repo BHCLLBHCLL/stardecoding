@@ -2336,6 +2336,198 @@ class SimFile:
         return {"ok": True, "continua": continua, "materials": materials,
                 "motion": motion, "reason": ""}
 
+    def _g8_parts(self, d2):
+        """Displayer → InputParts/Collector PartGroup → Keys 解引用（Region/Boundary）。"""
+        pg = self.objmap.get(d2.dict.get("InputParts")) \
+            or self.objmap.get(d2.dict.get("Collector"))
+        parts = []
+        if pg is None:
+            return parts
+        for k in pg.dict.get("Keys") or []:
+            t = self.objmap.get(k)
+            if t is not None:
+                parts.append({"name": self._fix_name(t.name) or "",
+                              "class": (t.class_name or "").rsplit(".", 1)[-1]})
+        return parts
+
+    def _g8_displayer(self, d2):
+        """单个 Displayer → 通用属性 + ScalarDisplayer 的场/图例/颜色映射。"""
+        tail = (d2.class_name or "").rsplit(".", 1)[-1]
+        om = self.objmap
+        col = d2.dict.get("DisplayerColor")
+        entry = {
+            "id": d2.id, "class": tail,
+            "name": self._fix_name(d2.name)
+                    or self._fix_name(d2.dict.get("PresentationName") or ""),
+            "color": col if isinstance(col, list) else None,
+            "opacity": d2.dict.get("Opacity"),
+            "parts": self._g8_parts(d2)}
+        rep = om.get(d2.dict.get("Representation"))
+        if rep is not None:
+            entry["representation"] = (rep.class_name or "").rsplit(".", 1)[-1]
+        if tail != "ScalarDisplayer":
+            return entry
+        q = om.get(d2.dict.get("ScalarDisplayQuantity"))
+        if q is not None:
+            ff = om.get(q.dict.get("FieldFunction"))
+            un = om.get(q.dict.get("Units"))
+            field = {
+                "name": self._fix_name(ff.name) if ff is not None else "",
+                "units": self._fix_name(un.name) if un is not None else "",
+                "auto_range": q.dict.get("AutoRange")}
+            gr = q.dict.get("GlobalRange")
+            if isinstance(gr, list) and len(gr) == 2:
+                field["range"] = gr
+            lo = om.get(q.dict.get("MinimumValue"))
+            hi = om.get(q.dict.get("MaximumValue"))
+            if lo is not None and "Value" in lo.dict:
+                field["min"] = lo.dict.get("Value")
+            if hi is not None and "Value" in hi.dict:
+                field["max"] = hi.dict.get("Value")
+            entry["field"] = field
+        lg = om.get(d2.dict.get("Legend"))
+        if lg is not None:
+            lut = om.get(lg.dict.get("LookupTable"))
+            entry["legend"] = {
+                "lut": self._fix_name(lut.name) if lut is not None else "",
+                "lut_class": (lut.class_name or "").rsplit(".", 1)[-1]
+                             if lut is not None else "",
+                "labels": lg.dict.get("NumberOfLabels"),
+                "format": lg.dict.get("LabelFormat"),
+                "position": lg.dict.get("PositionCoordinate"),
+                "height": lg.dict.get("Height"),
+                "visible": lg.dict.get("Visible")}
+            cm = lut.dict.get("ColorMap") if lut is not None else None
+            if isinstance(cm, dict):
+                cv = cm.get("ColorValues")
+                bps = []
+                if isinstance(cv, list) and len(cv) >= 8 and len(cv) % 4 == 0:
+                    for i in range(0, len(cv), 4):
+                        bps.append({"pos": cv[i], "rgb": cv[i + 1:i + 4]})
+                entry["colormap"] = {
+                    "name": self._fix_name(lut.name) or "",
+                    "values": cv,
+                    "breakpoints": bps,
+                    "alphas": cm.get("AlphaValues"),
+                    "colorspace": cm.get("ColorSpace")}
+        return entry
+
+    def _g8_annotations(self):
+        """全局注记定义（AnnotationManager.Keys → star.vis.*Annotation 摘要）。"""
+        am = next((o for o in self.objects
+                   if (o.class_name or "") == "star.vis.AnnotationManager"),
+                  None)
+        defs = {}
+        if am is None:
+            return defs
+        for k in am.dict.get("Keys") or []:
+            a = self.objmap.get(k)
+            if a is None or not (a.class_name or "").endswith("Annotation"):
+                continue
+            defs[a.id] = {
+                "class": (a.class_name or "").rsplit(".", 1)[-1],
+                "name": self._fix_name(a.name)
+                        or self._fix_name(a.dict.get("PresentationName") or ""),
+                "text": a.dict.get("Text") or a.dict.get("DisplayText") or "",
+                "color": a.dict.get("Color"),
+                "opacity": a.dict.get("Opacity"),
+                "font": a.dict.get("FontString")}
+        return defs
+
+    def extract_scene_display(self):
+        """G8：场景显示参数解码（Scene → Displayer/颜色映射/图例/灯光）。
+
+        语义链（G8 侦查结论，语料 vortexShed_tutor.sim 对照）：
+          - star.vis.Scene：DisplayerManager.Keys → PartDisplayer/ScalarDisplayer；
+            BackgroundColorMode + SolidBackgroundColor（实背景）、LightManager
+            子树（Light 的 Azimuth/Elevation/Intensity/Color/Enabled）、
+            CurrentView/AnnotationPropManager（注记挂点）；
+          - PartDisplayer：DisplayerColor 直接 RGB 三元组、Opacity、
+            Representation → FvRepresentation、InputParts PartGroup.Keys →
+            Region/Boundary（部件解引用，与 semantic_report 同构）；
+          - ScalarDisplayer：ScalarDisplayQuantity 键 → FieldFunction（名称）、
+            Units（'/s'）、GlobalRange [min,max] 直接列表 + Minimum/MaximumValue
+            物理量；Legend 键 → LookupTable（PredefinedLookupTable 名）+
+            LabelFormat/PositionCoordinate/NumberOfLabels；LookupTable.ColorMap
+            携带 ColorValues（4n 组「位置,R,G,B」断点，位置单调 0→1 非均匀）
+            + AlphaValues；
+          - 注记链：Scene.AnnotationPropManager → prop.Keys → *AnnotationProp
+            （Annotation 解引用 + Visible/Position/Height/Width/Location），
+            AnnotationGroup（SimpleViewAnnotationGroup）.Keys → 场景默认显示的
+            注记对象；全局定义 AnnotationManager.Keys → star.vis.*Annotation
+            （Text/Color/Opacity/FontString）。
+        返回 {"ok", "scenes": [...], "reason"}；无 Scene 对象时诚实拒绝。
+        """
+        om = self.objmap
+        scenes = []
+        for o in self.objects:
+            if (o.class_name or "") != "star.vis.Scene":
+                continue
+            lights = []
+            for c in self.children.get(o.id, []):
+                if (c.class_name or "").rsplit(".", 1)[-1] != "LightManager":
+                    continue
+                for lt in self.children.get(c.id, []):
+                    if (lt.class_name or "").rsplit(".", 1)[-1] != "Light":
+                        continue
+                    lights.append({
+                        "name": self._fix_name(lt.name)
+                                or self._fix_name(
+                                    lt.dict.get("PresentationName") or ""),
+                        "azimuth": lt.dict.get("Azimuth"),
+                        "elevation": lt.dict.get("Elevation"),
+                        "intensity": lt.dict.get("Intensity"),
+                        "color": lt.dict.get("Color"),
+                        "enabled": lt.dict.get("Enabled")})
+            bg = {"mode": o.dict.get("BackgroundColorMode")}
+            sb = om.get(o.dict.get("SolidBackgroundColor"))
+            if sb is not None and "Color" in sb.dict:
+                bg["solid"] = sb.dict.get("Color")
+            displayers = []
+            dm = om.get(o.dict.get("DisplayerManager"))
+            if dm is not None:
+                for k in dm.dict.get("Keys") or []:
+                    d2 = om.get(k)
+                    if d2 is not None and (d2.class_name or "").startswith(
+                            "star.vis.") and "Displayer" in (d2.class_name or ""):
+                        displayers.append(self._g8_displayer(d2))
+            anns = {"props": [], "shown": []}
+            apm = om.get(o.dict.get("AnnotationPropManager"))
+            if apm is not None:
+                for k in apm.dict.get("Keys") or []:
+                    pr = om.get(k)
+                    if pr is None or "AnnotationProp" not in (
+                            pr.class_name or ""):
+                        continue
+                    tgt = om.get(pr.dict.get("Annotation"))
+                    anns["props"].append({
+                        "class": (pr.class_name or "").rsplit(".", 1)[-1],
+                        "annotation": self._fix_name(tgt.name)
+                                      if tgt is not None else "",
+                        "visible": pr.dict.get("Visible"),
+                        "position": pr.dict.get("Position"),
+                        "height": pr.dict.get("Height"),
+                        "width": pr.dict.get("Width"),
+                        "location": pr.dict.get("Location")})
+                grp = om.get(apm.dict.get("AnnotationGroup"))
+                if grp is not None:
+                    for k in grp.dict.get("Keys") or []:
+                        a = om.get(k)
+                        if a is not None:
+                            anns["shown"].append(self._fix_name(a.name) or "")
+            scenes.append({
+                "id": o.id,
+                "name": self._fix_name(o.name)
+                        or self._fix_name(
+                            o.dict.get("PresentationName") or ""),
+                "background": bg, "lights": lights, "displayers": displayers,
+                "annotations": anns})
+        if not scenes:
+            return {"ok": False, "scenes": [], "annotations": {},
+                    "reason": "无 Scene 对象（纯几何/网格文件）"}
+        return {"ok": True, "scenes": scenes,
+                "annotations": self._g8_annotations(), "reason": ""}
+
     # ---- 汇总 ----
     def summary(self):
         L = []
@@ -2928,6 +3120,8 @@ def main(argv=None):
     ap.add_argument("--report", action="store_true", help="语义层报告（Region/Continuum/Scene/Part）")
     ap.add_argument("--physics", action="store_true",
                     help="物理模型/材料/运动参数报告（G7）")
+    ap.add_argument("--scenes", action="store_true",
+                    help="场景显示参数报告（G8：Displayer/颜色映射/图例/灯光）")
     ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
     ap.add_argument("--binary-decode", type=int, default=0, help="二进制状态表：解码前 N 个带 raw 记录（int/double 段显示）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
@@ -2944,6 +3138,8 @@ def main(argv=None):
                                 args.volume_mesh, args.volume_export,
                                 args.volume_boundaries, args.boundary_csv,
                                 args.solution_fields, args.solution_csv,
+                                args.curves, args.curves_csv,
+                                args.physics, args.scenes,
                                 args.boundaries,
                                 args.fingerprint, args.check_length,
                                 args.report, args.export, args.state_tree,
@@ -3173,6 +3369,69 @@ def main(argv=None):
                     (" %r" % m3["motion_name"]) if m3["motion_name"] else "",
                     m3["ref_frame_class"].rsplit(".", 1)[-1],
                     ("（%s）" % extras) if extras else ""))
+
+    if args.scenes:
+        s8 = sim.extract_scene_display()
+        print("\n== 场景显示参数（G8） ==")
+        if not s8.get("ok"):
+            print("  诚实拒绝：%s" % s8.get("reason"))
+        for s in s8["scenes"]:
+            bg = s["background"]
+            ann = s.get("annotations") or {}
+            print("  Scene %r (id %d) 背景 mode=%s%s: %d 显示器, %d 灯光, %d 注记显示" % (
+                s["name"], s["id"], bg.get("mode"),
+                (" solid=%s" % (bg.get("solid"),)) if bg.get("solid") else "",
+                len(s["displayers"]), len(s["lights"]),
+                len(ann.get("shown") or [])))
+            for lt in s["lights"]:
+                print("    灯光 %r 方位=%s 仰角=%s 强度=%s 色=%s 启用=%s" % (
+                    lt["name"], lt["azimuth"], lt["elevation"],
+                    lt["intensity"], lt["color"], lt["enabled"]))
+            for d2 in s["displayers"]:
+                line = "    %s %r 透明度=%s" % (
+                    d2["class"], d2["name"], d2["opacity"])
+                if d2.get("color"):
+                    line += " 色=%s" % (tuple(round(c, 3) for c in d2["color"]),)
+                if d2.get("parts"):
+                    line += " 部件=%s" % ",".join(
+                        "%s(%s)" % (p["name"], p["class"])
+                        for p in d2["parts"][:4])
+                print(line)
+                if d2.get("field"):
+                    f = d2["field"]
+                    print("      场=%r 单位=%r 全局范围=%s" % (
+                        f.get("name"), f.get("units"),
+                        f.get("range") or (f.get("min"), f.get("max"))))
+                if d2.get("legend"):
+                    lg = d2["legend"]
+                    print("      图例 LUT=%r(%s) 标签数=%s 格式=%r 位置=%s" % (
+                        lg.get("lut"), lg.get("lut_class"), lg.get("labels"),
+                        lg.get("format"), lg.get("position")))
+                if d2.get("colormap"):
+                    cm = d2["colormap"]
+                    bps = cm.get("breakpoints") or []
+                    if bps:
+                        b0 = (round(bps[0]["pos"], 3),
+                              tuple(round(c, 3) for c in bps[0]["rgb"]))
+                        b1 = (round(bps[-1]["pos"], 3),
+                              tuple(round(c, 3) for c in bps[-1]["rgb"]))
+                    else:
+                        b0 = b1 = "-"
+                    print("      颜色映射 %r：%d 组断点(位置,R,G,B) 首=%s 末=%s alpha=%s" % (
+                        cm.get("name"), len(bps), b0, b1, cm.get("alphas")))
+            if ann.get("props"):
+                print("    注记显示属性：%s" % "; ".join(
+                    "%s→%s 可见=%s 位置=%s 高=%s" % (
+                        p["class"], p["annotation"] or "-", p["visible"],
+                        p["position"], p["height"])
+                    for p in ann["props"]))
+            if ann.get("shown"):
+                print("    注记组（AnnotationGroup.Keys 解引用）：%s" % ",".join(
+                    ann["shown"]))
+        defs8 = s8.get("annotations") or {}
+        if defs8:
+            print("  全局注记定义 %d 项：%s" % (len(defs8), "; ".join(
+                "%s(%r)" % (d["class"], d["name"]) for d in defs8.values())))
 
     if args.binary_decode:
         print("== 二进制状态表数值流解码（启发式：2 字节整 + 8 字节双精度段） ==")

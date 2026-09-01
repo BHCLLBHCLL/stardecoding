@@ -526,4 +526,99 @@ finally:
     shutil.rmtree(_p1t, ignore_errors=True)
 print("P1 roundtrip: 模型标量/嵌套组标量/材料物理量 三类锚点落盘往返 全通过")
 
+# --- G8：场景显示参数解码（Scene → Displayer/颜色映射/图例/灯光/诚实拒绝） ---
+# 断言样本 = vortexShed_tutor.sim（G5 同款；G8 侦查值全部来自该文件）
+_s8 = SimFile(_g5p).extract_scene_display()
+assert _s8.get("ok") and len(_s8["scenes"]) == 3, \
+    "vortexShed 应有 3 个场景：%s" % _s8.get("reason")
+_s8scal = next(s for s in _s8["scenes"]
+               if any(d["class"] == "ScalarDisplayer" for d in s["displayers"]))
+_s8d = {d["class"]: d for d in _s8scal["displayers"]}
+assert "PartDisplayer" in _s8d and "ScalarDisplayer" in _s8d
+_p8 = _s8d["PartDisplayer"]
+assert len(_p8["color"]) == 3 and _p8["opacity"] == 1.0
+assert any(p["class"] == "Boundary" and p["name"] == "Inlet"
+           for p in _p8["parts"]), "PartDisplayer 部件应解引用 Inlet 边界"
+_s8q = _s8d["ScalarDisplayer"]
+assert _s8q["field"]["name"] == "Vorticity: Magnitude"
+assert _s8q["field"]["units"] == "/s"
+assert abs(_s8q["field"]["range"][0] - 0.0009035094315465401) < 1e-9
+assert abs(_s8q["field"]["range"][1] - 278.1039638285214) < 1e-6
+assert _s8q["representation"] == "FvRepresentation"
+_l8 = _s8q["legend"]
+assert _l8["lut"] == "blue-yellow-red" and _l8["lut_class"] == "PredefinedLookupTable"
+assert _l8["format"] == "%-6.3g" and _l8["labels"] == 3
+assert _l8["position"] == [0.73, 0.08] and _l8["visible"] is True
+_c8 = _s8q["colormap"]
+assert len(_c8["values"]) == 36, "blue-yellow-red 应为 9 组 (位置,R,G,B) 断点"
+_b8 = _c8["breakpoints"]
+assert len(_b8) == 9
+assert all(_b8[i + 1]["pos"] > _b8[i]["pos"] for i in range(8)), \
+    "断点位置应单调 0→1"
+assert abs(_b8[0]["pos"]) < 1e-12 and abs(_b8[-1]["pos"] - 1.0) < 1e-12
+assert _b8[0]["rgb"][2] > _b8[0]["rgb"][0] and _b8[0]["rgb"][2] > _b8[0]["rgb"][1], \
+    "首断点应为蓝"
+assert _b8[5]["rgb"][0] > 0.9 and _b8[5]["rgb"][1] > 0.9 \
+    and _b8[5]["rgb"][2] < 0.5, "位置≈0.5 处应为黄"
+assert _b8[-1]["rgb"][0] > _b8[-1]["rgb"][1] and _b8[-1]["rgb"][0] > _b8[-1]["rgb"][2], \
+    "末断点应为红"
+assert len(_s8scal["lights"]) == 4
+assert _s8scal["lights"][0]["azimuth"] == 30.0 \
+    and _s8scal["lights"][0]["elevation"] == 30.0 \
+    and _s8scal["lights"][0]["intensity"] == 1.0 \
+    and _s8scal["lights"][0]["enabled"] is True
+# 注记链：全局定义 5 项；场景级 props（Annotation 解引用/可见性/位置/高宽）
+#   + AnnotationGroup.Keys 解引用（标量场景 1 显示 Logo + Solution Time）
+_a8defs = _s8.get("annotations") or {}
+assert len(_a8defs) == 5, "vortexShed 全局注记定义应为 5 项"
+assert any(d["class"] == "LogoAnnotation" and d["name"] == "Logo"
+           for d in _a8defs.values())
+assert any(d["class"] == "PhysicalTimeAnnotation"
+           and d["name"] == "Solution Time" for d in _a8defs.values())
+_anc8 = _s8scal["annotations"]
+assert any(p["class"] == "LogoAnnotationProp" and p["annotation"] == "Logo"
+           and p["visible"] is True and abs(p["position"][0] - 0.015) < 1e-12
+           and p["position"][1] == 0.9 and p["height"] == 0.1
+           for p in _anc8["props"]), "Logo 注记显示属性应解引用并携带位置/高"
+assert any(p["class"] == "PhysicalTimeAnnotationProp"
+           and p["annotation"] == "Solution Time" and p["visible"] is True
+           and p["height"] == 0.05 for p in _anc8["props"])
+assert _anc8["shown"] == ["Logo", "Solution Time"], \
+    "标量场景 1 注记组应解引用 Logo + Solution Time"
+# 几何场景仅 PartDisplayer（无场/图例），其余场景结构独立成立
+_s8geo = next(s for s in _s8["scenes"]
+              if all(d["class"] == "PartDisplayer" for d in s["displayers"]))
+assert _s8geo["displayers"] and _s8geo["lights"]
+# airfoil.sim：Mesh + Scalar - Mach 双场景（ScalarDisplayer 次级样本）
+_a8 = SimFile(_find("airfoil.sim")).extract_scene_display()
+assert _a8.get("ok") and len(_a8["scenes"]) == 2
+assert any(d["class"] == "ScalarDisplayer"
+           for s in _a8["scenes"] for d in s["displayers"])
+# 诚实拒绝：纯几何 CAD 无 Scene
+_n8 = SimFile(_find("directedMeshCAD.sim")).extract_scene_display()
+assert not _n8.get("ok") and "Scene" in _n8.get("reason")
+print("G8 scenes: vortexShed %d 场景（场=%r 范围 %.4g..%.4g 图例=%r 断点=%d 组"
+      " 注记=%d 定义/%d 显示） + airfoil 双场景, directedMeshCAD 诚实拒绝（%s）" % (
+          len(_s8["scenes"]), _s8q["field"]["name"],
+          _s8q["field"]["range"][0], _s8q["field"]["range"][1],
+          _l8["lut"], len(_b8), len(_a8defs), len(_anc8["shown"]),
+          _n8.get("reason")))
+
+# G8 GUI：官方 ColorMap → vtkLookupTable（断点重采样 + 通道主导色校验）
+try:
+    from star_gui_vtk import lut_from_colormap
+    _lut8 = lut_from_colormap(_c8["values"], _c8["alphas"],
+                              lo=_s8q["field"]["range"][0],
+                              hi=_s8q["field"]["range"][1])
+    _n8t = _lut8.GetNumberOfTableValues()
+    assert _lut8 is not None and _n8t == 256
+    _c8lo, _c8hi = [0.0] * 4, [0.0] * 4
+    _lut8.GetTableValue(0, _c8lo)
+    _lut8.GetTableValue(_n8t - 1, _c8hi)
+    assert _c8lo[2] > _c8lo[0] and _c8lo[2] > _c8lo[1], "表首应为蓝"
+    assert _c8hi[0] > _c8hi[1] and _c8hi[0] > _c8hi[2], "表末应为红"
+    print("G8 gui: 官方色表 blue-yellow-red 9 断点→%d 级 LUT 通过（蓝→红）" % _n8t)
+except ImportError:
+    print("G8 gui: vtk 不可用，跳过官方色表冒烟")
+
 print("ALL CHECKS PASSED")
