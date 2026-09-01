@@ -441,7 +441,7 @@ _g7g = StarSceneModel(_g7s)
 _g7pc = next(o for o in _g7s.objects
              if o.class_name == "star.common.PhysicsContinuum")
 _g7k = [k for k, _t, _r in _g7g.properties(_g7pc)]
-assert sum(k.startswith("G7:") for k in _g7k) == len(_g7c["models"])
+assert sum(k.startswith("G7:模型 ") for k in _g7k) == len(_g7c["models"])
 assert "G7:模型 SstKwTurbModel" in _g7k
 _g7air = next(o for o in _g7s.objects if o.class_name == "star.material.Gas")
 assert any(k == "G7:属性 DynamicViscosityProperty" and "2e-05 Pa-s" in t
@@ -453,5 +453,77 @@ assert _g7mr.get("G7:AxisVector") == "(1, 0, 0) Dimensionless"
 assert _g7mr.get("G7:运动 Region") == "Rotating Region"
 print("G7 gui: 属性面板 G7 行 连续体=%d 模型行 + 材料属性行 + 旋转帧 15 rps" % (
     len(_g7c["models"])))
+
+# --- P1：物理参数写侧（G7 编辑锚点 + 属性面板可编辑描述符行） ---
+# 嵌套参数组锚点：_oid 回指承载对象（原始标量叶子的写回目标）
+assert isinstance(_sst7["VorticityTimeParameter"]["_oid"], int)
+_vt7o = _g7s.objmap.get(_sst7["VorticityTimeParameter"]["_oid"])
+assert _vt7o is not None and _vt7o.dict.get("Value") == 0.075
+assert isinstance(_sst7["KwTurbCompressibilityParameters"]["_oid"], int)
+# 物理量锚点：oid/key/kind 可解析回源对象（材料常量属性）
+_q7 = _g7s.objmap.get(_air7["DynamicViscosityProperty"]["oid"])
+assert _q7 is not None and _q7.dict.get("Value") == 2e-05
+assert _air7["DynamicViscosityProperty"]["kind"] == "quantity"
+assert isinstance(_air7["DynamicViscosityProperty"]["oid"], int)
+assert _air7["DynamicViscosityProperty"]["key"] == "Value"
+assert _rot7["RotationRate"]["kind"] == "quantity"
+assert _rot7["RotationRate"]["key"] == "Value"
+_g7rows = dict((k, r) for k, _t, r in _g7g.properties(_g7pc))
+_a1r = _g7rows.get("G7:A1")
+assert isinstance(_a1r, dict) and _a1r["kind"] == "scalar" \
+    and _a1r["oid"] == _g7m["SstKwTurbModel"]["id"] and _a1r["key"] == "A1"
+_zs7 = _g7rows.get("G7:KwTurbCompressibilityParameters.ZetaStar")
+assert isinstance(_zs7, dict) and _zs7["kind"] == "scalar" \
+    and _zs7["oid"] == _sst7["KwTurbCompressibilityParameters"]["_oid"] \
+    and _zs7["key"] == "ZetaStar"
+_vt7 = _g7rows.get("G7:VorticityTimeParameter.Value")
+assert isinstance(_vt7, dict) and _vt7["kind"] == "scalar" \
+    and _vt7["oid"] == _sst7["VorticityTimeParameter"]["_oid"] \
+    and _vt7["key"] == "Value" and _vt7["value"] == 0.075
+_g7arows = dict((k, r) for k, _t, r in _g7g.properties(_g7air))
+_dv7 = _g7arows.get("G7:值 DynamicViscosityProperty")
+assert isinstance(_dv7, dict) and _dv7["kind"] == "quantity" \
+    and _dv7["oid"] == _air7["DynamicViscosityProperty"]["oid"] \
+    and _dv7["key"] == "Value"
+_g7mrows = dict((k, r) for k, _t, r in
+                _g7mo.properties(_g7mo.object_by_id(_rot7["id"])))
+_rr7 = _g7mrows.get("G7:RotationRate")
+assert isinstance(_rr7, dict) and _rr7["kind"] == "quantity" \
+    and _rr7["oid"] == _rot7["RotationRate"]["oid"]
+print("P1 anchors: 物理量/标量/嵌套参数组编辑锚点 + GUI 描述符行 全通过")
+
+# --- P1 写侧落盘往返：三类锚点编辑 → SetPropertyCommand → save_sim(patches) → 重开断言 ---
+import tempfile
+import shutil
+from sim_writer import save_sim
+from star_gui_document import SimDocument
+from star_gui_commands import SetPropertyCommand
+_p1t = tempfile.mkdtemp(prefix="star_p1_")
+try:
+    _p1d = os.path.join(_p1t, "g7_roundtrip.sim")
+    _p1doc = SimDocument(_g7s, _g7kw)
+    _m7id = _g7m["SstKwTurbModel"]["id"]
+    _p1doc.execute(SetPropertyCommand(
+        _m7id, "A1", 0.33, _g7s.objmap[_m7id].dict.get("A1")))
+    _p1doc.execute(SetPropertyCommand(
+        _sst7["VorticityTimeParameter"]["_oid"], "Value", 0.085, 0.075))
+    _p1doc.execute(SetPropertyCommand(
+        _air7["DynamicViscosityProperty"]["oid"], "Value", 3e-05, 2e-05))
+    save_sim(_g7s, _p1d, patches=_p1doc.patches, src_path=_g7kw)
+    _p1ph = SimFile(_p1d).extract_physics()
+    assert _p1ph.get("ok"), _p1ph.get("reason")
+    _p1air = {p["name"]: p for p in next(
+        m for m in _p1ph["materials"] if m["name"] == "Air")["properties"]}
+    _p1m = {m["class"].rsplit(".", 1)[-1]: m
+            for m in _p1ph["continua"][0]["models"]}
+    assert abs(_p1m["SstKwTurbModel"]["params"]["A1"] - 0.33) < 1e-12
+    assert abs(_p1m["SstKwTurbModel"]["params"]
+               ["VorticityTimeParameter"]["Value"] - 0.085) < 1e-12
+    assert abs(_p1air["DynamicViscosityProperty"]["value"] - 3e-05) < 1e-12
+    assert _p1air["DynamicViscosityProperty"]["units"] == "Pa-s"
+    assert SimFile(_g7kw).objmap[_m7id].dict.get("A1") == 0.31
+finally:
+    shutil.rmtree(_p1t, ignore_errors=True)
+print("P1 roundtrip: 模型标量/嵌套组标量/材料物理量 三类锚点落盘往返 全通过")
 
 print("ALL CHECKS PASSED")

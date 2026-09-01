@@ -406,7 +406,9 @@ class StarSceneModel:
     def _g7_rows(self, obj):
         """G7 语义行：连续体模型参数 / 材料属性 / 运动规格。
 
-        行名统一加 "G7:" 前缀；raw 固定 None（不触发引用跳转，属性面板置只读）。
+        行名统一加 "G7:" 前缀。P1 写侧：可编辑叶子（物理量/选项/标量参数）
+        单独成行，raw 携带编辑描述符 {"kind","oid","key",...}，属性面板据此
+        开放编辑并路由到目标对象；无描述符的行保持只读。
         """
         from sim_parser import g7_format_value
         cn = obj.class_name or ""
@@ -424,6 +426,7 @@ class StarSceneModel:
                         label += " %r" % m["name"]
                     rows.append(("G7:模型 " + label,
                                  ps if ps else "（无参数）", None))
+                    rows.extend(self._g7_edit_rows(m["params"], m["id"]))
         elif cn.startswith("star.material.") and \
                 tail in type(self.sim)._G7_MAT_TAILS:
             mt = next((m for m in self._g7()["materials"]
@@ -439,6 +442,9 @@ class StarSceneModel:
                         line += " = %s" % g7_format_value(
                             {"value": p["value"], "units": p.get("units", "")})
                     rows.append(("G7:属性 " + p["name"], line, None))
+                    if p.get("kind") == "quantity" and "value" in p:
+                        rows.append(("G7:值 " + p["name"],
+                                     g7_format_value(p), p))
         elif cn == "star.motion.MotionSpecification":
             mo = next((m for m in self._g7()["motion"]
                        if m["id"] == obj.id), None)
@@ -457,10 +463,38 @@ class StarSceneModel:
                     rv += " %r" % mo["ref_frame_name"]
                 rows.append(("G7:运动 ReferenceFrame", rv, None))
                 for k in ("RotationRate", "AxisVector", "OriginVector"):
-                    if k in mo:
-                        rows.append(("G7:" + k,
-                                     g7_format_value(mo[k]), None))
+                    q = mo.get(k)
+                    if isinstance(q, dict) and "oid" in q:
+                        rows.append(("G7:" + k, g7_format_value(q), q))
         return rows
+
+    def _g7_edit_rows(self, params, holder_oid, prefix=""):
+        """P1 编辑行：把参数叶子展开为带编辑描述符的 G7 行。
+
+        物理量/选项 dict 自带 oid/key/kind 锚点；原始标量（bool/int/float）
+        的锚点是直接持有者（holder_oid）；嵌套参数组按 _oid 递归。
+        """
+        from sim_parser import g7_format_value
+        rows = []
+        for k, v in params.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, dict) and "kind" in v and "oid" in v:
+                if "value" in v or "selected" in v:
+                    rows.append(("G7:%s%s" % (prefix, k),
+                                 g7_format_value(v), v))
+            elif isinstance(v, dict):
+                rows.extend(self._g7_edit_rows(
+                    v, v.get("_oid", holder_oid), prefix + k + "."))
+            elif isinstance(v, (bool, int, float)):
+                rows.append(("G7:%s%s" % (prefix, k), g7_format_value(v),
+                             {"kind": "scalar", "oid": holder_oid,
+                              "key": k, "value": v}))
+        return rows
+
+    def invalidate_g7(self):
+        """P1：物理参数编辑后失效 G7 语义缓存（下次访问重建）。"""
+        self._g7_cache = None
 
     # ---------------- 场景摘要（M3 使用） ----------------
     def scenes(self):

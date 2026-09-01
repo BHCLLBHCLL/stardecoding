@@ -65,6 +65,7 @@
 | 条目 | 能力 |
 | --- | --- |
 | 类型化属性编辑 | persist（bool/数/色/矢量/数值列表可编辑；`ClassName/Parent/Simulation/NameManager` 等只读） |
+| 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
 | 保存视图 | persist（`persist_view` 写入 Scene `CurrentView` 对象行，不再只放内存） |
 | 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图/拉伸 needs_kernel） |
 | 绘图标签（监视器/报告数值） | view（Monitor/Report/Plot/Residual 标量 + 1D 数组折线≤512 点；明确标注非求解器采样；无数据降级为文本） |

@@ -2170,22 +2170,35 @@ class SimFile:
                      "LiquidComponent")
 
     def _g7_quantity(self, t):
-        """物理量对象 → {value, units}（Scalar 取 Value，Vector 取 Vector）。"""
+        """物理量对象 → {value, units, oid, key, kind}。
+
+        Scalar 取 Value，Vector 取 Vector；P1 写侧：oid/key 指向承载值的
+        对象与 dict 键（编辑描述符，SetPropertyCommand 的目标）。
+        """
         u = self.objmap.get(t.dict.get("Units"))
         d = {"units": (u.dict.get("PresentationName")
                        or u.dict.get("Description") or "") if u else ""}
         tail = (t.class_name or "").rsplit(".", 1)[-1]
-        d["value"] = t.dict.get("Vector" if tail == "VectorPhysicalQuantity"
-                                else "Value")
+        vec = tail == "VectorPhysicalQuantity"
+        d["value"] = t.dict.get("Vector" if vec else "Value")
+        d["oid"] = t.id
+        d["key"] = "Vector" if vec else "Value"
+        d["kind"] = "quantity"
         return d
 
     def _g7_option(self, t):
-        """选项对象 → {selected, options}（Selected 为枚举序号，不解引用）。"""
+        """选项对象 → {selected, options, oid, key, kind}。
+
+        Selected 为枚举序号不解引用；P1 写侧：oid/key 定位 Selected。
+        """
         d = {}
         if "Selected" in t.dict:
             d["selected"] = t.dict.get("Selected")
         if "AvailableOptionsVector" in t.dict:
             d["options"] = t.dict.get("AvailableOptionsVector")
+        d["oid"] = t.id
+        d["key"] = "Selected"
+        d["kind"] = "option"
         return d
 
     def _g7_value(self, v, depth):
@@ -2219,8 +2232,12 @@ class SimFile:
             return self._g7_dict(t, depth - 1)
         return None
 
-    def _g7_dict(self, o, depth):
-        """对象 → 过滤簿记键后的参数字典（G7 模型/参数组通用）。"""
+    def _g7_dict(self, o, depth, top=False):
+        """对象 → 过滤簿记键后的参数字典（G7 模型/参数组通用）。
+
+        P1 写侧：嵌套参数组层附带 _oid（编辑锚点：原始标量叶子回写到
+        该对象）；顶层参数根（top=True）由模型行直接持有，不重复附加。
+        """
         d = {}
         for k, v in o.dict.items():
             if k in self._G7_SKIP_ATTRS:
@@ -2228,6 +2245,8 @@ class SimFile:
             val = self._g7_value(v, depth)
             if val is not None:
                 d[k] = val
+        if not top:
+            d["_oid"] = o.id
         return d
 
     def extract_physics(self):
@@ -2261,7 +2280,7 @@ class SimFile:
                         models.append({
                             "id": m2.id, "class": m2.class_name,
                             "name": self._fix_name(m2.name) or "",
-                            "params": self._g7_dict(m2, 2)})
+                            "params": self._g7_dict(m2, 2, True)})
                 continua.append({
                     "id": o.id, "name": self._fix_name(o.name) or "",
                     "is_active": o.dict.get("IsActive"),
@@ -2860,7 +2879,8 @@ def g7_format_value(v):
                                   (" 值域%s" % (v["options"],))
                                   if v.get("options") else "")
         return "{%s}" % " ".join("%s=%s" % (k, g7_format_value(x))
-                                 for k, x in v.items())
+                                 for k, x in v.items()
+                                 if not k.startswith("_"))
     if isinstance(v, list):
         return "[%s]" % ", ".join(g7_format_value(x) for x in v)
     if isinstance(v, float):

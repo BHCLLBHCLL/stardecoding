@@ -798,8 +798,64 @@ _PROP_RO = {"ClassName", "Parent", "Simulation", "NameManager", "TimeStamp",
             "clientType", "Index"}
 
 
+def _is_g7_edit(raw):
+    """P1：G7 编辑描述符判定（kind/oid/key 齐备的 dict）。"""
+    return (isinstance(raw, dict) and "kind" in raw
+            and isinstance(raw.get("oid"), int) and "key" in raw)
+
+
+def _g7_parse_edit(raw, text):
+    """P1：按编辑描述符把单元格文本解析回目标值；无法解析返回 None。
+
+    quantity：去单位后缀后按 float / 矢量列表解析（以当前值类型为准）；
+    scalar：按当前值类型（bool/int/float）解析；
+    option：接受选项名（options 全为字符串时）或枚举序号。
+    """
+    s = str(text).strip()
+    kind = raw.get("kind")
+    if kind == "quantity":
+        units = raw.get("units") or ""
+        if units and s.endswith(units):
+            s = s[:-len(units)].strip()
+        cur = raw.get("value")
+        if isinstance(cur, list):
+            s = s.strip("()[]")
+            parts = [p for p in (x.strip() for x in s.split(",")) if p]
+            if len(parts) != len(cur):
+                return None
+            try:
+                return [type(cur[i])(float(p)) for i, p in enumerate(parts)]
+            except (TypeError, ValueError):
+                return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    if kind == "scalar":
+        cur = raw.get("value")
+        try:
+            if isinstance(cur, bool):
+                return s.lower() in ("1", "true", "yes", "on")
+            if isinstance(cur, int):
+                return int(float(s))
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+    if kind == "option":
+        opts = raw.get("options") or []
+        if opts and all(isinstance(x, str) for x in opts) and s in opts:
+            return opts.index(s)
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def parse_property_text(raw, text):
     """把单元格文本解析回原类型；无法解析返回 None。"""
+    if _is_g7_edit(raw):
+        return _g7_parse_edit(raw, text)
     if raw is None:
         return text
     if isinstance(raw, bool):
@@ -954,8 +1010,14 @@ class PropertiesPanel(QWidget):
         parsed = parse_property_text(raw, item.text())
         if parsed is None:
             self._filling = True
-            item.setText(str(raw))
+            item.setText(str(self._originals.get(key, raw)))
             self._filling = False
+            return
+        if _is_g7_edit(raw):
+            target = self.model.objmap.get(raw["oid"]) if self.model else None
+            if target is None:
+                return
+            self.property_edited.emit(target, raw["key"], parsed)
             return
         item.setData(34, parsed)
         self.property_edited.emit(self._current, key, parsed)

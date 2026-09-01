@@ -420,6 +420,12 @@ class StarMainWindow(QMainWindow):
         bus = getattr(self, "document", None)
         if bus is None:
             return
+        model = getattr(self, "model", None)
+        if model is not None and hasattr(model, "invalidate_g7"):
+            model.invalidate_g7()
+            pw = getattr(self, "props_widget", None)
+            if pw is not None and pw._current is not None:
+                pw.show_object(pw._current)
         self.actions["Edit>Undo"].setEnabled(self.document.bus.can_undo())
         self.actions["Edit>Redo"].setEnabled(self.document.bus.can_redo())
         title = "STAR-CCM+ .sim Viewer / Editor"

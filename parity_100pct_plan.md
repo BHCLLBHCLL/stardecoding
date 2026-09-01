@@ -125,7 +125,7 @@ flowchart LR
 
 | 点 | 任务 | 说明 |
 | --- | --- | --- |
-| P1 | 物理参数语义化读写（G7 落地写侧） | 连续体/模型/材料参数面板可编辑可存 |
+| P1 | 物理参数语义化读写（G7 落地写侧） ✅ 2026-09-02 | 连续体/模型/材料参数面板可编辑可存 —— **达成**：G7 锚点写侧：`extract_physics()` 三类节点附带编辑锚点（物理量/选项 `oid`+`key`+`kind`；嵌套参数组 `_oid`；顶层模型 params 根 top=True 不加），GUI 属性面板 `G7:` 描述符行（raw 携带 kind/oid/key）开放编辑：物理量剥单位后缀按 float/矢量、原始标量按当前类型（bool/int/float）、选项按名称/序号；`_on_item_changed` 经 objmap 路由目标对象 → 既有 SetPropertyCommand patches 写链（无新写原语）；G7 惰性缓存失效挂 CommandBus on_change 中心钩子（execute/undo/redo 全覆盖并刷新面板）；`g7_format_value` 过滤 `_` 私有键保持 CLI/GUI 显示兼容。三类锚点落盘往返验证（vortexShed SST k-ω）：SstKwTurbModel.A1 0.31→0.33（顶层标量）、VorticityTimeParameter.Value 0.075→0.085（嵌套组标量）、Air DynamicViscosityProperty 2e-05→3e-05 Pa-s（物理量），save_sim(patches) 重开 extract_physics 全命中且源文件零污染；`self_test.py` P1 anchors+roundtrip 断言全绿，run_all 15 文件/batch_parse 21 文件无回归 |
 | P2 | 场函数表达式求值器 | 数学/矢量/逻辑 + 插值器；与官方语法对齐 |
 | P3 | 初始化器（field function/常量/表格初值） | Run 前 Initialize 可用 |
 | P4 | FVM 离散核心：梯度(Gauss/LSQ)、限制器、通量格式 | numpy/scipy.sparse 向量化 |
