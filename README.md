@@ -17,6 +17,7 @@
 | `star_gui_plots.py` | 绘图/报告查看窗 |
 | `star_gui_parity.md` | 对标 STAR-CCM+ 20.02 能力表（view / session / persist / needs_kernel） |
 | `star_gui_next.md` | **E0–E8 后完整度复盘与 F0–F8 改进规划** |
+| `parity_100pct_plan.md` | **与 STAR-CCM+ 20.02 全功能 100% 对标总路线图**（G/W/C/N/P/V/A/X 八波，F 波之后） |
 | `star_gui_design.md` / `star_gui_plan.md` | GUI 查看器架构设计与 M0–M6 开发计划 |
 | `star_gui_upgrade.md` | **GUI 升级规划 U1–U5**（STAR-CCM+ 用户树 / 双行工具栏 / 专业 3D 视口） |
 | `self_test.py` / `batch_parse.py` / `mesh_validate.py` / `check_length_all.py` | 回归与校验工具 |
@@ -53,12 +54,15 @@ Regions / Solvers / Scenes / Tools）· 可编辑属性检查器（Undo/Redo）�
 
 ```bat
 python sim_parser.py adjointWing_start.sim --summary    :: 总体概览
-python sim_parser.py adjointWing_start.sim --arrays     :: 数组表
+python sim_parser.py adjointWing_start.sim --arrays     :: 数组表（G2：角色标注/覆盖率/A<n>引用/面·顶点自洽）
 python sim_parser.py adjointWing_start.sim --state      :: STAR-CORE 状态表记录流
+python sim_parser.py adjointWing_start.sim --state-tree :: 状态表结构化语义树（G1：头/指针三分法/类型化元素流/T块分段/几何验证）
+python sim_parser.py adjointWing_start.sim --grammar    :: 状态表文法统计（G1：fmt分布/指针角色/高频标记/几何验证率）
 python sim_parser.py adjointWing_start.sim --objects    :: 对象图
 python sim_parser.py adjointWing_start.sim --tree       :: 对象树
 python sim_parser.py adjointWing_start.sim --layers     :: 语义层统计（几何/网格/物理/场景...）
 python sim_parser.py adjointWing_start.sim --report     :: 语义报告（Region/Part/网格、Continuum 模型、Scene 显示器）
+python sim_parser.py adjointWing_start.sim --physics    :: 物理参数报告（G7：连续体模型参数/材料属性/运动规格）
 python sim_parser.py adjointWing_start.sim --mesh       :: 网格抽取统计
 python sim_parser.py adjointWing_start.sim --mesh-export out.stl  :: 导出面网格 STL
 python sim_parser.py adjointWing_start.sim --fingerprint --check-length --validate  :: 版本指纹/长度自校验/ClassVersions 诊断

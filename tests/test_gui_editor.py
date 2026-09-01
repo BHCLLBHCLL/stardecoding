@@ -293,8 +293,12 @@ def test_imported_stl_save_reload_face_count():
         save_sim(sim, dest, patches=doc.patches, created=doc.created, src_path=SIM)
         re = SimFile(dest)
         hit = next(o for o in re.objects if o.name == "cube")
-        assert len(hit.dict.get("ImportedFaces") or []) == 12
-        assert len(hit.dict.get("ImportedVertices") or []) == 8
+        assert hit.dict.get("TriangleCount") == 12
+        from star_gui_vtk import part_meshes
+        pm = next(p for p in part_meshes(re) if p["id"] == hit.id or p["name"] == "cube")
+        assert pm["triangles"] == 12
+        assert pm["vertices"].shape[0] == 8
+        assert pm["faces"].shape[0] == 12
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -392,32 +396,42 @@ def test_parts_filter_and_measure(app):
 
 
 def test_part_stl_export_and_volume_extract():
-    from mesh_io import export_part_stl
+    from mesh_io import export_part_stl, export_scene_stl
     from sim_parser import SimFile
+    from star_gui_vtk import volume_mesh_actors
 
     sim = SimFile(SIM)
     part = next(o for o in sim.objects if isinstance(o.dict.get("TriangleCount"), int)
                 and o.dict["TriangleCount"] > 0)
+    scene = next(o for o in sim.objects if o.class_name == "star.vis.Scene")
     tmp = tempfile.mkdtemp(prefix="star_f5_")
     try:
         path = os.path.join(tmp, "part.stl")
         export_part_stl(sim, part.id, path)
         assert os.path.isfile(path) and os.path.getsize(path) > 80
+        spath = os.path.join(tmp, "scene.stl")
+        export_scene_stl(sim, scene, spath)
+        assert os.path.isfile(spath) and os.path.getsize(spath) > 80
         vol = sim.extract_volume_mesh()
         assert "ok" in vol
         if not vol["ok"]:
             assert vol.get("reason")
+        actors, info = volume_mesh_actors(sim)
+        assert isinstance(actors, list)
+        assert "ok" in info or "reason" in info
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_plot_sparkline_and_empty_series():
     from sim_parser import SimFile
-    from star_gui_plots import collect_plot_series, sparkline
+    from star_gui_plots import collect_array_series, collect_plot_series, sparkline
 
     assert sparkline([0, 1, 2, 3, 4])
     series = collect_plot_series(SimFile(SIM))
     assert isinstance(series, list)
+    arrays = collect_array_series(SimFile(SIM))
+    assert isinstance(arrays, list)
 
 
 def test_star_macro_written_not_on_original():
@@ -471,3 +485,86 @@ def test_reload_hook_and_dirty_confirm(app):
     assert callable(win.cmd_reload)
     win.document.mark_clean()
     win.close()
+
+
+def test_transform_existing_part_writes_float8():
+    from sim_parser import SimFile
+    from sim_writer import save_sim
+    from star_gui_commands import TransformPartCommand
+    from star_gui_document import SimDocument
+    from star_gui_vtk import part_meshes
+
+    tmp = tempfile.mkdtemp(prefix="star_f3x_")
+    try:
+        dest = os.path.join(tmp, "wing.sim")
+        sim = SimFile(SIM)
+        p0 = next(p for p in part_meshes(sim) if p.get("name") == "Small Block")
+        assert p0.get("vert_index") is not None
+        v0 = p0["vertices"].copy()
+        doc = SimDocument(sim, SIM)
+        doc.execute(TransformPartCommand(p0["id"], scale=(2.0, 2.0, 2.0)))
+        save_sim(sim, dest, patches=doc.patches, created=doc.created, src_path=SIM,
+                 array_patches=doc.array_patches)
+        re = SimFile(dest)
+        p1 = next(p for p in part_meshes(re) if p.get("name") == "Small Block")
+        assert p1["vertices"] == pytest.approx(v0 * 2.0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_new_scene_and_delete_persist():
+    from sim_parser import SimFile
+    from sim_writer import save_sim
+    from star_gui_commands import CopyObjectCommand, DeleteObjectCommand
+    from star_gui_document import SimDocument
+
+    tmp = tempfile.mkdtemp(prefix="star_f2x_")
+    try:
+        dest = os.path.join(tmp, "wing.sim")
+        sim = SimFile(SIM)
+        scene = next(o for o in sim.objects if o.class_name == "star.vis.Scene")
+        doc = SimDocument(sim, SIM)
+        cmd = CopyObjectCommand(scene.id)
+        assert doc.execute(cmd)
+        clone_name = doc.object(cmd.new_id).name
+        save_sim(sim, dest, patches=doc.patches, created=doc.created, src_path=SIM,
+                 deleted=doc.deleted)
+        re = SimFile(dest)
+        assert any(o.class_name == "star.vis.Scene" and o.name == clone_name
+                   for o in re.objects)
+
+        dest2 = os.path.join(tmp, "wing2.sim")
+        sim2 = SimFile(SIM)
+        src = next(o for o in sim2.objects if o.dict.get("PresentationName") == "Fluid Domain"
+                   and o.class_name == "star.common.Region")
+        parent = src.dict.get("Parent")
+        doc2 = SimDocument(sim2, SIM)
+        assert src.id in (doc2.object(parent).dict.get("Keys") or [])
+        doc2.execute(DeleteObjectCommand(src.id))
+        save_sim(sim2, dest2, patches=doc2.patches, created=doc2.created, src_path=SIM,
+                 deleted=doc2.deleted)
+        re2 = SimFile(dest2)
+        keys = re2.objmap[parent].dict.get("Keys") or []
+        assert src.id not in keys
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_compare_graph_and_official_resave_hook():
+    from sim_writer import compare_object_graph, try_official_resave
+
+    same = compare_object_graph(SIM, SIM)
+    assert same["ok"]
+    hook = try_official_resave(SIM, os.path.dirname(SIM))
+    assert hook.get("status") in ("skipped", "ready")
+
+
+def test_parts_filter_dialog(app):
+    from PyQt5.QtCore import Qt
+    from star_gui_panes import PartsFilterDialog
+
+    dlg = PartsFilterDialog([(1, "A"), (2, "B")], [1])
+    assert dlg.selected_ids() == [1]
+    dlg.list.item(1).setCheckState(Qt.Checked)
+    assert dlg.selected_ids() == [1, 2]
+    dlg.close()

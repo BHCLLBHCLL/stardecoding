@@ -207,7 +207,7 @@ class StarMainWindow(QMainWindow):
         self._add("File>Import>Surface", tr("Import Surface..."), self.cmd_import_surface, "mesh")
         self._add("File>Import>CAD", tr("Import CAD..."), self.cmd_import_cad, "mesh")
         self._add("File>Import>Volume", tr("Import Volume Mesh..."),
-                  lambda: self._kernel_nyi("导入体网格"), "mesh")
+                  self.cmd_import_volume, "mesh")
         self._add("Edit>Undo", tr("Undo"), self.cmd_undo, "undo", QKeySequence.Undo)
         self._add("Edit>Redo", tr("Redo"), self.cmd_redo, "undo", QKeySequence.Redo)
         self._add("Edit>Copy", tr("Copy"), self.cmd_copy, "file")
@@ -493,6 +493,8 @@ class StarMainWindow(QMainWindow):
         from star_gui_vtk import apply_actor_transform
         for vp in self._iter_viewports():
             for _k, _n, pid, actor in vp.actors:
+                if pid in getattr(self.document, "baked_parts", set()):
+                    continue
                 t = self.document.transforms.get(pid)
                 if t:
                     apply_actor_transform(actor, t[:3], t[3:6])
@@ -630,6 +632,10 @@ class StarMainWindow(QMainWindow):
                         vp = Star3DViewport()
                     self.graphics_tabs.add_mesh_tab(sc["name"] or "Scene", vp)
                     if not HEADLESS:
+                        from star_gui_vtk import volume_mesh_actors
+                        extra, _vol = volume_mesh_actors(self.sim)
+                        if extra:
+                            actors = list(actors) + extra
                         vp.set_actors(actors)
                         apply_camera(vp.renderer, cam)
                         vp.picked.connect(self.on_picked)
@@ -760,36 +766,49 @@ class StarMainWindow(QMainWindow):
                 name, pid, xyz[0], xyz[1], xyz[2]))
 
     def _highlight_selection(self, obj):
-        """选中 Region/Boundary → 高亮对应 actor。Boundary 优先按名称/id
-        （场景里已按 FaceTypes 切面子块），否则退回 Region→Parts。"""
+        """选中 Region/Boundary → 高亮对应 actor。Boundary 用 FaceTypes
+        面子块 / PartSurface id，否则退回 Region→Parts。"""
         if obj is None or HEADLESS:
             return
         if obj.class_name not in ("star.common.Region", "star.common.Boundary"):
             return
         names = set()
+        ids = set()
         if obj.class_name == "star.common.Boundary":
+            from star_gui_model import part_surface_cad_ids
+            ids.add(obj.id)
+            if obj.name:
+                names.add(obj.name)
+            psg = self.sim.objmap.get(obj.dict.get("PartSurfaces") or -1)
+            for k in (psg.dict.get("Keys") or []) if psg is not None else []:
+                s = self.sim.objmap.get(k)
+                if s is None:
+                    continue
+                ids.add(s.id)
+                if s.name:
+                    names.add(s.name)
+            cad = part_surface_cad_ids(self.sim, obj)
             vp = self.current_viewport()
             if vp is not None:
                 hit = 0
                 for key, name, pid, actor in vp.actors:
-                    show = pid == obj.id or name == (obj.name or "")
+                    show = pid in ids or name in names
                     actor.SetVisibility(show)
                     if show:
                         hit += 1
                 if hit:
                     vp.render()
-                    self.msg("高亮边界 %s（%d 个 actor，FaceTypes 面子块）" % (
-                        obj.name or obj.id, hit))
+                    self.msg("高亮边界 %s（%d 个 actor，FaceTypes=%d）" % (
+                        obj.name or obj.id, hit, len(cad)))
                     return
         if obj.class_name == "star.common.Region":
-            rep = {"regions": [{"parts": []}]}
             parts = self.sim.objmap.get(obj.dict.get("Parts")) if obj.dict.get("Parts") else None
             plist = parts.dict.get("Keys") if parts is not None else []
             for k in plist:
                 p = self.sim.objmap.get(k)
                 if p is not None and p.name:
                     names.add(p.name)
-        else:  # Boundary：属于某 Region，高亮该 Region 的 Part
+        else:
             parent = self.sim.objmap.get(obj.dict.get("Parent") or -1)
             if parent is not None and parent.class_name == "star.common.Region":
                 parts = self.sim.objmap.get(parent.dict.get("Parts") or -1)
@@ -801,7 +820,7 @@ class StarMainWindow(QMainWindow):
         if vp is None:
             return
         for key, name, pid, actor in vp.actors:
-            actor.SetVisibility(name in names)
+            actor.SetVisibility(name in names or pid in ids)
         vp.render()
         self.msg("高亮 %d 个 Part（Region→Parts；边界优先 FaceTypes）" % len(names))
 
@@ -957,7 +976,9 @@ class StarMainWindow(QMainWindow):
                 self.document.persist_view(scene.id, cam)
             from sim_writer import save_sim
             save_sim(self.sim, path, patches=self.document.patches,
-                     created=self.document.created, src_path=self.sim_path)
+                     created=self.document.created, src_path=self.sim_path,
+                     array_patches=getattr(self.document, "array_patches", None),
+                     deleted=getattr(self.document, "deleted", None))
             self.sim_path = path
             self.document.mark_clean()
             self.document.path = path
@@ -1137,6 +1158,15 @@ class StarMainWindow(QMainWindow):
                 verts, faces = read_surface(path)
             except Exception as exc:
                 self.msg("STL 读取失败: %s" % exc, "warn")
+        oid = self._new_imported_mesh_part(name, verts, faces)
+        if oid and verts is not None:
+            self.msg("已导入 %s：%d 顶点 %d 面（写入 ImportedVertices/Faces）" % (
+                name, len(verts), len(faces)))
+        elif oid:
+            self.msg("已记录导入占位 %s（未读到 STL）" % name, "warn")
+        return oid
+
+    def _new_imported_mesh_part(self, name, verts=None, faces=None, extra=None):
         if self.sim is None:
             return None
         src = None
@@ -1153,17 +1183,15 @@ class StarMainWindow(QMainWindow):
             oid = cmd.new_id
             if oid:
                 self.document.set_property(oid, "PresentationName", name)
-        if oid and verts is not None:
+        if oid and verts is not None and faces is not None:
             self.document.set_property(oid, "ImportedVertices", verts)
             self.document.set_property(oid, "ImportedFaces", faces)
             self.document.set_property(oid, "VertexCount", len(verts))
             self.document.set_property(oid, "TriangleCount", len(faces))
+            for k, v in (extra or {}).items():
+                self.document.set_property(oid, k, v)
             if self.sim is not None:
                 self.sim._part_meshes_cache = None
-            self.msg("已导入 %s：%d 顶点 %d 面（写入 ImportedVertices/Faces）" % (
-                name, len(verts), len(faces)))
-        elif oid:
-            self.msg("已记录导入占位 %s（未读到 STL）" % name, "warn")
         return oid
 
     def cmd_import_cad(self):
@@ -1173,6 +1201,41 @@ class StarMainWindow(QMainWindow):
             return
         self.import_surface_from_path(path)
         self.msg("无 Parasolid：CAD 按 STL/OBJ 三角化导入", "warn")
+
+    def cmd_import_volume(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入体网格", "",
+            "CCM (*.ccm *.ccmg);;All (*)")
+        if not path:
+            return
+        self.import_volume_from_path(path)
+
+    def import_volume_from_path(self, path):
+        """导入 CCM 体网格：边界三角化写入 MeshPart（与 STL 导入同一 Persist 路径）。"""
+        from ccm_io import ccmio_available, ccmio_unavailable_reason, read_ccm
+        if not os.path.isfile(path):
+            self.msg("CCM 文件不存在: %s" % path, "warn")
+            return None
+        if not ccmio_available():
+            self.msg("无法导入 CCM：%s" % ccmio_unavailable_reason(), "warn")
+            return None
+        try:
+            mesh = read_ccm(path)
+        except Exception as exc:
+            self.msg("CCM 读取失败: %s" % exc, "error")
+            return None
+        verts, faces = mesh.get("vertices") or [], mesh.get("faces") or []
+        if not verts or not faces:
+            self.msg("CCM 没有可显示的边界面", "warn")
+            return None
+        name = os.path.splitext(os.path.basename(path))[0]
+        oid = self._new_imported_mesh_part(
+            name, verts, faces, extra={"CcmCellCount": int(mesh.get("n_cells") or 0)})
+        regs = mesh.get("regions") or []
+        self.msg("已导入 CCM %s：%d 顶点 %d 三角（边界） %d 体单元 %d 边界区" % (
+            os.path.basename(path), len(verts), len(faces),
+            int(mesh.get("n_cells") or 0), len(regs)))
+        return oid
 
     def cmd_options(self):
         QMessageBox.information(self, "选项",
@@ -1385,37 +1448,47 @@ class StarMainWindow(QMainWindow):
                  if (o.class_name or "").endswith("MeshPart")
                  or (o.class_name or "").endswith("CadPart")
                  or "PartSurface" in (o.class_name or "")]
-        names = [("%s (%d)" % (p.name or "?", p.id)) for p in parts]
-        if not names:
+        choices = [(p.id, "%s (%d)" % (p.name or "?", p.id)) for p in parts]
+        if not choices:
             return self.msg("没有可选零件", "warn")
         if HEADLESS:
             return
-        name, ok = QInputDialog.getItem(self, "Parts 过滤器", "切换零件（再开一次继续）:",
-                                        names, 0, False)
-        if not ok:
+        from star_gui_panes import PartsFilterDialog
+        dlg = PartsFilterDialog(choices, list(pg.dict.get("Keys") or []), self)
+        if dlg.exec_() != dlg.Accepted:
             return
-        part = parts[names.index(name)]
-        keys = list(pg.dict.get("Keys") or [])
-        if part.id in keys:
-            keys = [k for k in keys if k != part.id]
-        else:
-            keys.append(part.id)
+        keys = dlg.selected_ids()
         self.apply_parts_filter(pg.id, keys)
         self.msg("Parts 过滤器 Keys=%s" % keys)
 
     def cmd_scalar_color(self):
         if self.sim is None:
             return
-        found = False
-        for a in self.sim.arrays:
-            if a.get("type") in ("Float8", "Float4") and a.get("count") not in (None, 0):
-                if a["count"] % 3 != 0:
-                    found = True
-                    break
-        if not found:
+        from star_gui_vtk import color_actors_by_array, part_meshes
+        parts = part_meshes(self.sim)
+        nverts = set(int(p["vertices"].shape[0]) for p in parts if p.get("vertices") is not None)
+        nfaces = set(int(p.get("triangles") or 0) for p in parts)
+        picked = None
+        for i, a in enumerate(self.sim.arrays):
+            if a.get("type") not in ("Float8", "Float4"):
+                continue
+            n = a.get("count") or 0
+            if n in nverts or n in nfaces:
+                picked = (i, a, n in nverts)
+                break
+        if picked is None:
             self.msg("无解场数组，标量着色禁用", "nyi")
             return
-        self.msg("已识别候选标量数组，着色尚未绑定到显示器（无 .simh 解场）", "nyi")
+        idx, _a, on_pts = picked
+        data = self.sim.array_data(idx)
+        colored = 0
+        if not HEADLESS:
+            for vp in self._iter_viewports():
+                colored += color_actors_by_array(vp.actors, data, on_points=on_pts)
+                if hasattr(vp, "render"):
+                    vp.render()
+        self.msg("标量着色：数组[%d] n=%d → %d 个 actor" % (
+            idx, int(data.size if hasattr(data, "size") else len(data)), colored))
 
     def on_property_edited(self, obj, key, value):
         if obj is None:
@@ -1560,6 +1633,12 @@ class StarMainWindow(QMainWindow):
             return
         try:
             obj = self._selected_obj()
+            if obj is not None and (obj.class_name or "") == "star.vis.Scene":
+                from mesh_io import export_scene_stl
+                export_scene_stl(sim, obj, path)
+                self.msg("已按场景导出 STL: %s (%s)" % (path, obj.name or obj.id))
+                self.progress.done("STL 导出完成")
+                return
             if obj is not None:
                 from star_gui_model import owning_mesh_part
                 part = owning_mesh_part(sim, obj)

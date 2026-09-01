@@ -9,7 +9,16 @@ def read_surface(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".obj":
         return read_obj(path)
+    if ext in (".ccm", ".ccmg"):
+        mesh = read_ccm(path)
+        return mesh["vertices"], mesh["faces"]
     return read_stl(path)
+
+
+def read_ccm(path):
+    """CCM / CCMG → 顶点 + 边界三角面（以及体网格摘要）。"""
+    from ccm_io import read_ccm as _read
+    return _read(path)
 
 
 def read_obj(path):
@@ -119,15 +128,53 @@ def cube_mesh(size=1.0):
     return v, f
 
 
+def _subset_part_triangles(p, cad_ids=None):
+    faces = [list(map(int, row)) for row in p["faces"]]
+    verts = [list(map(float, row)) for row in p["vertices"]]
+    ft = p.get("face_types")
+    if cad_ids and ft is not None and len(ft) == len(faces):
+        want = set(int(x) for x in cad_ids)
+        faces = [tri for tri, t in zip(faces, ft) if int(t) in want]
+    return verts, faces
+
+
 def export_part_stl(sim, part_id, path):
     """按 Part 导出 STL；找不到分块网格则失败。"""
     from star_gui_vtk import part_meshes
     for p in part_meshes(sim):
         if p.get("id") == part_id:
-            verts = [list(map(float, row)) for row in p["vertices"]]
-            faces = [list(map(int, row)) for row in p["faces"]]
+            verts, faces = _subset_part_triangles(p)
             return write_ascii_stl(path, verts, faces, p.get("name") or "part")
     raise RuntimeError("没有 id=%s 的分块网格" % part_id)
+
+
+def export_scene_stl(sim, scene, path):
+    """按场景显示器 Parts / FaceTypes 子集导出合并 STL。"""
+    from star_gui_model import collector_sources, owning_mesh_part, part_surface_cad_ids
+    from star_gui_vtk import mesh_bundle_for_part, part_meshes, representation_source_id, scene_displayers
+    parts = {p["id"]: p for p in part_meshes(sim)}
+    all_v = []
+    all_f = []
+    base = 0
+    for d in scene_displayers(sim, scene):
+        src_id = representation_source_id(sim, d)
+        for src in collector_sources(sim, d):
+            part = owning_mesh_part(sim, src)
+            if part is None:
+                continue
+            p = mesh_bundle_for_part(sim, part, src_id, tess_by_id=parts) or parts.get(part.id)
+            if p is None:
+                continue
+            cad = part_surface_cad_ids(sim, src)
+            verts, faces = _subset_part_triangles(p, cad or None)
+            if not faces:
+                continue
+            all_v.extend(verts)
+            all_f.extend([[base + a, base + b, base + c] for a, b, c in faces])
+            base += len(verts)
+    if not all_f:
+        raise RuntimeError("场景没有可导出的表面")
+    return write_ascii_stl(path, all_v, all_f, (scene.name if scene is not None else None) or "scene")
 
 
 def transform_vertices(vertices, translate=(0, 0, 0), scale=(1, 1, 1)):

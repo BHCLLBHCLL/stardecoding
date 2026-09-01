@@ -105,6 +105,7 @@ class StarSceneModel:
         self.objmap = sim.objmap
         self.nodes_by_id = {}
         self._nodes_by_key = {}
+        self._g7_cache = None
 
     # ---------------- 树 ----------------
     def tree_roots(self):
@@ -386,6 +387,79 @@ class StarSceneModel:
         rows = []
         for k, v in obj.dict.items():
             rows.append((k, self._fmt_value(v, self.objmap), v))
+        rows.extend(self._g7_rows(obj))
+        return rows
+
+    # ---------------- G7 物理语义行 ----------------
+    def _g7(self):
+        """extract_physics() 惰性缓存（G7）。"""
+        if self._g7_cache is None:
+            try:
+                ph = self.sim.extract_physics()
+            except Exception:
+                ph = {"ok": False}
+            if not ph.get("ok"):
+                ph = {"continua": [], "materials": [], "motion": []}
+            self._g7_cache = ph
+        return self._g7_cache
+
+    def _g7_rows(self, obj):
+        """G7 语义行：连续体模型参数 / 材料属性 / 运动规格。
+
+        行名统一加 "G7:" 前缀；raw 固定 None（不触发引用跳转，属性面板置只读）。
+        """
+        from sim_parser import g7_format_value
+        cn = obj.class_name or ""
+        tail = cn.rsplit(".", 1)[-1]
+        rows = []
+        if cn == "star.common.PhysicsContinuum":
+            c = next((c for c in self._g7()["continua"]
+                      if c["id"] == obj.id), None)
+            if c:
+                for m in c["models"]:
+                    ps = " ".join("%s=%s" % (k, g7_format_value(v))
+                                  for k, v in m["params"].items())
+                    label = (m["class"] or "").rsplit(".", 1)[-1]
+                    if m["name"]:
+                        label += " %r" % m["name"]
+                    rows.append(("G7:模型 " + label,
+                                 ps if ps else "（无参数）", None))
+        elif cn.startswith("star.material.") and \
+                tail in type(self.sim)._G7_MAT_TAILS:
+            mt = next((m for m in self._g7()["materials"]
+                       if m["id"] == obj.id), None)
+            if mt:
+                for p in mt["properties"]:
+                    line = "[%s" % p.get("method", "?")
+                    tag = p.get("method_tag", "")
+                    if tag:
+                        line += "/%s" % tag
+                    line += "]"
+                    if "value" in p:
+                        line += " = %s" % g7_format_value(
+                            {"value": p["value"], "units": p.get("units", "")})
+                    rows.append(("G7:属性 " + p["name"], line, None))
+        elif cn == "star.motion.MotionSpecification":
+            mo = next((m for m in self._g7()["motion"]
+                       if m["id"] == obj.id), None)
+            if mo:
+                rows.append(("G7:运动 Region", mo.get("region", "") or "—", None))
+                rows.append(("G7:运动 Continuum",
+                             mo.get("continuum", "") or "—", None))
+                mc = mo.get("motion_class", "") or ""
+                mv = mc.rsplit(".", 1)[-1] if mc else "—"
+                if mo.get("motion_name"):
+                    mv += " %r" % mo["motion_name"]
+                rows.append(("G7:运动 Motion", mv, None))
+                rc = mo.get("ref_frame_class", "") or ""
+                rv = rc.rsplit(".", 1)[-1] if rc else "—"
+                if mo.get("ref_frame_name"):
+                    rv += " %r" % mo["ref_frame_name"]
+                rows.append(("G7:运动 ReferenceFrame", rv, None))
+                for k in ("RotationRate", "AxisVector", "OriginVector"):
+                    if k in mo:
+                        rows.append(("G7:" + k,
+                                     g7_format_value(mo[k]), None))
         return rows
 
     # ---------------- 场景摘要（M3 使用） ----------------

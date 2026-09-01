@@ -13,10 +13,11 @@ import time
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QAction, QColorDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMenu, QPlainTextEdit, QProgressBar, QPushButton,
-    QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QToolButton,
-    QVBoxLayout, QWidget, QHeaderView,
+    QAbstractItemView, QAction, QColorDialog, QDialog, QDialogButtonBox,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMenu, QPlainTextEdit, QProgressBar, QPushButton, QTableWidget,
+    QTableWidgetItem, QTabWidget, QTreeWidget, QToolButton, QVBoxLayout,
+    QWidget, QHeaderView,
 )
 
 
@@ -917,7 +918,7 @@ class PropertiesPanel(QWidget):
             vitem = QTableWidgetItem(val)
             vitem.setData(34, raw)
             vitem.setToolTip(type(raw).__name__)
-            if attr in _PROP_RO or isinstance(raw, dict) or (
+            if attr.startswith("G7:") or attr in _PROP_RO or isinstance(raw, dict) or (
                     isinstance(raw, int) and self.model is not None
                     and raw in self.model.objmap and attr not in (
                         "Opacity", "TriangleCount", "VertexCount")):
@@ -994,3 +995,37 @@ class PropertiesPanel(QWidget):
             rgb.extend(list(raw[3:]))
         self.property_edited.emit(self._current, key, rgb)
         self.show_object(self._current)
+
+
+class PartsFilterDialog(QDialog):
+    """Parts 过滤器：勾选 MeshPart / CadPart / PartSurface，写回 Collector.Keys。"""
+
+    def __init__(self, parts, selected_ids, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Parts 过滤器")
+        self.resize(360, 420)
+        lay = QVBoxLayout(self)
+        self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.NoSelection)
+        selected = set(selected_ids or [])
+        for oid, label in parts or []:
+            item = QListWidgetItem(label)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if oid in selected else Qt.Unchecked)
+            item.setData(Qt.UserRole, oid)
+            self.list.addItem(item)
+        lay.addWidget(self.list, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def selected_ids(self):
+        out = []
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.checkState() == Qt.Checked:
+                oid = item.data(Qt.UserRole)
+                if oid is not None:
+                    out.append(int(oid))
+        return out

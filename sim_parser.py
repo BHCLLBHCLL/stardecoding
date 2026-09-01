@@ -1633,6 +1633,690 @@ class SimFile:
             fh.write("\n".join(L) + "\n")
         return path
 
+    # ---- G4：边界 ↔ 面片映射 ----
+    def _storage_payload(self, so):
+        """存储对象载荷：SimpleStorage → ndarray；ListStorage → (counts/offsets, values)。"""
+        d = (so.dict or {}) if so is not None else {}
+        if (so.class_name or "").startswith("SimpleStorage"):
+            k = d.get("dataKey", d.get("dataKeys"))
+            if isinstance(k, list):
+                k = k[0] if k else None
+            if not isinstance(k, int):
+                return None
+            a = self._storage_array(k)
+            if a is None:
+                return None
+            v = self.array_data(a["index"])
+            return v if isinstance(v, _np.ndarray) else None
+        lk = d.get("listKey", d.get("listKeys"))
+        if isinstance(lk, list):
+            lk = lk[0] if lk else None
+        if not isinstance(lk, int):
+            return None
+        a = self._storage_array(lk)
+        if a is None:
+            return None
+        vals = self.array_data(a["index"])
+        if not isinstance(vals, _np.ndarray):
+            return None
+        for ck in ("offsetKey", "countKey", "offsetKeys", "countKeys"):
+            c = d.get(ck)
+            if isinstance(c, list):
+                c = c[0] if c else None
+            if isinstance(c, int):
+                ca = self._storage_array(c)
+                if ca is not None:
+                    cv = self.array_data(ca["index"])
+                    if isinstance(cv, _np.ndarray):
+                        return (cv, vals)
+        return (None, vals)
+
+    def _dup_rings(self, m, stor_by_id):
+        """DUP 组 map → (face_cell 对, [每面顶点环])；解析失败返回 (None, None)。"""
+        fci = self._storage_payload(stor_by_id.get((m or {}).get("FaceCellIndex")))
+        if not isinstance(fci, _np.ndarray):
+            return None, None
+        pairs = fci.astype(_np.int64).reshape(-1, 2)
+        vl = self._storage_payload(stor_by_id.get((m or {}).get("VertexList")))
+        if not isinstance(vl, tuple):
+            return pairs, None
+        cnts, vlist = vl
+        if cnts is None:
+            cnts = _np.full(vlist.size // 4, 4, dtype=_np.int64)
+        else:
+            cnts = _np.asarray(cnts).astype(_np.int64)
+            if int(cnts.sum()) != vlist.size and cnts.size >= 2 \
+                    and int(cnts[0]) == 0 and bool((_np.diff(cnts) > 0).all()):
+                last = int(cnts[-1])
+                cnts = _np.diff(cnts)
+                cnts = _np.append(cnts, vlist.size - last)
+        if int(cnts.sum()) != vlist.size:
+            return pairs, None
+        offs = _np.concatenate(([0], _np.cumsum(cnts)))
+        return pairs, [vlist[offs[i]:offs[i + 1]].tolist()
+                       for i in range(cnts.size)]
+
+    def extract_boundary_faces(self, vol=None):
+        """G4：FvBoundary → Boundary 对象链抽取体网格边界面片（按边界分组）。
+
+        语义（G4 侦查结论）：
+          - FvBoundary.Boundary → star.common.Boundary（名字/Region/Index）
+          - FvBoundary.faces → BDY DuplicateStorageManager；
+            FaceCount == SerialSize == FaceCellIndex 面数 == VertexList 环数
+          - BDY FaceCellIndex = (owner_cell, 占位)：owner-only 挂载
+            （pipeBlockage 14882/14882 单元边闭包 0 坏边的决定性验证）
+          - FacePartSurfaceIndex（可选常量）== Boundary.PartSurfaces 组 Keys 所指
+            PartSurface.Index（airfoil 全局 47..55；pipeBlockage 1:1 场景与
+            Boundary.Index 巧合相等）；methaneOnPt 型无此通道（ProstarBounId
+            代替），靠 FvBoundary 链兜底
+        返回 {"ok", "total_faces", "boundaries", "reason"}；体网格抽取失败的
+        文件（直升机/纯表面网格）诚实拒绝 ok=False。
+        """
+        if vol is None:
+            vol = self.extract_volume_mesh()
+        if not vol.get("ok"):
+            return {"ok": False, "total_faces": 0, "boundaries": [],
+                    "reason": vol.get("reason") or "体网格未抽取"}
+        ncell = int(vol.get("count") or 0)
+        nvert = int(vol["points"].shape[0])
+        stor_by_id = {o.id: o for o in self.objects
+                      if (o.class_name or "").startswith(
+                          ("SimpleStorage", "ListStorage"))}
+        dups = {o.id: o for o in self.objects
+                if (o.class_name or "") == "DuplicateStorageManager"}
+        out = []
+        for fb in self.objects:
+            if not (fb.class_name or "").endswith(".FvBoundary"):
+                continue
+            dup = dups.get(fb.dict.get("faces"))
+            bobj = self.objmap.get(fb.dict.get("Boundary"))
+            if dup is None or bobj is None:
+                continue
+            m = dup.dict.get("map") or {}
+            pairs, rings = self._dup_rings(m, stor_by_id)
+            sz = int(dup.dict.get("SerialSize") or 0)
+            if pairs is None or rings is None or len(rings) != pairs.shape[0] \
+                    or pairs.shape[0] != sz \
+                    or sz != int(fb.dict.get("FaceCount") or -1):
+                continue
+            owners = pairs[:, 0]
+            if owners.size and (int(owners.min()) < 0
+                                or int(owners.max()) >= ncell):
+                continue
+            vmax = max((max(r) for r in rings if r), default=-1)
+            if vmax >= nvert:
+                continue
+            pay = {t: self._storage_payload(stor_by_id.get(sid))
+                   for t, sid in m.items()}
+
+            def const_of(tag):
+                a = pay.get(tag)
+                if isinstance(a, _np.ndarray) and a.size:
+                    u = _np.unique(a)
+                    if u.size == 1:
+                        return int(u[0])
+                return None
+
+            robj = self.objmap.get(bobj.dict.get("Region"))
+            ps_group = self.objmap.get(bobj.dict.get("PartSurfaces"))
+            ps_infos = []
+            for k in ((ps_group.dict or {}).get("Keys") or []) if ps_group else []:
+                o = self.objmap.get(k)
+                if o is not None and (o.class_name or "").endswith(".PartSurface"):
+                    ps_infos.append({"id": o.id, "name": o.name,
+                                     "index": o.dict.get("Index")})
+            out.append({"id": bobj.id,
+                        "name": bobj.name or "boundary%d" % bobj.id,
+                        "region_id": robj.id if robj is not None else None,
+                        "region_name": (robj.name or "") if robj is not None else "",
+                        "index": bobj.dict.get("Index"),
+                        "face_count": sz,
+                        "owner_cells": owners.tolist(),
+                        "rings": rings,
+                        "part_surface_index": const_of("FacePartSurfaceIndex"),
+                        "part_surfaces": ps_infos,
+                        "prostar_boun_id": const_of("ProstarBounId")})
+        if not out:
+            return {"ok": True, "total_faces": 0, "boundaries": [],
+                    "reason": "无 FvBoundary 边界链"}
+        out.sort(key=lambda b: (str(b["region_name"]),
+                                str(b["index"]) if b["index"] is not None else ""))
+        return {"ok": True, "total_faces": sum(b["face_count"] for b in out),
+                "boundaries": out, "reason": ""}
+
+    def export_boundary_csv(self, path, bf=None):
+        """G4 边界映射 → CSV（每边界一行：面数/区域/占位通道常量）。"""
+        if bf is None:
+            bf = self.extract_boundary_faces()
+        if not bf.get("ok"):
+            return None
+        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write("boundary_id,boundary_name,region_id,region_name,"
+                     "index,face_count,part_surface_index,part_surface,"
+                     "prostar_boun_id\n")
+            for b in bf["boundaries"]:
+                ps = b.get("part_surfaces") or []
+                fh.write("%d,%s,%s,%s,%s,%d,%s,%s,%s\n" % (
+                    b["id"], b["name"], b["region_id"], b["region_name"],
+                    b["index"], b["face_count"], b["part_surface_index"],
+                    ";".join(p["name"] for p in ps) if ps else "",
+                    b["prostar_boun_id"]))
+        return path
+
+    def extract_solution_fields(self):
+        """G5：抽取 .sim 内嵌解场（单元中心标量/矢量）。
+
+        语义链（G5 侦查结论）：
+          - star.post.SolutionRepresentation 携带 FunctionNames 解字段清单，
+            经 Objects → star.common.TypedObjectManager →
+            star.common.FvRegionManager → star.common.FvRegion 到达数据；
+          - FvRegion.cells → DuplicateStorageManager（SerialSize == CellCount），
+            map = {字段tag: SimpleStorage}（G3 存储体系直接复用）：
+            标量 SimpleStorage<T> 数组 n == CellCount；矢量
+            SimpleStorage<Vector<3,T>> n == 3*CellCount（每单元三分量）；
+          - 解场 FvRegion 的 mesh 组（Coord/VertexList/FaceCellIndex）与
+            extract_volume_mesh() 所用数组逐字节相同 → cell 序严格对齐，
+            抽取结果可直接做单元标量着色；
+          - 无解场文件（教程 *_start / 纯表面网格 / 未求解）诚实拒绝
+            ok=False + reason。
+        返回 {"ok", "n_fields", "cell_count", "region_name", "fields",
+              "data", "reason"}；fields = [{name, components, count,
+              min, max, type}]，data = {tag: ndarray}。
+        """
+        if _np is None:
+            return {"ok": False, "n_fields": 0, "cell_count": 0,
+                    "fields": [], "data": {}, "reason": "需要 numpy"}
+        srs = [o for o in self.objects
+               if (o.class_name or "") == "star.post.SolutionRepresentation"]
+        if not srs:
+            return {"ok": False, "n_fields": 0, "cell_count": 0,
+                    "fields": [], "data": {}, "reason": "无解场表示（SolutionRepresentation）"}
+        stor_by_id = {o.id: o for o in self.objects
+                      if (o.class_name or "").startswith(
+                          ("SimpleStorage", "ListStorage"))}
+        dups = {o.id: o for o in self.objects
+                if (o.class_name or "") == "DuplicateStorageManager"}
+        out_data, out_fields = {}, []
+        ncell = 0
+        region = None
+        for sr in srs:
+            tmo = self.objmap.get(sr.dict.get("Objects"))
+            if tmo is None:
+                continue
+            for mid in tmo.dict.get("Keys") or []:
+                mgr = self.objmap.get(mid)
+                if mgr is None or (mgr.class_name or "") != \
+                        "star.common.FvRegionManager":
+                    continue
+                for rid in mgr.dict.get("Keys") or []:
+                    fr = self.objmap.get(rid)
+                    if fr is None or (fr.class_name or "") != \
+                            "star.common.FvRegion":
+                        continue
+                    dup = dups.get(fr.dict.get("cells"))
+                    if dup is None:
+                        continue
+                    ncell = int(dup.dict.get("SerialSize") or 0)
+                    robj = self.objmap.get(fr.dict.get("Region"))
+                    if robj is not None:
+                        region = robj.name or robj.class_name
+                    for tag, sid in (dup.dict.get("map") or {}).items():
+                        if tag in out_data:
+                            continue
+                        so = stor_by_id.get(sid)
+                        if so is None:
+                            continue
+                        cn = so.class_name or ""
+                        if not cn.startswith("SimpleStorage"):
+                            continue
+                        v = self._storage_payload(so)
+                        if not isinstance(v, _np.ndarray) or v.size == 0:
+                            continue
+                        comps = 3 if re.search(r"Vector<\d+", cn) else 1
+                        if comps == 3:
+                            if v.size != ncell * 3:
+                                continue
+                            v = v.reshape(ncell, 3)
+                        elif v.size != ncell:
+                            continue
+                        out_data[tag] = v
+                        out_fields.append({
+                            "name": tag, "components": comps,
+                            "count": int(v.shape[0]),
+                            "min": float(v.min()), "max": float(v.max()),
+                            "type": cn})
+                    if out_fields:
+                        break
+                if out_fields:
+                    break
+            if out_fields:
+                break
+        if not out_fields:
+            return {"ok": False, "n_fields": 0, "cell_count": ncell,
+                    "fields": [], "data": {}, "reason": "解场 FvRegion 无字段存储"}
+        return {"ok": True, "n_fields": len(out_fields), "cell_count": ncell,
+                "region_name": region, "fields": out_fields,
+                "data": out_data, "reason": ""}
+
+    def export_solution_csv(self, path, sf=None, field=None):
+        """G5 解场 → CSV（逐单元一行）。field 缺省取第一个标量字段。"""
+        if sf is None:
+            sf = self.extract_solution_fields()
+        if not sf.get("ok"):
+            return None
+        if field is None:
+            cand = [f for f in sf["fields"] if f["components"] == 1]
+            field = cand[0]["name"] if cand else sf["fields"][0]["name"]
+        v = sf["data"].get(field)
+        if v is None or not getattr(v, "size", 0):
+            return None
+        comps = v.shape[1] if v.ndim == 2 else 1
+        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write("cell,%s\n" % ",".join(
+                "%s_%d" % (field, i) for i in range(comps)))
+            if v.ndim == 2:
+                for i in range(v.shape[0]):
+                    fh.write("%d,%s\n" % (i, ",".join(
+                        "%.6g" % x for x in v[i])))
+            else:
+                for i in range(v.size):
+                    fh.write("%d,%.6g\n" % (i, v[i]))
+        return path
+
+    # ---- G6 绘图/监视器曲线 ----
+    def _fix_name(self, s):
+        """状态表按 latin-1 解码，UTF-8 中文名呈 mojibake；round-trip 还原。"""
+        if not isinstance(s, str):
+            return s
+        try:
+            b = s.encode("latin-1")
+        except UnicodeEncodeError:
+            return s
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return s
+
+    def _monitor_array(self, oid):
+        """监视器数据引用 → Float8 数组（G6 语义链，兼容两代子格式）：
+        XAxisData → MasterArray<Float8>(dataKey)；
+        MultiYAxisData → PlotableMonitor.YAxisValues：
+          新版 {values:[MasterArray id]}；旧版 {map:{YAxisData: MasterArray id}}。
+        空数据（dataKey=0/size=0）返回 None。
+        """
+        o = self.objmap.get(oid)
+        if o is None:
+            return None
+        vals = o.dict.get("values")
+        if isinstance(vals, list) and vals:
+            o = self.objmap.get(vals[0])
+            if o is None:
+                return None
+        mp = o.dict.get("map")
+        if isinstance(mp, dict) and isinstance(mp.get("YAxisData"), int):
+            o = self.objmap.get(mp["YAxisData"])
+            if o is None:
+                return None
+        a = self._storage_array(o.dict.get("dataKey"))
+        if a is None or not a.get("count"):
+            return None
+        try:
+            v = _np.frombuffer(a["data"], dtype="<f8")
+        except Exception:
+            return None
+        return v if v.size else None
+
+    def extract_monitor_curves(self):
+        """G6：抽取监视器曲线数据（采样索引 + 值序列）。
+        语义链（G6 侦查结论）：
+          - MonitorManager.Keys → 监视器（ResidualMonitor/IterationMonitor/
+            PhysicalTimeMonitor/ReportMonitor/SolutionView*Monitor）
+          - 监视器.XAxisData → MasterArray<Float8>（dataKey→数组，记录采样迭代号）
+          - 监视器.MultiYAxisData → PlotableMonitor.YAxisValues
+            {values:[MasterArray id]} → 值序列
+        物理语义：残差/迭代每步记录（n=总迭代数），物理时间/报告监视器按
+        StarUpdate 间隔采样（n=总迭代/间隔，间隔=15 时 X 恒为 15,30,...）。
+        无监视器管理器或全部监视器无数据（未求解 Xsize=0）诚实拒绝 ok=False。
+        返回 {"ok", "monitors", "data", "reason"}；
+        monitors=[{name,class,n,y_min,y_max,last,cur_value,index_first,index_last}]，
+        data={name:{"index":arr|None,"y":arr}}
+        """
+        if _np is None:
+            return {"ok": False, "monitors": [], "data": {}, "reason": "需要 numpy"}
+        mm = next((o for o in self.objects
+                   if (o.class_name or "") == "star.base.report.MonitorManager"),
+                  None)
+        if mm is None:
+            return {"ok": False, "monitors": [], "data": {},
+                    "reason": "无监视器管理器（MonitorManager）"}
+        out_m, out_d = [], {}
+        for mid in mm.dict.get("Keys") or []:
+            m = self.objmap.get(mid)
+            if m is None:
+                continue
+            y = self._monitor_array(m.dict.get("MultiYAxisData"))
+            if y is None:
+                continue
+            x = self._monitor_array(m.dict.get("XAxisData"))
+            name = self._fix_name(m.name) or ("Monitor%d" % m.id)
+            aligned = x is not None and x.size == y.size
+            entry = {"id": m.id, "name": name, "class": m.class_name,
+                     "n": int(y.size),
+                     "y_min": float(y.min()), "y_max": float(y.max()),
+                     "last": float(y[-1]), "cur_value": m.dict.get("CurrentValue"),
+                     "index_first": float(x[0]) if aligned else None,
+                     "index_last": float(x[-1]) if aligned else None}
+            out_m.append(entry)
+            out_d[name] = {"index": x if aligned else None, "y": y}
+        if not out_m:
+            return {"ok": False, "monitors": [], "data": {},
+                    "reason": "监视器无数据（未求解或未记录）"}
+        return {"ok": True, "monitors": out_m, "data": out_d, "reason": ""}
+
+    def extract_plots(self, mc=None):
+        """G6：绘图 → 曲线序列关联（G2 标注：标题/轴标题/单位/图例）。
+        语义链（G6 侦查结论）：
+          PlotManager.Keys → Plot（Title；XAxis→Cartesian2DAxis→AxisTitle.Text；
+          XUnits→Units 符号）→ DataSetManager.Keys →
+            MonitorDataSet{SeriesName=图例, XAxisMonitor, YAxisMonitor}（监视器曲线）
+            DerivedDataSet{InputData→TableDerivedData{XValuesName,YValuesName}
+                           →FileTable{FileName}}（导入表数据，仅标注不取数）
+        返回 {"ok", "plots", "reason"}；
+        plots=[{title,class,x_title,x_units,series:[{kind,name,x_monitor,
+        y_monitor,x_id,y_id,x_scale,x_offset,y_scale,y_offset,...}]}]
+        """
+        pm = next((o for o in self.objects
+                   if (o.class_name or "") == "star.common.PlotManager"), None)
+        if pm is None:
+            return {"ok": False, "plots": [], "reason": "无绘图管理器（PlotManager）"}
+
+        def axis_title(plt):
+            ax = self.objmap.get(plt.dict.get("XAxis"))
+            if ax is None:
+                return None
+            t = self.objmap.get(ax.dict.get("AxisTitle"))
+            return self._fix_name(t.dict.get("Text")) if t else None
+
+        def units_sym(oid):
+            u = self.objmap.get(oid)
+            return self._fix_name(u.name) if u is not None else None
+
+        plots = []
+        for pid in pm.dict.get("Keys") or []:
+            p = self.objmap.get(pid)
+            if p is None:
+                continue
+            series = []
+            dsm = self.objmap.get(p.dict.get("DataSetManager"))
+            for did in (dsm.dict.get("Keys") or []) if dsm else []:
+                d = self.objmap.get(did)
+                if d is None:
+                    continue
+                cn = d.class_name or ""
+                s = {"kind": "monitor" if cn.endswith("MonitorDataSet")
+                     else ("tabular" if cn.endswith("DerivedDataSet") else "other"),
+                     "name": self._fix_name(d.dict.get("SeriesName") or d.name),
+                     "x_monitor": None, "y_monitor": None,
+                     "x_id": d.dict.get("XAxisMonitor"),
+                     "y_id": d.dict.get("YAxisMonitor"),
+                     "x_scale": d.dict.get("XScale", 1.0),
+                     "x_offset": d.dict.get("XOffset", 0.0),
+                     "y_scale": d.dict.get("YScale", 1.0),
+                     "y_offset": d.dict.get("YOffset", 0.0)}
+                xo = self.objmap.get(s["x_id"])
+                yo = self.objmap.get(s["y_id"])
+                if xo is not None:
+                    s["x_monitor"] = self._fix_name(xo.name)
+                if yo is not None:
+                    s["y_monitor"] = self._fix_name(yo.name)
+                if s["kind"] == "tabular":
+                    td = self.objmap.get(d.dict.get("InputData"))
+                    if td is not None and (td.class_name or "").endswith(
+                            "TableDerivedData"):
+                        s["x_column"] = self._fix_name(td.dict.get("XValuesName"))
+                        s["y_column"] = self._fix_name(td.dict.get("YValuesName"))
+                        ft = self.objmap.get(td.dict.get("InputData"))
+                        if ft is not None and (ft.class_name or "").endswith(
+                                "FileTable"):
+                            s["table_file"] = self._fix_name(
+                                ft.dict.get("FileName"))
+                series.append(s)
+            plots.append({"title": self._fix_name(p.dict.get("Title") or p.name),
+                          "class": p.class_name, "x_title": axis_title(p),
+                          "x_units": units_sym(p.dict.get("XUnits")),
+                          "series": series})
+        if not plots:
+            return {"ok": False, "plots": [], "reason": "无绘图对象"}
+        return {"ok": True, "plots": plots, "reason": ""}
+
+    def export_plot_csv(self, path, mc=None, plot=None):
+        """G6：按绘图导出对齐 XY 曲线 CSV（复现官方绘图导出：X 一列+每序列一列）。
+        X 取 XAxisMonitor 的值序列（Iteration→迭代号；PhysicalTime→物理时间），
+        Y 取 YAxisMonitor 的值序列，应用 XOffset/XScale/YOffset/YScale 变换。
+        序列长度不一致或缺数据时该序列诚实跳过；无可导出序列返回 None。
+        """
+        if mc is None:
+            mc = self.extract_monitor_curves()
+        if not mc.get("ok"):
+            return None
+        if plot is None:
+            pl = self.extract_plots(mc)
+            plot = next((q for q in pl.get("plots", [])
+                         if any(s["kind"] == "monitor" for s in q["series"])),
+                        None)
+            if plot is None:
+                return None
+        self._last_plot_export_skipped = []
+        m_by_id = {}
+        mm = next((o for o in self.objects
+                   if (o.class_name or "") == "star.base.report.MonitorManager"),
+                  None)
+        if mm is not None:
+            for mid in mm.dict.get("Keys") or []:
+                mo = self.objmap.get(mid)
+                if mo is not None:
+                    m_by_id[mid] = self._fix_name(mo.name)
+        data = mc["data"]
+        xs, x_header = None, None
+        cols, skipped = [], []
+        for s in plot["series"]:
+            if s["kind"] != "monitor":
+                skipped.append("%s[tabular]" % s["name"])
+                continue
+            yn = m_by_id.get(s["y_id"])
+            yd = data.get(yn) if yn else None
+            if yd is None:
+                skipped.append("%s[无Y数据]" % s["name"])
+                continue
+            y = _np.asarray(yd["y"], dtype=_np.float64) * \
+                float(s["y_scale"] or 1.0) + float(s["y_offset"] or 0.0)
+            if xs is None:
+                xn = m_by_id.get(s["x_id"])
+                xd = data.get(xn) if xn else None
+                if xd is None or xd["y"] is None:
+                    skipped.append("%s[无X数据]" % s["name"])
+                    continue
+                xs = _np.asarray(xd["y"], dtype=_np.float64) * \
+                    float(s["x_scale"] or 1.0) + float(s["x_offset"] or 0.0)
+                x_header = s.get("x_monitor") or "X"
+            if xs is None or xs.size != y.size:
+                skipped.append("%s[长度不一致 %d!=%d]" % (
+                    s["name"], y.size, xs.size if xs is not None else -1))
+                continue
+            cols.append((s["name"], y))
+        if xs is None or not cols:
+            return None
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(",".join([x_header] + [c[0] for c in cols]) + "\n")
+            for i in range(xs.size):
+                fh.write("%.6g,%s\n" % (xs[i],
+                                        ",".join("%.6g" % c[1][i] for c in cols)))
+        self._last_plot_export_skipped = skipped
+        return path
+
+    # ---- G7：物理模型/材料/运动参数 ----
+    _G7_SKIP_ATTRS = frozenset((
+        "ClassName", "ObjectId", "Parent", "Seniority", "PhysicsContinuum",
+        "AllModels", "Models", "Domain", "FullDomain", "NameManager",
+        "ObjectsManager", "Manager", "Simulation", "stream", "continuum",
+        "InactiveObjects", "Keys", "LinkedMaterials", "MaterialPropertyManager",
+        "DataBaseMaterial", "GlobalData", "HolderID", "RelativeReferenceFrameManager",
+        "CoordinateSystem",
+        # 物理量对象内部的量纲/表达式元数据（G7 参数视角视为噪声）
+        "DimensionsVector", "FunctionExpression", "AssemblyCode", "Definition",
+        "IsDeltaValue", "IncludeLowerBound", "IncludeUpperBound",
+        "LowerBound", "UpperBound", "PresentationName", "Active"))
+    _G7_MAT_TAILS = ("Gas", "Liquid", "Solid", "GasComponent",
+                     "LiquidComponent")
+
+    def _g7_quantity(self, t):
+        """物理量对象 → {value, units}（Scalar 取 Value，Vector 取 Vector）。"""
+        u = self.objmap.get(t.dict.get("Units"))
+        d = {"units": (u.dict.get("PresentationName")
+                       or u.dict.get("Description") or "") if u else ""}
+        tail = (t.class_name or "").rsplit(".", 1)[-1]
+        d["value"] = t.dict.get("Vector" if tail == "VectorPhysicalQuantity"
+                                else "Value")
+        return d
+
+    def _g7_option(self, t):
+        """选项对象 → {selected, options}（Selected 为枚举序号，不解引用）。"""
+        d = {}
+        if "Selected" in t.dict:
+            d["selected"] = t.dict.get("Selected")
+        if "AvailableOptionsVector" in t.dict:
+            d["options"] = t.dict.get("AvailableOptionsVector")
+        return d
+
+    def _g7_value(self, v, depth):
+        """单属性值解析（G7）。
+
+        整数属性按引用解引用，按目标类尾分流：
+          *PhysicalQuantity → {value, units}；*Option → {selected, options}；
+          *Parameters/Limits → 递归字典；*SubModel/Model → 递归字典（限深）；
+          其余（管理器/求解器/监视器/状态）丢弃。非整数标量/浮点/bool 原样保留。
+        注意：Selected/AvailableOptionsVector 等枚举序号不走本入口（选项整体解析），
+        避免与对象 id 数值碰撞；bool 先于 int 判断（bool 是 int 子类）；
+        列表一律原样保留（整数列表可能是 DimensionsVector 这类向量而非引用）。
+        """
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, list):
+            return list(v)
+        if not isinstance(v, int):
+            return v
+        t = self.objmap.get(v)
+        if t is None or depth <= 0:
+            return None
+        tail = (t.class_name or "").rsplit(".", 1)[-1]
+        if tail in ("ScalarPhysicalQuantity", "VectorPhysicalQuantity"):
+            return self._g7_quantity(t)
+        if tail.endswith("Option"):
+            return self._g7_option(t)
+        if tail.endswith(("Parameters", "Parameter", "Limits")):
+            return self._g7_dict(t, depth - 1)
+        if tail.endswith(("SubModel", "Model")):
+            return self._g7_dict(t, depth - 1)
+        return None
+
+    def _g7_dict(self, o, depth):
+        """对象 → 过滤簿记键后的参数字典（G7 模型/参数组通用）。"""
+        d = {}
+        for k, v in o.dict.items():
+            if k in self._G7_SKIP_ATTRS:
+                continue
+            val = self._g7_value(v, depth)
+            if val is not None:
+                d[k] = val
+        return d
+
+    def extract_physics(self):
+        """G7：物理模型/材料/运动参数解码。
+
+        语义链（G7 侦查结论，Javadoc 属性名 ↔ 语料对照）：
+          - star.common.PhysicsContinuum.ModelManager → 模型序列（Seniority 序）。
+            模型参数按类尾分流解引用：标量/矢量物理量（Value/Vector+Units）、
+            选项（Selected 序号+AvailableOptionsVector 值域）、参数组
+            （*Parameters/*Limits 递归）、子模型（flowSubModel 等一层跟进）；
+          - star.material.Gas/Liquid/... .MaterialPropertyManager → *Property 子对象，
+            ActiveMethod → ConstantMaterialPropertyMethod(DbXmlTag) → Quantity
+            取常量值+单位；UnsupportedMethod 等非常量方法只记方法与标签；
+          - star.motion.MotionSpecification → Region+Continuum+Motion+
+            ReferenceFrame；UserRotatingReferenceFrame 携带 RotationRate/
+            AxisVector/OriginVector 物理量（MRF/旋转域）。
+        返回 {"ok", "continua", "materials", "motion", "reason"}。
+        """
+        om = self.objmap
+        continua, materials, motion = [], [], []
+        for o in self.objects:
+            cn = o.class_name or ""
+            if cn == "star.common.PhysicsContinuum":
+                models = []
+                mm = om.get(o.dict.get("ModelManager"))
+                if mm is not None:
+                    for m2 in self.children.get(mm.id, []):
+                        if (m2.class_name or "").rsplit(".", 1)[-1] == \
+                                "NameManager":
+                            continue
+                        models.append({
+                            "id": m2.id, "class": m2.class_name,
+                            "name": self._fix_name(m2.name) or "",
+                            "params": self._g7_dict(m2, 2)})
+                continua.append({
+                    "id": o.id, "name": self._fix_name(o.name) or "",
+                    "is_active": o.dict.get("IsActive"),
+                    "is_motion_active": o.dict.get("IsMotionActive"),
+                    "models": models})
+            elif cn.startswith("star.material.") and \
+                    cn.rsplit(".", 1)[-1] in self._G7_MAT_TAILS:
+                props = []
+                pm = om.get(o.dict.get("MaterialPropertyManager"))
+                if pm is not None:
+                    for p in self.children.get(pm.id, []):
+                        ptail = (p.class_name or "").rsplit(".", 1)[-1]
+                        if not ptail.endswith("Property"):
+                            continue
+                        entry = {"class": p.class_name, "name": ptail}
+                        am = om.get(p.dict.get("ActiveMethod"))
+                        if am is not None:
+                            entry["method"] = (am.class_name or "").rsplit(".", 1)[-1]
+                            entry["method_tag"] = am.dict.get("DbXmlTag") or ""
+                            q = om.get(am.dict.get("Quantity"))
+                            if q is not None and (q.class_name or "").endswith(
+                                    "PhysicalQuantity"):
+                                entry.update(self._g7_quantity(q))
+                        props.append(entry)
+                materials.append({
+                    "id": o.id, "class": cn,
+                    "name": self._fix_name(o.name)
+                    or o.dict.get("PresentationName") or "",
+                    "properties": props})
+            elif cn == "star.motion.MotionSpecification":
+                reg = om.get(o.dict.get("Region"))
+                cont = om.get(o.dict.get("Continuum"))
+                mo = om.get(o.dict.get("Motion"))
+                rf = om.get(o.dict.get("ReferenceFrame"))
+                entry = {
+                    "id": o.id,
+                    "region": self._fix_name(reg.name) if reg else "",
+                    "continuum": self._fix_name(cont.name) if cont else "",
+                    "motion_class": mo.class_name if mo else "",
+                    "motion_name": self._fix_name(mo.name) if mo else "",
+                    "ref_frame_class": rf.class_name if rf else "",
+                    "ref_frame_name": self._fix_name(rf.name) if rf else ""}
+                if rf is not None:
+                    for k in ("RotationRate", "AxisVector", "OriginVector"):
+                        q = om.get(rf.dict.get(k))
+                        if q is not None and (q.class_name or "").endswith(
+                                "PhysicalQuantity"):
+                            entry[k] = self._g7_quantity(q)
+                motion.append(entry)
+        if not continua:
+            return {"ok": False, "continua": [], "materials": [],
+                    "motion": [], "reason": "无 PhysicsContinuum（纯几何/网格文件）"}
+        return {"ok": True, "continua": continua, "materials": materials,
+                "motion": motion, "reason": ""}
+
     # ---- 汇总 ----
     def summary(self):
         L = []
@@ -2156,6 +2840,34 @@ def _fmt_rec(rec, objmap=None):
     return "%s %s" % (rec["kind"], rec.get("token", ""))
 
 
+def g7_format_value(v):
+    """G7 参数值的单行语义格式化（CLI --physics 与 GUI 属性面板共用）。
+
+    识别 extract_physics() 的三类节点：物理量 {"value","units"}、
+    选项 {"selected","options"}、参数组（dict 递归）；其余按类型直排。
+    """
+    if isinstance(v, dict):
+        if "value" in v:
+            val, u = v["value"], v.get("units", "")
+            if isinstance(val, list):
+                return "(%s)%s" % (
+                    ", ".join("%.6g" % x for x in val),
+                    (" %s" % u) if u else "")
+            s = "%.6g" % val if isinstance(val, float) else str(val)
+            return s + ((" %s" % u) if u else "")
+        if "selected" in v:
+            return "选项[%s]%s" % (v["selected"],
+                                  (" 值域%s" % (v["options"],))
+                                  if v.get("options") else "")
+        return "{%s}" % " ".join("%s=%s" % (k, g7_format_value(x))
+                                 for k, x in v.items())
+    if isinstance(v, list):
+        return "[%s]" % ", ".join(g7_format_value(x) for x in v)
+    if isinstance(v, float):
+        return "%.6g" % v
+    return str(v)
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -2179,9 +2891,23 @@ def main(argv=None):
                     help="抽取体网格（存储体系驱动）并输出统计")
     ap.add_argument("--volume-export", metavar="VTU",
                     help="把体网格写为 VTK XML UnstructuredGrid（VTK_POLYHEDRON）")
+    ap.add_argument("--volume-boundaries", action="store_true",
+                    help="G4：FvBoundary → Boundary 链抽取体网格边界面片（按边界统计）")
+    ap.add_argument("--boundary-csv", metavar="CSV",
+                    help="把 G4 体网格边界映射写为 CSV（每边界一行）")
+    ap.add_argument("--solution-fields", action="store_true",
+                    help="G5：抽取 .sim 内嵌解场（SolutionRepresentation → FvRegion cells 组）")
+    ap.add_argument("--solution-csv", metavar="CSV",
+                    help="把 G5 解场标量字段写为 CSV（逐单元一行）")
+    ap.add_argument("--curves", action="store_true",
+                    help="G6：抽取监视器曲线与绘图关联（MonitorManager + PlotManager）")
+    ap.add_argument("--curves-csv", metavar="PREFIX",
+                    help="按绘图导出对齐 XY 曲线 CSV（PREFIX_绘图名.csv）")
     ap.add_argument("--fingerprint", action="store_true", help="输出版本指纹（banner/release/编码/头部）")
     ap.add_argument("--check-length", action="store_true", help="状态表长度自校验")
     ap.add_argument("--report", action="store_true", help="语义层报告（Region/Continuum/Scene/Part）")
+    ap.add_argument("--physics", action="store_true",
+                    help="物理模型/材料/运动参数报告（G7）")
     ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
     ap.add_argument("--binary-decode", type=int, default=0, help="二进制状态表：解码前 N 个带 raw 记录（int/double 段显示）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
@@ -2196,9 +2922,12 @@ def main(argv=None):
                                 args.objects, args.tree, args.layers,
                                 args.validate, args.mesh, args.mesh_export,
                                 args.volume_mesh, args.volume_export,
+                                args.volume_boundaries, args.boundary_csv,
+                                args.solution_fields, args.solution_csv,
+                                args.boundaries,
                                 args.fingerprint, args.check_length,
                                 args.report, args.export, args.state_tree,
-                                args.grammar, args.arrays]):
+                                args.grammar]):
         print(sim.summary())
 
     if args.fingerprint:
@@ -2383,6 +3112,48 @@ def main(argv=None):
                 p["name"], p["class"], p["triangles"],
                 (" %s 顶点" % p["vertices"]) if p["vertices"] else ""))
 
+    if args.physics:
+        g7fmt = g7_format_value
+        ph = sim.extract_physics()
+        print("\n== 物理模型/材料/运动参数（G7） ==")
+        if not ph.get("ok"):
+            print("  诚实拒绝：%s" % ph.get("reason"))
+        for c in ph["continua"]:
+            print("  Continuum %r (id %d) 激活=%s 运动激活=%s: %d 个模型" % (
+                c["name"], c["id"], c["is_active"], c["is_motion_active"],
+                len(c["models"])))
+            for m2 in c["models"]:
+                ps = " ".join("%s=%s" % (k, g7fmt(v))
+                              for k, v in m2["params"].items())
+                print("    %s%s%s" % (
+                    m2["class"].rsplit(".", 1)[-1],
+                    (" %r" % m2["name"]) if m2["name"] else "",
+                    ("：%s" % ps) if ps else ""))
+        for mt in ph["materials"]:
+            print("  材料 %r (%s): %d 属性" % (
+                mt["name"], mt["class"].rsplit(".", 1)[-1],
+                len(mt["properties"])))
+            for p in mt["properties"]:
+                line = "    %s [%s/%s]" % (p["name"], p["method"],
+                                           p.get("method_tag", ""))
+                if "value" in p:
+                    line += " = %s" % g7fmt(
+                        {"value": p["value"], "units": p.get("units", "")})
+                print(line)
+        if ph["motion"]:
+            print("  运动规格（MotionSpecification）: %d 条" % len(ph["motion"]))
+            for m3 in ph["motion"]:
+                extras = " ".join(
+                    "%s=%s" % (k, g7fmt(m3[k]))
+                    for k in ("RotationRate", "AxisVector", "OriginVector")
+                    if k in m3)
+                print("    Region %r ← %s%s @ %s%s" % (
+                    m3["region"],
+                    m3["motion_class"].rsplit(".", 1)[-1],
+                    (" %r" % m3["motion_name"]) if m3["motion_name"] else "",
+                    m3["ref_frame_class"].rsplit(".", 1)[-1],
+                    ("（%s）" % extras) if extras else ""))
+
     if args.binary_decode:
         print("== 二进制状态表数值流解码（启发式：2 字节整 + 8 字节双精度段） ==")
         n = 0
@@ -2412,6 +3183,89 @@ def main(argv=None):
                 print("  %-22s faces=%d parts=%s" % (name, n, list(per.keys())))
             print("  已指派面数: %d / %d" % (assigned, bf["total"]))
             print("  （未指派 = part 表面 patch 未被列出的 region 边界引用，见文档说明）")
+
+    if args.volume_boundaries or args.boundary_csv:
+        bf4 = sim.extract_boundary_faces()
+        print("\n== 体网格边界映射（G4：FvBoundary → Boundary 链）==")
+        if not bf4.get("ok"):
+            print("  诚实拒绝：%s" % bf4.get("reason"))
+        elif not bf4.get("boundaries"):
+            print("  %s" % (bf4.get("reason") or "无边界"))
+        else:
+            for b in bf4["boundaries"]:
+                extra = []
+                if b["part_surface_index"] is not None:
+                    extra.append("psi=%s" % b["part_surface_index"])
+                if b["prostar_boun_id"] is not None:
+                    extra.append("prostar=%s" % b["prostar_boun_id"])
+                print("  %-24s region=%-20s Index=%-4s faces=%-6d %s" % (
+                    b["name"], b["region_name"] or "-",
+                    b["index"] if b["index"] is not None else "-",
+                    b["face_count"], " ".join(extra)))
+            print("  合计：%d 边界 / %d 面" % (
+                len(bf4["boundaries"]), bf4["total_faces"]))
+        if args.boundary_csv:
+            print("  CSV -> %s" % (sim.export_boundary_csv(
+                args.boundary_csv, bf4) or "-"))
+
+    if args.solution_fields or args.solution_csv:
+        sf5 = sim.extract_solution_fields()
+        print("\n== 内嵌解场（G5：SolutionRepresentation → FvRegion cells 组）==")
+        if not sf5.get("ok"):
+            print("  诚实拒绝：%s" % sf5.get("reason"))
+        else:
+            print("  单元数: %d  字段数: %d  区域: %s" % (
+                sf5["cell_count"], sf5["n_fields"],
+                sf5.get("region_name") or "-"))
+            for f in sf5["fields"]:
+                vec = "x%d" % f["components"] if f["components"] > 1 else "  "
+                print("  %-34s %-26s n=%-7d [%+.4g .. %+.4g]%s" % (
+                    f["name"], f["type"], f["count"], f["min"], f["max"], vec))
+        if args.solution_csv:
+            print("  CSV -> %s" % (sim.export_solution_csv(
+                args.solution_csv, sf5) or "-"))
+
+    if args.curves or args.curves_csv:
+        mc6 = sim.extract_monitor_curves()
+        print("\n== 监视器曲线（G6：MonitorManager → XAxisData/YAxisValues 双 MasterArray）==")
+        if not mc6.get("ok"):
+            print("  诚实拒绝：%s" % mc6.get("reason"))
+        else:
+            for e in mc6["monitors"]:
+                cv = e.get("cur_value")
+                eq = ""
+                if isinstance(cv, float) and (
+                        cv == e["last"] or
+                        abs(cv - e["last"]) <= 1e-9 * max(1.0, abs(cv))):
+                    eq = "  ==CurrentValue"
+                print("  %-32s %-24s n=%-7d y[%+.4g .. %+.4g] last=%+.4g%s" % (
+                    e["name"], e["class"].split(".")[-1], e["n"],
+                    e["y_min"], e["y_max"], e["last"], eq))
+            pl6 = sim.extract_plots(mc6)
+            print("  绘图关联（G2 标注：标题/轴标题/单位/图例）：")
+            for q in pl6.get("plots", []):
+                print("   ◇ %s (%s) X轴=%r 单位=%r" % (
+                    q["title"], q["class"].split(".")[-1],
+                    q["x_title"], q["x_units"]))
+                for s in q["series"]:
+                    if s["kind"] == "monitor":
+                        print("      - %-34s X←%s Y←%s" % (
+                            s["name"], s["x_monitor"] or "-",
+                            s["y_monitor"] or "-"))
+                    elif s["kind"] == "tabular":
+                        print("      - %-34s [tabular] X列=%r Y列=%r%s" % (
+                            s["name"], s.get("x_column"), s.get("y_column"),
+                            (" 表文件=%r" % s["table_file"])
+                            if s.get("table_file") else ""))
+            if args.curves_csv:
+                for q in pl6.get("plots", []):
+                    safe = re.sub(r"[^\w\-]+", "_", q["title"]).strip("_") or "plot"
+                    out = "%s_%s.csv" % (args.curves_csv, safe)
+                    r = sim.export_plot_csv(out, mc6, q)
+                    if r:
+                        sk = getattr(sim, "_last_plot_export_skipped", None)
+                        print("  CSV -> %s%s" % (
+                            r, ("（跳过：%s）" % "; ".join(sk)) if sk else ""))
 
     if args.mesh:
         m = sim.extract_mesh()

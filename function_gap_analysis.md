@@ -84,6 +84,21 @@
   按边界着色主 part 网格（2824 面/7 色标）。**注意**：未指派面 = part 表面 patch
   未被列出的 region 边界引用（多为 part 内部/默认表面）；每个 part 的 patch 数组
   识别为启发式，跨 part 边界面聚合尚需 per-part 细化。
+  **G4 体网格路径补全（✅ 2026-08-30）**：`extract_boundary_faces()`（FvBoundary →
+  Boundary 对象链 + BDY DUP 组存储解析）+ CLI `--volume-boundaries`/`--boundary-csv` +
+  GUI `boundary_colored_volume_polydata`（3D→polys / 2D→lines）；4 个体网格文件
+  22 边界/11642 面精确，FacePartSurfaceIndex 常量 == Boundary.PartSurfaces 组 Keys
+  所指 PartSurface.Index（对象级闭合；methaneOnPt 型无 PartSurface 通道，靠
+  FvBoundary 链兜底）；纯表面网格文件诚实拒绝。详见 parity_100pct_plan.md G4。
+  **G5 解场路径补全（✅ 2026-08-30）**：`extract_solution_fields()`（star.post.
+  SolutionRepresentation → Objects → TypedObjectManager → FvRegionManager →
+  FvRegion → cells DuplicateStorageManager，map={字段tag: SimpleStorage}）+ CLI
+  `--solution-fields`/`--solution-csv` + GUI `solution_colored_volume_polydata`
+  （边界面 owner 单元标量着色）；语料 openfoam/benchmark 下 12 个
+  vortexShed_tutor*.sim 含真实解场（20245 单元 2D 圆柱绕流，10 字段精确，
+  Pressure ΔP 均值≈0、W=0 二维、矢量 x3）；解场 mesh 组与 FvRepresentation
+  网格组数组逐字节相同 → cell 序与 extract_volume_mesh 严格对齐；无解场文件
+  诚实拒绝。详见 parity_100pct_plan.md G5。
 - **仍开放**：其余数组的字段级语义（法向、面积、单元/体表、index_map/node_id_index_map/
   schema_embedding_map/child 所指的表）未解。语料中大量 `N, N, N*2` 式 Float8 三元组
   与 3 倍数之外的长度（如 cylinderBase 的 732/744/744）表明除顶点外还有面数据/向量场表。
@@ -122,12 +137,12 @@
 | --- | --- | --- |
 | 文件元信息 | ✅ 版本/时间/对象数 | — |
 | CAD 几何（cadmodeler 顶点/边/面/名称引用） | ⚠️ 对象已解析，坐标在状态表 T 块/数组 | 未能重建 B-Rep/几何拓扑 |
-| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3）；体网格已抽取（G3：DuplicateStorageManager 存储体系驱动 + 面→单元反演 → VTK_POLYHEDRON，21 文件 4 个体网格文件单元数精确、VTU 导出） | 边界↔面片映射见下行（G4） |
-| Region/Boundary/Interface | ✅ 已关联网格表（改进⑦ --report：Region→Part→三角数） | 边界↔面片映射未做 |
+| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3）；体网格已抽取（G3：DuplicateStorageManager 存储体系驱动 + 面→单元反演 → VTK_POLYHEDRON，21 文件 4 个体网格文件单元数精确、VTU 导出）；体网格边界↔Boundary 映射精确闭合（G4：22 边界/11642 面，psi==PartSurface.Index，GUI 2D/3D 着色） | — |
+| Region/Boundary/Interface | ✅ 已关联网格表（改进⑦ --report：Region→Part→三角数）；体网格边界↔Boundary↔PartSurface 对象链闭合（G4：`extract_boundary_faces`/`--volume-boundaries`/`--boundary-csv`） | 面网格路径 patch 数组识别仍为启发式（跨 part 边界面聚合待细化） |
 | 场景/视图/Display/注记 | ✅ 已重建摘要（Scene→Displayer→视图，改进⑦） | 显示参数未解码 |
-| 绘图/监视器/报告 | ⚠️ 对象已解析 | 未重建曲线数据 |
+| 绘图/监视器/报告 | ✅ 监视器曲线数据重建（G6：XAxisData/MultiYAxisData 双 MasterArray（G3 `_storage_array` 复用），YAxisValues 两代子格式兼容（新版 values 列表/旧版 map.YAxisData）；Continuity CurrentValue==y[-1] 端到端闭合；Plot→AxisTitle/Units/MonitorDataSet 标注关联 + 对齐 XY CSV 导出；CLI `--curves`/`--curves-csv`，GUI 真曲线 X 定位降采样） | DerivedDataSet 表数据（FileTable 载荷）仅标注不取数；场景内嵌绘图面板参数未解码 |
 | 物理模型/材料/场函数 | ✅ 已按 PhysicsContinuum 归组（改进⑦ --report：22-23 模型/continuum） | 模型参数未解码 |
-| 求解状态/解数据 | ⚠️ 官方文档确认 .sim 含解数据（restart file） | 未定位解字段快照的位置（可能在状态表 T 块/数组/嵌套子块） |
+| 求解状态/解数据 | ✅ 已抽取 .sim 内嵌解场（G5：SolutionRepresentation → FvRegion cells DUP 组 map，标量 n==CellCount / 矢量 x3；CLI `--solution-fields`/`--solution-csv`，GUI 真解场标量着色） | .simh HDF5 路径待语料扩充（本机语料无 .simh 文件；h5py 未装） |
 | 协同仿真链接（cosimulation 包） | ⚠️ 对象已解析 | 未提取链接配置 |
 | 回写/修改 .sim | ⚠️ 对象图 repr 行可替换（`sim_writer.py`） | 不能插入新对象、不改数组/状态表；见 `star_gui_next.md` |
 
@@ -149,10 +164,12 @@ TRANSMIT（文档中仅指 Parasolid Transmit，与 .sim 内部节无关）、St
 loadedLibraries —— 即本项目的全部逆向工作无官方背书，需以语料实测为准。
 
 **对本项目的启示**：
-- "解数据在 .sim 内" → 状态表 T 块/数组块/嵌套子块中应有解字段快照，需继续定位。
+- "解数据在 .sim 内" → **已定位（G5）**：解字段不在状态表 T 块，而在
+  SolutionRepresentation → FvRegion cells DuplicateStorageManager 的
+  map={字段tag: SimpleStorage}（G3 存储体系统一承载网格+解场）；见 parity_100pct_plan.md G5。
 - "6.06 修订过格式" → 解释了 6.x 时代二进制状态表 ↔ 7.x 起 ASCII 状态表的切换
   （语料中 binary 模式恰好都来自 modeller 270x/280x 的老文件）。
-- .simh/HDF5 与 .sce/.scd5 是独立格式，不在本项目范围内（可列为后续扩展）。
+- .simh/HDF5 为独立历史解文件：本机语料无 .simh（需语料扩充后方可实测 h5py 读取）。
 - Javadoc（doc_javadoc_catalog.md）与用户指南互补：前者给出对象级语义字典
   （574 包），后者给出文件级行为定义；两者均未公开内部序列化格式。
 

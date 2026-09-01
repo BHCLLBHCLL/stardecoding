@@ -975,6 +975,125 @@ def boundary_colored_polydata(sim):
             "main_part": main["name"]}
 
 
+def boundary_colored_volume_polydata(sim):
+    """G4：按边界着色的体网格边界面 polydata（FvBoundary 链）。
+
+    3D 文件每 BDY 环画多边形面片；2D 文件（环长 2）画边界线段。
+    每边界一色（cell scalars "boundary"），与表面路径
+    boundary_colored_polydata 返回结构同构。
+    返回 {"polydata", "label_names", "kind", "total_faces"} 或 None。
+    """
+    vol = sim.extract_volume_mesh() if sim is not None else None
+    if not vol or not vol.get("ok"):
+        return None
+    bf = sim.extract_boundary_faces(vol)
+    if not bf.get("ok") or not bf.get("boundaries"):
+        return None
+    import vtk
+    nps = _numpy_support()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(
+        np.asarray(vol["points"], dtype=np.float64)), deep=True))
+    labels = [b["name"] for b in bf["boundaries"]]
+    is2d = all(max((len(r) for r in b["rings"]), default=0) <= 2
+               for b in bf["boundaries"])
+    cells = vtk.vtkCellArray()
+    scalars = vtk.vtkUnsignedCharArray()
+    scalars.SetNumberOfComponents(3)
+    scalars.SetName("boundary")
+    palette = [(0.95, 0.45, 0.25), (0.25, 0.80, 0.45), (0.30, 0.60, 0.95),
+               (0.90, 0.80, 0.20), (0.75, 0.35, 0.85), (0.30, 0.85, 0.85)]
+    total = 0
+    for k, b in enumerate(bf["boundaries"]):
+        c = palette[k % len(palette)]
+        for ring in b["rings"]:
+            n = len(ring)
+            if n < 2 or (n == 2 and not is2d):
+                continue
+            cells.InsertNextCell(n)
+            for v in ring:
+                cells.InsertCellPoint(int(v))
+            scalars.InsertNextTuple3(int(c[0] * 255), int(c[1] * 255),
+                                     int(c[2] * 255))
+            total += 1
+    pd = vtk.vtkPolyData()
+    pd.SetPoints(pts)
+    if is2d:
+        pd.SetLines(cells)
+    else:
+        pd.SetPolys(cells)
+    pd.GetCellData().SetScalars(scalars)
+    return {"polydata": pd,
+            "label_names": {k + 1: n for k, n in enumerate(labels)},
+            "kind": "lines" if is2d else "polys",
+            "total_faces": total}
+
+
+def solution_colored_volume_polydata(sim, field=None):
+    """G5：解场标量 → 体网格边界面着色 polydata（真解场着色）。
+
+    几何复用 G4 extract_boundary_faces 的边界面环；每个边界面取其
+    owner 单元（owner_cells 与 rings 对齐）的解场值作为 cell scalar。
+    3D 画多边形面片 / 2D 画边界线段（环长 2 判定），与
+    boundary_colored_volume_polydata 返回结构同构。
+    返回 {"polydata", "label_names", "kind", "total_faces", "field",
+          "min", "max"} 或 None（无解场/无体网格/无边界）。
+    """
+    vol = sim.extract_volume_mesh() if sim is not None else None
+    if not vol or not vol.get("ok"):
+        return None
+    sf = sim.extract_solution_fields()
+    if not sf.get("ok"):
+        return None
+    if field is None:
+        cand = [f for f in sf["fields"] if f["components"] == 1
+                and f["name"] != "W_Velocity"]
+        if not cand:
+            cand = [f for f in sf["fields"] if f["components"] == 1]
+        field = cand[0]["name"] if cand else None
+    v = sf["data"].get(field)
+    if v is None or getattr(v, "ndim", 1) != 1 or v.size != sf["cell_count"]:
+        return None
+    bf = sim.extract_boundary_faces(vol)
+    if not bf.get("ok") or not bf.get("boundaries"):
+        return None
+    import vtk
+    nps = _numpy_support()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(
+        np.asarray(vol["points"], dtype=np.float64)), deep=True))
+    is2d = all(max((len(r) for r in b["rings"]), default=0) <= 2
+               for b in bf["boundaries"])
+    cells = vtk.vtkCellArray()
+    scalars = vtk.vtkDoubleArray()
+    scalars.SetName("solution")
+    total = 0
+    vmin, vmax = float(v.min()), float(v.max())
+    for b in bf["boundaries"]:
+        for ring, owner in zip(b["rings"], b.get("owner_cells") or []):
+            n = len(ring)
+            if n < 2 or (n == 2 and not is2d):
+                continue
+            if owner is None or owner < 0 or owner >= v.size:
+                continue
+            cells.InsertNextCell(n)
+            for vi in ring:
+                cells.InsertCellPoint(int(vi))
+            scalars.InsertNextValue(float(v[int(owner)]))
+            total += 1
+    pd = vtk.vtkPolyData()
+    pd.SetPoints(pts)
+    if is2d:
+        pd.SetLines(cells)
+    else:
+        pd.SetPolys(cells)
+    pd.GetCellData().SetScalars(scalars)
+    return {"polydata": pd, "label_names": {1: field},
+            "kind": "lines" if is2d else "polys",
+            "total_faces": total, "field": field,
+            "min": vmin, "max": vmax}
+
+
 def bounds_of(actors):
     """actors 合并包围盒 → (xmin,xmax,ymin,ymax,zmin,zmax)。"""
     xs, ys, zs = [], [], []

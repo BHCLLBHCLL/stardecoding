@@ -25,6 +25,8 @@ class SimDocument(object):
         self.selection_history = []
         self.selection_index = -1
         self.saved_views = {}      # name -> camera dict
+        self.array_patches = {}    # array_index -> payload bytes
+        self.baked_parts = set()   # 顶点已写回数表，3D 不再叠 actor 变换
         self.listeners = []
         if sim is not None:
             ids = [o.id for o in sim.objects] or [2]
@@ -45,6 +47,8 @@ class SimDocument(object):
         self.selection_history = []
         self.selection_index = -1
         self.saved_views.clear()
+        self.array_patches.clear()
+        self.baked_parts.clear()
         if sim is not None:
             ids = [o.id for o in sim.objects] or [2]
             self._next_id = max(ids) + 1
@@ -158,15 +162,46 @@ class SimDocument(object):
                prev[3] * scale[0], prev[4] * scale[1], prev[5] * scale[2])
         self.transforms[part_id] = nxt
         obj = self.object(part_id)
+        wrote = False
         if obj is not None and obj.dict.get("ImportedVertices"):
             from mesh_io import transform_vertices
             verts = transform_vertices(obj.dict["ImportedVertices"], translate, scale)
             self.set_property(part_id, "ImportedVertices", verts)
+            wrote = True
+        elif self.sim is not None:
+            wrote = self._transform_bound_vertices(part_id, translate, scale)
+        if wrote:
+            self.baked_parts.add(part_id)
         if self.sim is not None:
             self.sim._part_meshes_cache = None
         self.dirty = True
         self._notify("transform", obj_id=part_id, translate=translate, scale=scale)
         return nxt
+
+    def _transform_bound_vertices(self, part_id, translate, scale):
+        """把已绑定 Float8 顶点写回数组载荷（与 actor 预览分开，供 Save 落盘）。"""
+        from mesh_io import transform_vertices
+        from sim_writer import encode_float8_payload
+        from star_gui_vtk import part_meshes
+        for p in part_meshes(self.sim):
+            if p.get("id") != part_id:
+                continue
+            idx = p.get("vert_index")
+            verts = p.get("vertices")
+            if idx is None or verts is None:
+                return False
+            if idx < 0 or idx >= len(self.sim.arrays):
+                return False
+            new_verts = transform_vertices(
+                [list(map(float, row)) for row in verts], translate, scale)
+            raw = encode_float8_payload(new_verts)
+            old = self.sim.arrays[idx].get("data") or b""
+            if len(raw) != len(old):
+                return False
+            self.array_patches[idx] = raw
+            self.sim.arrays[idx]["data"] = raw
+            return True
+        return False
 
     def push_selection(self, oid):
         if self.selection_index < len(self.selection_history) - 1:
