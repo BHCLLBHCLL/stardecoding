@@ -389,122 +389,154 @@ def decode_binary_values(raw_hex):
 
 
 def parse_state_table_binary(text):
-    """解析"二进制编码"状态表变体（部分老版本 .sim，如 airfoil.sim）。
+    """二进制状态表完整文法（G9，语料逆向验证，4 个 binary 样本逐字节往返）。
 
-    与 ASCII 变体的差异：魔数块后不再是 80 列折行文本，而是一条字节流——
-    名字/格式字母仍是 ASCII，id/flags/version/尾值等数字字段为二进制
-    （id=3 字节小端、flags/version/尾值=1 字节）。数值流（T 块等）的具体
-    二进制文法未完全还原，按原始字节保留。
+    结构（长度前缀文法）：
+      banner：'PS' 变体前缀 + "TRANSMIT FILE created by modeller version <v>"
+              + NUL 填充 + 长度前缀 SCH 串 + NUL；
+      记录流：
+        named      := [len][name] [id 3B = id<<8] [flags 1B] [version 1B iff id==0]
+                      [fmt run] [value 1B] [stream]
+        anonymous  := [fmt run] [value 1B] [stream]
+        data       := 原始字节（非记录头）
+      名字 = 1 字节长度 L（0<L<128）+ L 个名字字节（lattice/mesh/owner 等）；
+      id 3 字节大端、低字节恒 0（= id<<8，mesh 1006 存 `03 ee 00`）；
+      flags 真实记录 <=2、fmt 非空、id 低字节为 0——任一不合即流数据假阳性；
+      记录尾判定：fmt 后若为合法名字长度前缀（下一记录）则无 value/stream；
+                  否则取 1 字节 value + 原始流（吞到下一记录头）。
+      每字节归属唯一记录（无损）；serialize_binary_records 可逐字节还原。
     返回 (tokens, records, magic, banner)。
     """
     lines = text.split("\n")
-    magic = lines[:4]
-    blob = text.encode("latin-1")[len("\n".join(magic)) + 1:]
-
-    # banner：从字节流中正则提取（NUL 填充的版本号/SCH 串）
-    bm = re.search(rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)", blob)
+    bi = next((k for k, l in enumerate(lines[:60])
+               if "TRANSMIT FILE" in l and k > 0), None)
+    if bi is None:
+        bi = 4
+    magic = lines[:bi]
+    body_all = text.encode("latin-1")
+    bm = re.search(rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)",
+                   body_all)
     banner = ""
     if bm:
         banner = "T51 : TRANSMIT FILE created by modeller version %s SCH_%s" % (
             bm.group(1).decode("latin-1"), bm.group(2).decode("latin-1"))
-        body = blob[bm.end():]
+        body = body_all[bm.end():]
     else:
-        body = blob
+        body = body_all
 
-    NAME_BYTES = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
-    records = []
-    i = 0
+    FMT_BYTES = set(b"ABCDIJLTVZSuld")
+    NAME_BYTES = set(
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
     n = len(body)
+    records = []
     tokens = []
 
-    def scan_name(i):
+    def name_at(p):
+        """p 处若为合法名字记录头（长度前缀+名字+id+flags+[version]+fmt）
+        且 id 低字节 0、flags<=2、fmt 非空，返回字段 dict；否则 None。"""
+        if p >= n:
+            return None
+        L = body[p]
+        if not (0 < L < 128) or p + 1 + L > n:
+            return None
+        chunk = body[p + 1:p + 1 + L]
+        if not all(x in NAME_BYTES for x in chunk):
+            return None
+        i = p + 1 + L
+        if i + 4 > n:
+            return None
+        idd = int.from_bytes(body[i:i + 3], "big") >> 8
+        if body[i + 2] != 0:   # 真实记录 id 低字节恒 0（id<<8 编码）
+            return None
+        i += 3
+        flags = body[i]
+        i += 1
+        if flags > 2:
+            return None
+        version = None
+        if idd == 0:
+            if i >= n:
+                return None
+            version = body[i]
+            i += 1
         j = i
-        while j < n and body[j] in NAME_BYTES:
+        while j < n and body[j] in FMT_BYTES:
             j += 1
-        return body[i:j].decode("latin-1"), j
+        fmt = body[i:j].decode("latin-1")
+        if not fmt:
+            return None
+        return {"name": chunk.decode("latin-1"), "id": idd, "flags": flags,
+                "version": version, "fmt": fmt, "next": j}
 
+    def fmt_at(p):
+        if p >= n or body[p] not in FMT_BYTES:
+            return None, p
+        j = p
+        while j < n and body[j] in FMT_BYTES:
+            j += 1
+        return body[p:j].decode("latin-1"), j
+
+    def next_head(p):
+        nm = name_at(p)
+        if nm:
+            return "named", nm
+        fm, j = fmt_at(p)
+        if fm:
+            return "anonymous", {"fmt": fm, "next": j}
+        return None, None
+
+    i = 0
     while i < n:
-        b = body[i]
-        if b in NAME_BYTES:
-            run, j = scan_name(i)
-            is_bitmap = bool(re.fullmatch(r"[FTPB?]+", run))
-            is_fmt = run in KNOWN_BIN_FMTS or (len(run) == 1 and run.isupper())
-            if is_bitmap or is_fmt:
-                rec = {"kind": "bitmap" if is_bitmap else "anonymous",
-                       "name": None, "id": None, "flags": None,
-                       "version": None, "fmt": run if not is_bitmap else None,
-                       "bits": run if is_bitmap else None,
-                       "value": None, "values": [], "token_index": len(tokens),
-                       "raw": None}
-                tokens.append(run)
-                i = j
-                if i < n and body[i] not in NAME_BYTES:
-                    rec["value"] = body[i]; i += 1
-                # 数值流：原始字节直到下一个字母 run
-                k = i
-                while k < n and body[k] not in NAME_BYTES:
-                    k += 1
-                if k > i:
-                    rec["raw"] = body[i:k].hex(" ")
-                i = k
-                records.append(rec)
-                continue
-            # 名字记录
-            rec = {"kind": "named", "name": run, "id": None, "flags": None,
-                   "version": None, "fmt": None, "value": None, "values": [],
-                   "token_index": len(tokens), "raw": None}
-            tokens.append(run)
+        start = i
+        kind, hd = next_head(i)
+        if kind is None:
+            j = i
+            while j < n and body[j] not in FMT_BYTES and body[j] not in NAME_BYTES:
+                j += 1
+            if j == i:
+                j = i + 1
+            tokens.append("<bytes:%d>" % (j - i))
+            records.append({"kind": "data", "name": None, "id": None,
+                            "flags": None, "version": None, "fmt": None,
+                            "value": None, "values": [],
+                            "token_index": len(tokens) - 1,
+                            "raw": body[start:j].hex(" ")})
             i = j
-            # id = 3 字节大端（= ASCII 模式 id × 256）
-            if i + 3 <= n and body[i] not in NAME_BYTES:
-                rec["id"] = int.from_bytes(body[i:i+3], "big") // 256
-                i += 3
-                # flags = 1 字节
-                if i < n:
-                    rec["flags"] = body[i]; i += 1
-                if rec["flags"] > 2:
-                    # flags 异常（>2）说明该字母 run 是数值流中浮点字节的假阳性
-                    k = i
-                    while k < n and body[k] not in NAME_BYTES:
-                        k += 1
-                    records.append({"kind": "data", "raw": body[i:k].hex(" "),
-                                    "token_index": len(tokens) - 1, "values": []})
-                    i = k
-                    continue
-                # 可选 version：非打印字节且后面跟字母
-                if (i + 1 < n and body[i] not in NAME_BYTES
-                        and body[i+1] in NAME_BYTES):
-                    rec["version"] = body[i]; i += 1
-                # fmt 字母 + 1 字节尾值
-                fm, j2 = scan_name(i)
-                if fm and (fm in KNOWN_BIN_FMTS or (len(fm) == 1 and fm.isupper())):
-                    rec["fmt"] = fm
-                    i = j2
-                    if i < n and body[i] not in NAME_BYTES:
-                        rec["value"] = body[i]; i += 1
-                    # 数值流：原始字节直到下一个字母 run
-                    k = i
-                    while k < n and body[k] not in NAME_BYTES:
-                        k += 1
-                    if k > i:
-                        rec["raw"] = body[i:k].hex(" ")
-                    i = k
-                else:
-                    i = j2
-            records.append(rec)
+            continue
+        if kind == "named":
+            rec = {"kind": "named", "name": hd["name"], "id": hd["id"],
+                   "flags": hd["flags"], "version": hd["version"],
+                   "fmt": hd["fmt"], "value": None, "values": [],
+                   "token_index": len(tokens), "raw": None}
+            tokens.append(hd["name"])
+            i = hd["next"]
         else:
-            # 非字母字节（数值流/位图等）：原样累计
-            k = i
-            while k < n and body[k] not in NAME_BYTES:
-                k += 1
-            tokens.append("<bytes:%d>" % (k - i))
-            records.append({"kind": "data", "raw": body[i:k].hex(" "),
-                            "token_index": len(tokens) - 1, "values": []})
-            i = k
+            rec = {"kind": "anonymous", "name": None, "id": None,
+                   "flags": None, "version": None, "fmt": hd["fmt"],
+                   "value": None, "values": [], "token_index": len(tokens),
+                   "raw": None}
+            tokens.append(hd["fmt"])
+            i = hd["next"]
+        # 记录尾：fmt 后若为下一名字长度前缀则无 value/stream
+        if name_at(i):
+            records.append(rec)
+            continue
+        value = body[i]
+        i += 1
+        j = i
+        while j < n and next_head(j)[0] is None:
+            j += 1
+        rec["value"] = value
+        rec["raw"] = body[i:j].hex(" ") if j > i else None
+        records.append(rec)
+        i = j
 
     if banner:
-        records.insert(0, {"kind": "banner", "fmt": "T", "value": 51,
-                           "message": banner.split(": ", 1)[-1], "token_index": -1})
+        records.insert(0, {"kind": "banner", "name": None, "id": None,
+                           "flags": None, "version": None, "fmt": "T",
+                           "value": 51, "values": [], "token_index": -1,
+                           "raw": None,
+                           "message": banner.split(": ", 1)[-1]})
     # 对带 raw 的记录追加尽力数值解码（2 字节整 + 8 字节双精度交替段）
     for rec in records:
         if rec.get("raw"):
@@ -512,6 +544,35 @@ def parse_state_table_binary(text):
             rec["values_decoded"] = vals
             rec["decode_stats"] = stats
     return tokens, records, magic, banner
+
+
+def serialize_binary_records(records):
+    """按完整文法重新序列化二进制记录流 → 逐字节还原（G9 可逆性验收）。
+
+    与 parse_state_table_binary 互逆：serialize(parse(body)) == body。
+    banner 记录（kind='banner'）不参与写出（其字节属表头区）。
+    """
+    out = bytearray()
+    for r in records:
+        if r.get("kind") == "banner":
+            continue
+        if r.get("kind") == "data":
+            if r.get("raw"):
+                out += bytes.fromhex(r["raw"])
+            continue
+        if r.get("kind") == "named":
+            nb = r["name"].encode("latin-1")
+            out += bytes([len(nb)]) + nb
+            out += (r["id"] << 8).to_bytes(3, "big")
+            out += bytes([r["flags"]])
+            if r["id"] == 0:
+                out += bytes([r["version"]])
+        out += r["fmt"].encode("latin-1")
+        if r.get("value") is not None:
+            out += bytes([r["value"]])
+        if r.get("raw"):
+            out += bytes.fromhex(r["raw"])
+    return bytes(out)
 
 
 def parse_state_table(text):
@@ -3124,6 +3185,7 @@ def main(argv=None):
                     help="场景显示参数报告（G8：Displayer/颜色映射/图例/灯光）")
     ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
     ap.add_argument("--binary-decode", type=int, default=0, help="二进制状态表：解码前 N 个带 raw 记录（int/double 段显示）")
+    ap.add_argument("--binary-verify", action="store_true", help="二进制状态表：完整文法无损往返校验（G9）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
@@ -3448,6 +3510,38 @@ def main(argv=None):
                 n += 1
         if n == 0:
             print("  无带 raw 的二进制记录（文件可能为 ASCII 编码）")
+
+    if args.binary_verify:
+        import re as _re
+        print("== 二进制状态表完整文法（G9）无损往返校验 ==")
+        if sim.state_mode != "binary":
+            print("  状态表为 ASCII 编码，跳过 binary 文法校验")
+        else:
+            body = sim.state_text.encode("latin-1")
+            bm = _re.search(
+                rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)",
+                body)
+            i0 = bm.end() if bm else 0
+            tok, recs, magic, banner = parse_state_table_binary(sim.state_text)
+            rb = serialize_binary_records(recs)
+            orig = body[i0:]
+            lossless = (rb == orig)
+            named = [r for r in recs if r["kind"] == "named"]
+            anon = [r for r in recs if r["kind"] == "anonymous"]
+            data = [r for r in recs if r["kind"] == "data"]
+            print("  banner=%r" % (banner or ""))
+            print("  记录流 %d 字节：named=%d anonymous=%d data=%d" % (
+                len(orig), len(named), len(anon), len(data)))
+            print("  无损往返: %s" % ("通过（逐字节一致）" if lossless else "失败"))
+            for r in named[:6]:
+                print("    named %-22s id=%-6s flags=%s version=%s fmt=%s" % (
+                    r["name"], r["id"], r["flags"], r["version"], r["fmt"]))
+            if not lossless:
+                for k in range(min(len(rb), len(orig))):
+                    if rb[k] != orig[k]:
+                        print("    首个差异 @%d 原=%02x 新=%02x" % (
+                            k, orig[k], rb[k]))
+                        break
 
     if args.boundaries:
         bf = sim.boundary_faces()

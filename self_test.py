@@ -621,4 +621,59 @@ try:
 except ImportError:
     print("G8 gui: vtk 不可用，跳过官方色表冒烟")
 
+# --- G9：二进制状态表完整文法（写侧前置；长度前缀 + id<<8 + 无损往返） ---
+# 断言样本：4 个 binary 编码状态表文件（vortexShed2d/airfoil/vibratingPipe/manifold）
+import re as _re9
+from sim_parser import parse_state_table_binary, serialize_binary_records
+
+
+def _find9(name):
+    for _root in (CORPUS, _G5_DIR):
+        _h = _glob.glob(_root + "/**/" + name, recursive=True)
+        if _h:
+            return _h[0]
+    return None
+
+
+_g9bins = ["vortexShed2d.sim", "airfoil.sim",
+           "vibratingPipe_start.sim", "manifold_start.sim"]
+_g9rt = True
+for _n9 in _g9bins:
+    _f9 = SimFile(_find9(_n9))
+    assert _f9.state_mode == "binary", "%s 应为 binary 编码" % _n9
+    _b9 = _f9.state_text.encode("latin-1")
+    _m9 = _re9.search(
+        rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)",
+        _b9)
+    _i9 = _m9.end() if _m9 else 0
+    _t9, _r9, _mg9, _bn9 = parse_state_table_binary(_f9.state_text)
+    _rb9 = serialize_binary_records(_r9)
+    _g9rt = _g9rt and (_rb9 == _b9[_i9:])
+assert _g9rt, "4 个 binary 状态表 完整文法 应逐字节往返一致（可逆）"
+# 语法锚点：vortexShed2d 的 named 记录头（长度前缀 + id<<8 + flags + version 规则）
+_s9 = SimFile(_find9("vortexShed2d.sim"))
+_bt9, _br9, _bm9, _bb9 = parse_state_table_binary(_s9.state_text)
+_bn9 = {r["name"]: r for r in _br9 if r["kind"] == "named"}
+assert _bn9["lattice"]["id"] == 222 and _bn9["lattice"]["fmt"] == "CCCI"
+assert _bn9["mesh"]["id"] == 1006 and _bn9["mesh"]["fmt"] == "I"
+assert _bn9["index_map"]["id"] == 82 and _bn9["index_map"]["fmt"] == "A"
+assert _bn9["lowest_node_id"]["id"] == 0 \
+    and _bn9["lowest_node_id"]["version"] == 1 \
+    and _bn9["lowest_node_id"]["fmt"] == "dA", "id==0 记录应带 version 字节"
+assert _bn9["list_type"]["id"] == 0 and _bn9["list_type"]["version"] == 1 \
+    and _bn9["list_type"]["fmt"] == "uI"
+assert _bn9["notransmit"]["fmt"] == "lCCCDCCDI"
+assert _bn9["finger_index"]["fmt"] == "dI"
+assert _bn9["mesh_offset_data"]["id"] == 206 \
+    and _bn9["mesh_offset_data"]["fmt"] == "Z" \
+    and _bn9["mesh_offset_data"]["value"] == 0, "Z 记录应有 value + stream"
+assert _bn9["finger_block"]["id"] == 1012 \
+    and _bn9["finger_block"]["fmt"] == "CZ" \
+    and _bn9["finger_block"]["value"] == 0
+assert _bb9 and "modeller version 3600169" in _bb9
+# 对象图语义（binary 文件对象可正常解出——G8 级联）
+assert len(_s9.objects) > 1000
+print("G9 binary: 4 文件逐字节往返可逆 + 语法锚点（长度前缀/id<<8/version 规则）"
+      " + vortexShed2d 对象图 %d 个 全通过" % len(_s9.objects))
+
 print("ALL CHECKS PASSED")
