@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""把会话补丁写回 .sim：对象行替换/插入 + 数组载荷覆盖/追加。"""
+"""把会话补丁写回 .sim：对象行替换/插入 + 数组载荷覆盖/追加 + 变长替换/删除。"""
 
 import os
 import re
 import shutil
+import bisect
 
 
 def format_repr(value):
@@ -135,6 +136,119 @@ def apply_array_payload_patches(blob, sim, array_patches):
         out[start:start + len(old)] = raw
         a["data"] = bytes(raw)
     return bytes(out)
+
+
+def apply_array_ops(blob, sim, ops):
+    """W1：已有数组块变长替换 / 删除 + 全量重定位。
+
+    ops: list of dict
+      {'op': 'replace', 'index': i, 'count': int, 'payload': bytes}
+      {'op': 'delete',  'index': i}
+    返回 (new_blob, summary)。只改动目标数组块（header 行 + 载荷）；
+    其余字节/对象行逐字保留，重定位全部后续偏移，并重算头部 StatePosition
+    （含位数变化）；同步原地更新 sim.arrays / 对象 line / header。
+    主状态表数组（sim.state_text 所在）变长编辑拒绝（其自身链属 W2/G 波）。
+    """
+    sim_state = sim.state_text.encode("latin-1") if sim.state_text else None
+    first_nl = blob.find(b"\n")
+    head = blob[:first_nl]
+    rest0 = first_nl + 1
+    m = re.search(rb"'StatePosition':\s*(\d+)", head)
+    orig_pos = int(m.group(1)) if m else 0
+    # 记录每个 op 的原区块及其替换字节（绝对坐标）
+    ev = []
+    for op in ops:
+        idx = int(op["index"])
+        a = sim.arrays[idx]
+        orig_data = a.get("data") or b""
+        if sim_state is not None and bytes(orig_data) == sim_state:
+            raise ValueError(
+                "主状态表数组(%d)变长编辑超出 W1 范围（留 W2/G 波安全编辑）" % idx)
+        abs_start = int(a["header_start"])
+        abs_end = int(a["start"]) + len(orig_data)
+        orig_hlen = int(a["start"]) - int(a["header_start"])
+        if op["op"] == "delete":
+            new_block = b""
+            new_hlen = 0
+        else:
+            n = int(op["count"])
+            hdr_text = blob[abs_start:int(a["start"])].decode("latin-1")
+            new_hdr = re.sub(r"'nElements':\s*\d+",
+                             "'nElements': %d" % n, hdr_text)
+            new_block = new_hdr.encode("latin-1") + bytes(op.get("payload") or b"")
+            new_hlen = len(new_hdr.encode("latin-1"))
+        ev.append({"abs_start": abs_start, "abs_end": abs_end,
+                   "new_block": new_block,
+                   "delta": len(new_block) - (abs_end - abs_start),
+                   "new_hlen": new_hlen, "op": op["op"], "index": idx,
+                   "count": int(op["count"]) if op["op"] == "replace" else None})
+    # 拼接（倒序应用，保持原偏移有效）
+    out = bytearray(blob)
+    for e in sorted(ev, key=lambda z: z["abs_start"], reverse=True):
+        out[e["abs_start"]:e["abs_end"]] = e["new_block"]
+    # 数组移位累积函数：shift(ref) = 起点 < ref 的编辑 delta 之和
+    ev_sorted = sorted(ev, key=lambda z: z["abs_start"])
+    _starts = [e["abs_start"] for e in ev_sorted]
+    _cum = [0]
+    for e in ev_sorted:
+        _cum.append(_cum[-1] + e["delta"])
+
+    def shift_at(ref):
+        return _cum[bisect.bisect_left(_starts, ref)]
+
+    deleted = {e["index"] for e in ev if e["op"] == "delete"}
+    replaced = {e["index"] for e in ev if e["op"] == "replace"}
+    new_hlen = {e["index"]: e["new_hlen"] for e in ev}
+    orig_hlen = {a["index"]: (int(a["start"]) - int(a["header_start"]))
+                 for a in sim.arrays}
+    final_pos = orig_pos + shift_at(orig_pos)
+    for _ in range(8):
+        new_head = re.sub(
+            rb"'StatePosition':\s*\d+", b"'StatePosition': %d" % final_pos, head)
+        hdelta = len(new_head) - len(head)
+        cand = orig_pos + shift_at(orig_pos) + hdelta
+        if cand == final_pos:
+            break
+        final_pos = cand
+    new_head = re.sub(
+        rb"'StatePosition':\s*\d+", b"'StatePosition': %d" % final_pos, head)
+    new_blob = new_head + b"\n" + bytes(out[rest0:])
+    # ---- 原地一致化 sim ----
+    new_head_len = len(new_head) + 1
+
+    def final_off(x):
+        if x >= rest0:
+            return new_head_len + (x - rest0) + shift_at(x)
+        return x
+
+    keep = []
+    for a in sim.arrays:
+        idx = a["index"]
+        if idx in deleted:
+            continue
+        nd = dict(a)
+        nhs = final_off(int(a["header_start"]))
+        nd["header_start"] = nhs
+        nd["start"] = nhs + (new_hlen[idx] if idx in replaced else orig_hlen[idx])
+        if idx in replaced:
+            op = next(e for e in ev if e["index"] == idx)
+            nd["count"] = int(op["count"])
+            nd["data"] = bytes(op["new_block"])[new_hlen[idx]:]
+            nd["dict"] = dict(a["dict"])
+            nd["dict"]["nElements"] = int(op["count"])
+        keep.append(nd)
+    for nj, a in enumerate(keep):
+        a["index"] = nj
+    sim.arrays = keep
+    if sim.header is not None:
+        sim.header["StatePosition"] = final_pos
+    for o in sim.objects:
+        if getattr(o, "line", -1) >= rest0:
+            o.line = final_off(int(o.line))
+    summary = [{"index": e["index"], "op": e["op"], "delta": e["delta"],
+                "abs_range": (e["abs_start"], e["abs_end"])} for e in ev_sorted]
+    return new_blob, {"edits": summary, "old_state_position": orig_pos,
+                      "new_state_position": final_pos}
 
 
 def _patch_state_position(blob, new_pos):

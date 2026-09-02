@@ -1044,6 +1044,7 @@ class SimFile:
                     "type": d.get("Type"),
                     "count": d.get("nElements"),
                     "start": ps,
+                    "header_start": s0,
                     "data": payload,
                     "dict": d,
                 })
@@ -3301,6 +3302,9 @@ def main(argv=None):
                          "12:version=3 / 4:name=x 等长）。仅等宽编辑已验证字段，不改他处字节")
     ap.add_argument("--edit-out", metavar="PATH", default=None,
                     help="--state-edit 的写出目标（默认同目录 *_edit.sim）")
+    ap.add_argument("--array-op", metavar="SPEC", action="append", default=None,
+                    help="数组块变长替换/删除（W1）：'replace:IDX=N' 把第 IDX 块重设为 N 元素 "
+                         "（载荷以 0 填充）/'delete:IDX' 删除该块；自动重定位后续偏移并重算 StatePosition")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
@@ -3713,6 +3717,47 @@ def main(argv=None):
                     e["index"], r["name"], r["id"], r["flags"], r["version"], e))
             print("  差分区间（仅这些记录字节变动）: %s" % changed)
             print("  写出 -> %s（其余字节逐字不变，重解析通过）" % dest)
+
+    if args.array_op:
+        import importlib
+        _w = importlib.import_module("sim_writer")
+        print("== 数组块变长替换/删除（W1：全量重定位 + StatePosition 重算） ==")
+        ops, dest = [], (args.edit_out or os.path.join(
+            os.path.dirname(os.path.abspath(sim.path)),
+            os.path.splitext(os.path.basename(sim.path))[0] + "_arr.sim"))
+        for spec in args.array_op:
+            kind, _, rest = spec.partition(":")
+            if kind == "replace":
+                idx, _, n = rest.partition("=")
+                ops.append({"op": "replace", "index": int(idx), "count": int(n)})
+            elif kind == "delete":
+                ops.append({"op": "delete", "index": int(rest)})
+            else:
+                raise SystemExit("未知 array-op: %s（replace:IDX=N / delete:IDX）" % spec)
+        _tsize = {a["type"]: (a["dict"].get("sizeof<T>") or 1)
+                  for a in sim.arrays}
+        for op in ops:
+            if op["op"] == "replace":
+                sz = _tsize.get(sim.arrays[op["index"]]["type"], 1)
+                op["payload"] = b"\x00" * (op["count"] * int(sz))
+        src = sim.path
+        _blob = open(src, "rb").read()
+        _nb, _info = _w.apply_array_ops(_blob, sim, ops)
+        import shutil as _sh
+        _sh.copy2(src, dest)
+        with open(dest, "wb") as _fh:
+            _fh.write(_nb)
+        for e in _info["edits"]:
+            print("  arr[%d] %s delta=%+d range=%s" % (
+                e["index"], e["op"], e["delta"], e["abs_range"]))
+        print("  StatePosition %d -> %d" % (_info["old_state_position"],
+                                            _info["new_state_position"]))
+        print("  重开校验 -> %s" % dest)
+        _r = SimFile(dest)
+        ok = (_r.header["StatePosition"] == _info["new_state_position"]
+              and len(_r.objects) == len(sim.objects))
+        print("  重开一致: %s（%d 对象, %d 数组）" % (
+            "通过" if ok else "失败", len(_r.objects), len(_r.arrays)))
 
     if args.boundaries:
         bf = sim.boundary_faces()

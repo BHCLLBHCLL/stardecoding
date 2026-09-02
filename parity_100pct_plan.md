@@ -82,11 +82,12 @@ flowchart LR
 ## 4. W 波 —— 写入器收官（L2 全覆盖）
 
 现状 `sim_writer.py`：行替换 + 新对象插入（ClassVersions 前）+ 数组载荷**等长**覆盖 +
-新数组块追加（StatePosition 重算）。缺口：
+新数组块追加（StatePosition 重算）+ **已有数组块变长替换/删除（W1）** +
+二进制状态表等宽安全编辑（W2）。缺口：
 
 | 点 | 任务 | 说明 |
 | --- | --- | --- |
-| W1 | 已有数组块变长替换/删除 | 全量重定位后续偏移（对象 line、数组 start、StatePosition、魔数长度链）——当前只支持等长 |
+| W1 | 已有数组块变长替换/删除 ✅ 2026-09-02 | 全量重定位后续偏移（对象 line、数组 start、StatePosition、魔数长度链）—— **达成**：`apply_array_ops` 落地 `sim_writer.py`（CLI `--array-op` `replace:IDX=N`/`delete:IDX` + `--edit-out`）；主状态表数组（Character1/`sim.state_text`）变长编辑明确拒绝（其自身链留 W2/G 波）；变长替换按目标 `nElements` 改写块头 + 载荷（0 填充，签名者给真载荷）、删除整块；倒序原位拼接保偏移有效 → 起点 `< ref` 编辑 delta 累计二元查找得 `shift(ref)`，全量重定位后续对象 line/数组 start/header_start；迭代重算头部 `StatePosition` 直至位数收敛（同分区重指向，字典 ClassName/Type 一致）；同步原地一致化 sim（arrays 重编号、objects line、header）；实测 adjointWing_start 33 数组：arr1 Unsigned4 1412→120 变长 + 删 Float8 arr6 → 重开 32 数组 / arr1=120 / 对象图 2076 不变 / StatePosition 精确命中 / section 指向同类 StarVersion 分区；`self_test.py` W1 断言全绿 |
 | W2 | 状态表安全编辑 ✅ 2026-09-02 | 只动已确证记录（G9 产物）；尾部/魔数/其余记录绝不触碰，差分验证 | binary 记录流可安全改写 —— **达成**：`edit_binary_state_records`/`verify_binary_state_edit`/`binary_record_spans`/`_binary_record_bytes` 落地 `sim_parser.py`（CLI `--state-edit` + `--edit-out`）；**只动已确证记录**：仅允许改写 named 记录头**等宽**字段（id 3 字节 / flags 1 字节 / id==0 的 version 1 字节 / 等长 name），其余字节逐字不变（差分验证：非目标记录 span 重算后逐字节一致），尾部校验/魔数/其他记录绝不触碰；**变长编辑明确拒绝**（改名变长、id<->0 增删 version 字节）抛 `ValueError` 留给 W1 全量重定位；同宽编辑 → 记录流总长不变 → 原位替换 Character1 数组载荷即达成真实 Save As（无偏移重定位）；单段（vortexShed2d：lattice flags 2/mesh id 1007/index_map_offset version 2）与多段魔数（manifold N=5）4 个 binary 文件编辑→重开对象图一致、改动持久化、非目标记录逐字不变；`self_test.py` W2 断言全绿，run_all 15 文件/batch_parse 21 文件无回归 |
 | W3 | ZIP/PK 容器写出 | 合成测试已通，补真实语料回归 |
 | W4 | ClassVersions 一致性维护 + NameManager 写入 | G1 结论落地；id 分配维持「序号+2」兼容 |

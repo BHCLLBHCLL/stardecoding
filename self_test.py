@@ -742,4 +742,55 @@ for _i, (_ra, _rb) in enumerate(zip(_mr, _mr2)):
 print("W2 state-edit: 只动已确证记录（id/flags/version 等宽）+ 差分验证"
       " + 变长拒绝 + 单/多段文件 全通过")
 
+# --- W1：数组块变长替换/删除（全量重定位 + StatePosition 重算） ---
+from sim_writer import apply_array_ops
+_w1f = SimFile(r"D:/training/caedecoder/stardecoding/adjointWing_start.sim")
+_w1blob = open(_w1f.path, "rb").read()
+_w1_orig_len = len(_w1blob)
+_w1_n0 = len(_w1f.objects)
+_w1_n_arr = len(_w1f.arrays)  # 原始数组数（apply_array_ops 会原地改写 _w1f.arrays，须先快照）
+_w1_old_sp = int(_w1f.header["StatePosition"])
+_w1payload = (b"\xab\x00\x00\x00" * 120)  # Unsigned4, 120 元素
+_w1nb, _w1info = apply_array_ops(_w1blob, _w1f, [
+    {"op": "replace", "index": 1, "count": 120, "payload": _w1payload},
+    {"op": "delete", "index": 6},
+])
+# 变长：len 应变化；且解析新文件一致
+assert len(_w1nb) != _w1_orig_len, "变长替换/删除应改变文件长度"
+assert _w1info["old_state_position"] == _w1_old_sp
+# 主状态表数组（Character1 arr0）不可被 W1 变长改（留 W2）
+_w1guard = False
+try:
+    apply_array_ops(_w1blob, _w1f, [{"op": "delete", "index": 0}])
+except ValueError:
+    _w1guard = True
+assert _w1guard, "主状态表数组变长编辑应被 W1 拒绝（留 W2）"
+# 落盘重开验证
+_w1dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w1_arr_check.sim")
+import shutil as _sh1
+_sh1.copy2(_w1f.path, _w1dst)
+with open(_w1dst, "wb") as _fh:
+    _fh.write(_w1nb)
+_w1r = SimFile(_w1dst)
+assert len(_w1r.arrays) == _w1_n_arr - 1, \
+    "删除 1 块后应少 1 个数组（%d->%d，重开实得 %d）" % (_w1_n_arr, _w1_n_arr - 1, len(_w1r.arrays))
+assert _w1r.arrays[1]["count"] == 120, "arr1 应变长替换为 120"
+assert len(_w1r.objects) == _w1_n0, "对象图应保持不变"
+assert int(_w1r.header["StatePosition"]) == _w1info["new_state_position"], \
+    "重开应命中重算后的 StatePosition"
+# StatePosition 应仍指向同一 StarVersion 分区（字典内容一致）
+def _w1_section(sim, off, blob=None):
+    for d, pl, ss, ps in sim.sections:
+        if ss <= off < ps:
+            return d
+    return None
+_w1old_sec = _w1_section(SimFile(_w1f.path), _w1_old_sp)
+_w1new_sec = _w1_section(_w1r, int(_w1r.header["StatePosition"]))
+assert _w1old_sec and _w1new_sec and _w1old_sec.get("ClassName") == _w1new_sec.get("ClassName") \
+    and _w1old_sec.get("Type") == _w1new_sec.get("Type"), "StatePosition 应指向同类分区"
+assert _w1old_sec.get("ClassName") == "StarVersion"
+os.remove(_w1dst)
+print("W1 array-op: 变长替换/删除 + 全量重定位 + StatePosition 精确重指向"
+      " + 主状态表拒改 + 重开一致 全通过")
+
 print("ALL CHECKS PASSED")

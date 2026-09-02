@@ -65,6 +65,7 @@
 | 条目 | 能力 |
 | --- | --- |
 | 二进制状态表（G9，写侧前置） | view/persist 前置（`parse_state_table_binary` 长度前缀完整文法 + `serialize_binary_records` 逐字节可逆；4 个 binary 文件往返一致；CLI `--binary-verify`） |
+| 数组块变长替换/删除（W1） | persist（`apply_array_ops`：replace/delete 已有数组块 → 全量重定位后续对象 line/数组 offset + 迭代重算头部 StatePosition（位数收敛、同分区重指向）；主状态表数组变长明确拒绝留 W2；CLI `--array-op` `replace:IDX=N`/`delete:IDX`+`--edit-out`；变长替换/删除→重开对象图/数组数/StatePosition 一致） |
 | 状态表安全编辑（W2） | persist（`edit_binary_state_records` 只动已确证记录（G1/G9 产物）：named 头等宽字段 id/flags/version/等长 name 可改写，其余字节/尾部/魔数逐字不变并差分验证；变长编辑明确拒绝留 W1；CLI `--state-edit`+`--edit-out` 原位替换 Character1 载荷达成真实 Save As；单/多段魔数 binary 文件编辑→重开一致） |
 | 类型化属性编辑 | persist（bool/数/色/矢量/数值列表可编辑；`ClassName/Parent/Simulation/NameManager` 等只读） |
 | 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
