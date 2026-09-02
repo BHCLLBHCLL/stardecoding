@@ -793,4 +793,71 @@ os.remove(_w1dst)
 print("W1 array-op: 变长替换/删除 + 全量重定位 + StatePosition 精确重指向"
       " + 主状态表拒改 + 重开一致 全通过")
 
+# --- W4：ClassVersions 一致性维护 + NameManager 写入 + id「序号+2」兼容 ---
+from sim_writer import save_sim, get_name_manager, write_name_manager
+from star_gui_document import SimDocument
+from star_gui_commands import CopyObjectCommand
+_W4SIM = "D:/training/caedecoder/stardecoding/adjointWing_start.sim"
+_w4f = SimFile(_W4SIM)
+_w4_orig_vers = (_w4f.objects[-1].dict.get("Versions") or {})
+_w4_orig_matched = _w4f.validate_class_versions()["matched"]
+_w4_orig_region = _w4_orig_vers.get("star.common.Region")
+_w4doc = SimDocument(_w4f, _W4SIM)
+_w4cmd = CopyObjectCommand(
+    next(o.id for o in _w4f.objects if o.class_name == "star.common.Region"))
+assert _w4doc.execute(_w4cmd), "W4 复制对象失败"
+_w4_created_n = len(_w4doc.created)
+_w4_region_new = sum(1 for o in _w4doc.created.values()
+                     if o is not None and (getattr(o, "class_name", None) == "star.common.Region"))
+assert _w4_region_new >= 1, "W4 至少应创建一个 star.common.Region"
+_w4dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w4_cv_check.sim")
+save_sim(_w4f, _w4dst, patches=_w4doc.patches, created=_w4doc.created, src_path=_W4SIM)
+_w4r = SimFile(_w4dst)
+# id 维持「图序号+2」严格连续
+assert _w4r.check_sequential_ids()["ok"], "创建后对象图 id 仍应=序号+2 严格连续"
+# ClassVersions 仍为最后对象，尾部合法
+assert _w4r.objects[-1].class_name == "ClassVersions"
+_last_d4, _last_p4, _last_s4, _ = walk_sections(_w4r.blob)[-1]
+_tail4 = _w4r.blob[_last_s4:].decode("latin-1").strip()
+assert _tail4.startswith("{") and _tail4.endswith("}"), "ClassVersions 尾部应保持合法 dict"
+_w4r_vers = _w4r.objects[-1].dict["Versions"]
+# 一致性：Region 计数 = 原本 + 本次新增；其余类保持不变（增量不扩散）
+assert _w4r_vers["star.common.Region"] == (_w4_orig_region or 0) + _w4_region_new, \
+    "ClassVersions Versions 应反映新增 Region 实例"
+for _cn, _n in _w4_orig_vers.items():
+    if _cn != "star.common.Region":
+        assert _w4r_vers.get(_cn) == _n, "其余类计数不应被改动: %s %s->%s" % (
+            _cn, _n, _w4r_vers.get(_cn))
+# 校验不劣化（新增实例已计入，matched 不下降）
+assert _w4r.validate_class_versions()["matched"] >= _w4_orig_matched, \
+    "ClassVersions 维护后 matched 不应下降"
+# ClassVersions 增量日志（save_sim 输出）与落盘一致
+assert getattr(_w4f, "class_versions_delta", {}).get("star.common.Region") == _w4_region_new
+# 对象图规模正确（原 2076 + 新增）
+assert len(_w4r.objects) == len(SimFile(_W4SIM).objects) + _w4_created_n
+# NameManager 保留：原始空标记原样
+_w4nm = get_name_manager(_w4r)
+assert _w4nm is not None and _w4nm.dict.get("ClassName") == "NameManager"
+# NameManager 写入（保守等宽）：空标记文件无既有 ObjectId → 变长新增如实拒绝
+_w4blob0 = open(_W4SIM, "rb").read()
+_w4nb0, _w4i0 = write_name_manager(_w4blob0, _w4f, object_id=12345678901234)
+assert not _w4i0["changed"] and "等宽" in _w4i0["reason"]
+# 对含 ObjectId 的文件：等宽改写成功且不破坏对象图/数组/序号
+_w4ra = SimFile("D:/training/caedecoder/stardecoding/resaved_airfoil.sim")
+_w4_old_oid = (get_name_manager(_w4ra).dict or {}).get("ObjectId")
+_w4_nb, _w4info = write_name_manager(open(_w4ra.path, "rb").read(), _w4ra,
+                                     object_id=_w4_old_oid + 1)
+assert _w4info["changed"] and _w4info.get("width", 0) == 0, "等宽 ObjectId 改写应原位完成"
+_w4dst2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w4_nm_check.sim")
+with open(_w4dst2, "wb") as _fh:
+    _fh.write(_w4_nb)
+_w4r2 = SimFile(_w4dst2)
+assert get_name_manager(_w4r2).dict.get("ObjectId") == _w4_old_oid + 1
+assert len(_w4r2.objects) == len(_w4ra.objects) and len(_w4r2.arrays) == len(_w4ra.arrays)
+assert _w4r2.check_sequential_ids()["ok"]
+os.remove(_w4dst)
+os.remove(_w4dst2)
+print("W4 ClassVersions 一致性维护 + NameManager 保守写入 + id「序号+2」兼容"
+      " + 等宽改写 + 重开一致 全通过")
+
 print("ALL CHECKS PASSED")

@@ -1415,8 +1415,18 @@ class SimFile:
                 "actual_total": len(self.objects) - 1,
                 "mismatches": mismatches}
 
+    def check_sequential_ids(self):
+        """W4：校验对象图 id 与官方「图序号+2」兼容（id = 序号 + 2, 无缺失/重复）。
+
+        返回 dict: ok(是否严格等差且连续), ids(前几个), count, note。
+        """
+        ids = [o.id for o in self.objects]
+        ok = all(b - a == 1 for a, b in zip(ids, ids[1:])) and ids[0] == 2
+        return {"ok": ok, "first": ids[:3], "last": ids[-3:],
+                "count": len(ids),
+                "note": "id=序号+2 严格连续" if ok and ids[0] == 2 else "id 非连续（非「序号+2」形态）"}
+
     def array_data(self, index):
-        """解码数组（numpy 可用时返回 ndarray，否则返回 list/bytes）。"""
         a = self.arrays[index]
         t = a["type"]
         if _np is not None and t in ("Float8", "Float", "Float4", "Unsigned4",

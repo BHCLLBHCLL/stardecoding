@@ -353,9 +353,99 @@ def _insert_created(blob, sim, created, mapping, encoding, insert_at=None,
     return out
 
 
+def _line_text(blob, start):
+    end = blob.find(b"\n", start)
+    if end < 0:
+        end = len(blob)
+    return blob[start:end], start, end
+
+
+def get_name_manager(sim):
+    """W4：定位 NameManager 标记对象（原始文件为空标记 {'ClassName':'NameManager'}）。"""
+    for o in sim.objects:
+        if o.class_name == "NameManager" and getattr(o, "line", -1) >= 0:
+            return o
+    return None
+
+
+def write_name_manager(blob, sim, object_id=None, names=None):
+    """W4：NameManager 写入（保守）。
+
+    - 无 NameManager 对象：原样返回（info['present']=False）。
+    - 仅当变更**等宽**（改写既有 'ObjectId' 数值、或等宽覆盖既有名字值）时原位写回；
+      任何会改变对象行长度的新增（首次给空 NameManager 加字段）一律跳过并如实上报，
+      避免影响后续偏移/状态表（W4 不做全量重定位）。
+    返回 (new_blob, info)。
+    """
+    from sim_parser import parse_repr
+    nm = get_name_manager(sim)
+    if nm is None:
+        return blob, {"present": False, "changed": False, "reason": "no NameManager"}
+    text, s0, s1 = _line_text(blob, int(nm.line))
+    d = parse_repr(text.decode("latin-1"))
+    orig = dict(d)
+    if isinstance(object_id, int):
+        cur = d.get("ObjectId")
+        if isinstance(cur, int) and len(str(object_id)) == len(str(cur)):
+            d["ObjectId"] = object_id
+        else:
+            return blob, {"present": True, "changed": False,
+                          "reason": "ObjectId 变长（新增/位数变化）超出 W4 等宽范围"}
+    if names is not None:
+        return blob, {"present": True, "changed": False,
+                      "reason": "names 名字映射大变长写入超出 W4（留全量重定位/W1）"}
+    if d == orig:
+        return blob, {"present": True, "changed": False, "reason": "无变更"}
+    out = bytearray(blob)
+    new_raw = (format_repr(d) + "\n").encode("latin-1", errors="replace")
+    out[s0:s1 + 1] = new_raw
+    return bytes(out), {"present": True, "changed": True,
+                        "width": len(new_raw) - (s1 - s0)}
+
+
+def maintain_class_versions(blob, sim, created):
+    """W4：创建对象后维护尾部 ClassVersions 统计（'Versions': {类名: 实例数}）。
+
+    对每个新对象的类，把 Versions 对应计数累加新实例数；类不存在则新增。
+    ClassVersions 是文件最后一段，整行重写不影响任何后续偏移/调用方已持有行号。
+    返回 (new_blob, {类名: 增量})。无 created 或无 ClassVersions 时原样返回。
+    """
+    from sim_parser import parse_repr
+    if not created:
+        return blob, {}
+    cv = _classversions(sim)
+    if cv is None:
+        return blob, {}
+    from collections import Counter
+    delta = Counter()
+    for o in created.values():
+        if o is not None:
+            cn = getattr(o, "class_name", None) or (o.dict or {}).get("ClassName")
+            if cn and cn != "ClassVersions":
+                delta[cn] += 1
+    if not delta:
+        return blob, {}
+    text, s0, s1 = _line_text(blob, int(cv.line))
+    d = parse_repr(text.decode("latin-1"))
+    versions = d.get("Versions")
+    if not isinstance(versions, dict):
+        return blob, dict(delta)
+    versions = dict(versions)  # 浅拷贝，保留原键序
+    for cn, n in sorted(delta.items()):
+        versions[cn] = int(versions.get(cn, 0)) + n
+    d["Versions"] = versions
+    new_raw = (format_repr(d) + "\n").encode("latin-1", errors="replace")
+    out = bytearray(blob)
+    out[s0:s1 + 1] = new_raw             # 只替换 ClassVersions 行（尾部），不影响任何后续偏移
+    return bytes(out), dict(delta)
+
+
 def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
-             array_patches=None, new_arrays=None, deleted=None):
-    """复制原文件 → 覆盖数组 → 追加导入数组 → 补丁对象行 → 插入新对象。"""
+             array_patches=None, new_arrays=None, deleted=None,
+             maintain_versions=True):
+    """复制原文件 → 覆盖数组 → 追加导入数组 → 补丁对象行 → 插入新对象。
+    maintain_versions：插入新对象后同步维护尾部 ClassVersions 统计（W4）。
+    """
     src = src_path or sim.path
     if not src or not os.path.isfile(src):
         raise IOError("没有可复制的源 .sim")
@@ -372,8 +462,15 @@ def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
         blocks = collect_imported_array_blocks(sim, skip_ids=skip)
     blob, _shift = insert_array_blocks(blob, sim, blocks)
     blob = apply_patches_to_blob(blob, sim, patches or {}, created, skip_ids=skip)
+    cv_delta = {}
+    if maintain_versions:
+        blob, cv_delta = maintain_class_versions(blob, sim, created)
     with open(dest_path, "wb") as f:
         f.write(blob)
+    try:
+        sim.class_versions_delta = cv_delta
+    except Exception:
+        pass
     return dest_path
 
 
