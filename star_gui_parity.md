@@ -68,6 +68,7 @@
 | 数组块变长替换/删除（W1） | persist（`apply_array_ops`：replace/delete 已有数组块 → 全量重定位后续对象 line/数组 offset + 迭代重算头部 StatePosition（位数收敛、同分区重指向）；主状态表数组变长明确拒绝留 W2；CLI `--array-op` `replace:IDX=N`/`delete:IDX`+`--edit-out`；变长替换/删除→重开对象图/数组数/StatePosition 一致） |
 | 状态表安全编辑（W2） | persist（`edit_binary_state_records` 只动已确证记录（G1/G9 产物）：named 头等宽字段 id/flags/version/等长 name 可改写，其余字节/尾部/魔数逐字不变并差分验证；变长编辑明确拒绝留 W1；CLI `--state-edit`+`--edit-out` 原位替换 Character1 载荷达成真实 Save As；单/多段魔数 binary 文件编辑→重开一致） |
 | ClassVersions 一致性维护 + NameManager 写入（W4） | persist（`maintain_class_versions`：create 后重写尾部 ClassVersions `Versions`（新对象类计数累加/新类增键、其余类原值），id=图序号+2 严格连续 `check_sequential_ids()`；`write_name_manager` 保守等宽写既有 `ObjectId`（width=0），变长新增/名字大表如实拒绝留 W1；原始 NameManager 空标记保留；CopyObject→Save As 重开 matched 不下降且尾段合法） |
+| 引用/字典/嵌套结构属性全可写（W5） | persist（`audit_write_references`：semantic_dict DOWN/UP 白名单扩展写侧，down 引用集合须可解析、up 标量引用须可解析/None、NON_REF 枚举跳过；悬空/已删除引用捕获；`format_repr` 嵌套 dict/list/str/float/None 忠实往返；重设 Parent（up）+ MonitorPrintOrder 嵌套 dict + DisplayerColor 嵌套 list→Save As 重开全命中、审计为空） |
 | 类型化属性编辑 | persist（bool/数/色/矢量/数值列表可编辑；`ClassName/Parent/Simulation/NameManager` 等只读） |
 | 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
 | 保存视图 | persist（`persist_view` 写入 Scene `CurrentView` 对象行，不再只放内存） |

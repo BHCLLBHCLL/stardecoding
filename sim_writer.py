@@ -471,6 +471,11 @@ def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
         sim.class_versions_delta = cv_delta
     except Exception:
         pass
+    try:
+        # W5：写侧引用白名单审计（非致命，供 GUI/测试提示悬空引用）
+        sim.write_reference_issues = audit_write_references(sim, patches, created, deleted)
+    except Exception:
+        sim.write_reference_issues = []
     return dest_path
 
 
@@ -488,6 +493,64 @@ def compare_object_graph(path_a, path_b, keys=None):
             if da.get(k) != db.get(k) and (k in da or k in db):
                 diffs.append((oid, k, da.get(k), db.get(k)))
     return {"ok": not diffs, "diffs": diffs[:50], "n": len(diffs)}
+
+
+def _ref_one_ok(x, objmap, created_ids, deleted):
+    if isinstance(x, bool) or not isinstance(x, int):
+        return False
+    if x in deleted:
+        return False
+    return x in objmap or x in created_ids
+
+
+def _ref_ok(value, objmap, created_ids, deleted):
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_ref_one_ok(v, objmap, created_ids, deleted) for v in value)
+    return _ref_one_ok(value, objmap, created_ids, deleted)
+
+
+def audit_write_references(sim, patches=None, created=None, deleted=None):
+    """W5：写侧引用白名单审计 —— semantic_dict DOWN/UP 白名单扩展到写侧。
+
+    对被改对象逐属性用 attr_direction 分类：
+      down（含 'Keys'）→ 引用集合，值须为 int 列表且每个都能解析到现存对象或本次
+         创建（经 created_id_mapping）；指向已删除对象视为悬空。
+      up → 标量对象引用，值须为 int/None 且能解析（同上）。
+      非引用（数值/枚举/名字等 NON_REF）不检查。
+    返回值 issues: [ {oid, key, value, direction, problem} ]；空=全部引用合法可写。
+    本审计非致命：仅如实验证/提示，save_sim 不因它失败（写入侧保守但大胆）。
+    """
+    from semantic_dict import attr_direction
+    mapping = created_id_mapping(sim, created)
+    created_ids = set(mapping) | set(mapping.values())
+    deleted = set(deleted or [])
+    issues = []
+    for oid, bag in (patches or {}).items():
+        if not isinstance(bag, dict):
+            continue
+        for key, value in bag.items():
+            if key == "Keys":
+                direction = "down"
+            else:
+                direction = attr_direction(key)
+            if direction not in ("down", "up"):
+                continue
+            if direction == "down":
+                ok = _ref_ok(value, sim.objmap, created_ids, deleted)
+            elif value is None:
+                ok = True
+            elif isinstance(value, bool) or not isinstance(value, int):
+                # up 属性值非 int（如枚举/字符串）→ 非引用编辑，跳过避免误报
+                continue
+            else:
+                ok = (value in sim.objmap or value in created_ids) and value not in deleted
+            if not ok:
+                issues.append({"oid": oid, "key": key, "value": value,
+                               "direction": direction,
+                               "problem": "引用目标不可解析或指向已删除对象"})
+    return issues
 
 
 def try_official_resave(src_sim, dest_dir):

@@ -860,4 +860,49 @@ os.remove(_w4dst2)
 print("W4 ClassVersions 一致性维护 + NameManager 保守写入 + id「序号+2」兼容"
       " + 等宽改写 + 重开一致 全通过")
 
+# --- W5：引用/字典/嵌套结构属性全可写（semantic_dict 白名单扩展到写侧） ---
+from sim_writer import format_repr, audit_write_references, save_sim as _w5save
+from sim_parser import parse_repr
+# 嵌套结构 format_repr 忠实往返（list/dict/str/float/None；tuple 规范化为 list 即文件格式）
+_w5nested = {"a": 1, "b": [1.5, "x", {"k": None}], "c": [1, 2], "d": True}
+assert parse_repr(format_repr(_w5nested)) == _w5nested
+_W5SIM = "D:/training/caedecoder/stardecoding/adjointWing_start.sim"
+_w5f = SimFile(_W5SIM)
+_w5doc = SimDocument(_w5f, _W5SIM)
+_w5scene = next(o for o in _w5f.objects if o.class_name == "star.vis.Scene")
+_w5view = _w5doc.object(_w5scene.dict["CurrentView"])
+# up 引用：重设视图 Parent 指向 Simulation（id 2 已存在）
+_w5doc.set_property(_w5view.id, "Parent", 2)
+# 嵌套 dict 属性写入（MonitorPrintOrder 为嵌套 {'键': 值}）
+_w5old34 = dict((_w5doc.object(34).dict.get("MonitorPrintOrder") or {}))
+_w5new34 = dict(_w5old34); _w5new34["Sdr"] = 99; _w5new34["Nested"] = {"x": True}
+_w5doc.set_property(34, "MonitorPrintOrder", _w5new34)
+# 嵌套 list（数组）属性写入
+_w5disp = next(o for o in _w5f.objects if o.name == "Mesh 1"
+               and "Displayer" in (o.class_name or ""))
+_w5doc.set_property(_w5disp.id, "DisplayerColor", [0.1, 0.2, 0.3])
+# 写侧引用白名单审计：这些合法编辑应无悬空告警
+assert audit_write_references(_w5f, _w5doc.patches) == [], "合法引用/嵌套编辑不应有悬空告警"
+_w5dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w5_write_check.sim")
+_w5save(_w5f, _w5dst, patches=_w5doc.patches, src_path=_W5SIM)
+_w5r = SimFile(_w5dst)
+# 重开一致：引用/嵌套 dict/嵌套 list 全部命中
+assert _w5r.objmap[_w5view.id].dict["Parent"] == 2
+assert _w5r.objmap[34].dict["MonitorPrintOrder"] == _w5new34
+assert _w5r.objmap[_w5disp.id].dict["DisplayerColor"] == [0.1, 0.2, 0.3]
+# save_sim 内置非致命审计同样为空
+assert _w5f.write_reference_issues == []
+# 悬空引用被审计捕获（up 标量 / down 集合 / 指向已删除对象）
+_w5bad = {_w5view.id: {"Parent": 987654321}}
+assert len(audit_write_references(_w5r, _w5bad)) == 1 \
+    and audit_write_references(_w5r, _w5bad)[0]["key"] == "Parent"
+_w5kid = next(o.id for o in _w5r.objects if isinstance(o.dict.get("Keys"), list))
+_w5bad2 = {_w5kid: {"Keys": list(_w5r.objmap[_w5kid].dict["Keys"]) + [99999999]}}
+assert any(i["direction"] == "down" for i in audit_write_references(_w5r, _w5bad2))
+assert any(i["key"] == "Parent" for i in
+           audit_write_references(_w5r, {_w5view.id: {"Parent": 2}}, deleted=[2]))
+os.remove(_w5dst)
+print("W5 引用/字典/嵌套结构属性全可写 + 写侧白名单审计"
+      "（悬空 up/down/已删除捕获）+ 重开一致 全通过")
+
 print("ALL CHECKS PASSED")
