@@ -87,7 +87,7 @@ flowchart LR
 | 点 | 任务 | 说明 |
 | --- | --- | --- |
 | W1 | 已有数组块变长替换/删除 | 全量重定位后续偏移（对象 line、数组 start、StatePosition、魔数长度链）——当前只支持等长 |
-| W2 | 状态表安全编辑 | 只动已确证记录（G1 产物）；尾部校验记录重算或保持不变并差分验证 |
+| W2 | 状态表安全编辑 ✅ 2026-09-02 | 只动已确证记录（G9 产物）；尾部/魔数/其余记录绝不触碰，差分验证 | binary 记录流可安全改写 —— **达成**：`edit_binary_state_records`/`verify_binary_state_edit`/`binary_record_spans`/`_binary_record_bytes` 落地 `sim_parser.py`（CLI `--state-edit` + `--edit-out`）；**只动已确证记录**：仅允许改写 named 记录头**等宽**字段（id 3 字节 / flags 1 字节 / id==0 的 version 1 字节 / 等长 name），其余字节逐字不变（差分验证：非目标记录 span 重算后逐字节一致），尾部校验/魔数/其他记录绝不触碰；**变长编辑明确拒绝**（改名变长、id<->0 增删 version 字节）抛 `ValueError` 留给 W1 全量重定位；同宽编辑 → 记录流总长不变 → 原位替换 Character1 数组载荷即达成真实 Save As（无偏移重定位）；单段（vortexShed2d：lattice flags 2/mesh id 1007/index_map_offset version 2）与多段魔数（manifold N=5）4 个 binary 文件编辑→重开对象图一致、改动持久化、非目标记录逐字不变；`self_test.py` W2 断言全绿，run_all 15 文件/batch_parse 21 文件无回归 |
 | W3 | ZIP/PK 容器写出 | 合成测试已通，补真实语料回归 |
 | W4 | ClassVersions 一致性维护 + NameManager 写入 | G1 结论落地；id 分配维持「序号+2」兼容 |
 | W5 | 引用/字典/嵌套结构属性全可写 | semantic_dict DOWN/UP 白名单扩展到写侧 |

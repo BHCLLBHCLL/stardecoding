@@ -676,4 +676,70 @@ assert len(_s9.objects) > 1000
 print("G9 binary: 4 文件逐字节往返可逆 + 语法锚点（长度前缀/id<<8/version 规则）"
       " + vortexShed2d 对象图 %d 个 全通过" % len(_s9.objects))
 
+# --- W2：状态表安全编辑（只动已确证记录，差分验证，尾部/其他记录不动） ---
+from sim_parser import (_binary_record_bytes, edit_binary_state_records,
+                        verify_binary_state_edit)
+# 单段文件：vortexShed2d 改 3 个 named 头字段（id/flags/version）
+_w2f = SimFile(_find9("vortexShed2d.sim"))
+_w2e = [{"index": 3, "flags": 2}, {"index": 4, "id": 1007},
+        {"index": 10, "version": 2}]
+_w2nb, _w2chg = edit_binary_state_records(_w2f.state_text, _w2e)
+assert len(_w2nb) == len(_w2f.state_text.encode("latin-1")), "等宽编辑长度应不变"
+assert verify_binary_state_edit(_w2f.state_text, _w2nb, _w2e)
+_t2, _r2, _m2, _b2 = parse_state_table_binary(_w2nb.decode("latin-1"))
+assert _r2[3]["flags"] == 2 and _r2[4]["id"] == 1007 \
+    and _r2[10]["version"] == 2, "编辑应持久化且仅改动目标记录"
+# 强断言：非目标记录字节逐字不变，仅目标记录区间差分
+for _i, (_ra, _rb) in enumerate(zip(
+        parse_state_table_binary(_w2f.state_text)[1], _r2)):
+    if _i in (3, 4, 10):
+        continue
+    assert _binary_record_bytes(_ra) == _binary_record_bytes(_rb), \
+        "非目标记录 %d 被安全编辑意外改动" % _i
+# 变长编辑应被明确拒绝（留给 W1）
+_try_w2 = False
+try:
+    edit_binary_state_records(_w2f.state_text, [{"index": 4, "id": 0}])
+except ValueError:
+    _try_w2 = True
+assert _try_w2, "id<->0 增删 version 字节（变长）应抛 ValueError（留给 W1）"
+# 工作区一致性：写出的副本重开对象图一致、改动持久化（模拟 Save As 落盘往返）
+_w2dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w2_edit_check.sim")
+import shutil as _sh2
+_sh2.copy2(_w2f.path, _w2dst)
+with open(_w2dst, "rb") as _fh:
+    _w2blob = bytearray(_fh.read())
+for _a in _w2f.arrays:
+    if _a["type"] == "Character1" and _a.get("data") and \
+            len(_a["data"]) == len(_w2nb):
+        _st = int(_a["start"])
+        _w2blob[_st:_st + len(_w2nb)] = _w2nb
+        break
+with open(_w2dst, "wb") as _fh:
+    _fh.write(bytes(_w2blob))
+_w2re = SimFile(_w2dst)
+assert _w2re.state_mode == "binary" and len(_w2re.objects) == len(_w2f.objects)
+assert _w2re.state_mode == "binary"
+_t3, _r3, _m3, _b3 = parse_state_table_binary(_w2re.state_text)
+assert _r3[3]["flags"] == 2 and _r3[4]["id"] == 1007 \
+    and _r3[10]["version"] == 2, "Save As 落盘后编辑应仍被解析命中"
+os.remove(_w2dst)
+# 多段魔数文件（manifold, N=5）：安全编辑同样成立
+_w2m = SimFile(_find9("manifold_start.sim"))
+_mt, _mr, _mm, _mbb = parse_state_table_binary(_w2m.state_text)
+_w2mb, _w2mchg = edit_binary_state_records(
+    _w2m.state_text, [{"index": 6, "id": 1041}, {"index": 4, "version": 3}])
+assert len(_w2mb) == len(_w2m.state_text.encode("latin-1"))
+assert verify_binary_state_edit(
+    _w2m.state_text, _w2mb, [{"index": 6, "id": 1041}, {"index": 4, "version": 3}])
+_mt2, _mr2, _mm2, _mbb2 = parse_state_table_binary(_w2mb.decode("latin-1"))
+assert _mr2[6]["id"] == 1041 and _mr2[4]["version"] == 3
+for _i, (_ra, _rb) in enumerate(zip(_mr, _mr2)):
+    if _i in (4, 6):
+        continue
+    assert _binary_record_bytes(_ra) == _binary_record_bytes(_rb), \
+        "多段文件非目标记录 %d 被改动" % _i
+print("W2 state-edit: 只动已确证记录（id/flags/version 等宽）+ 差分验证"
+      " + 变长拒绝 + 单/多段文件 全通过")
+
 print("ALL CHECKS PASSED")

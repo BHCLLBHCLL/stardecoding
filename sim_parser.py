@@ -556,23 +556,133 @@ def serialize_binary_records(records):
     for r in records:
         if r.get("kind") == "banner":
             continue
-        if r.get("kind") == "data":
-            if r.get("raw"):
-                out += bytes.fromhex(r["raw"])
-            continue
-        if r.get("kind") == "named":
-            nb = r["name"].encode("latin-1")
-            out += bytes([len(nb)]) + nb
-            out += (r["id"] << 8).to_bytes(3, "big")
-            out += bytes([r["flags"]])
-            if r["id"] == 0:
-                out += bytes([r["version"]])
-        out += r["fmt"].encode("latin-1")
-        if r.get("value") is not None:
-            out += bytes([r["value"]])
+        out += _binary_record_bytes(r)
+    return bytes(out)
+
+
+def _binary_record_bytes(r):
+    """单条二进制记录的原始字节（嵌套于 serialize_binary_records 的重组逻辑）。"""
+    out = bytearray()
+    if r.get("kind") == "data":
         if r.get("raw"):
             out += bytes.fromhex(r["raw"])
+        return bytes(out)
+    if r.get("kind") == "named":
+        nb = r["name"].encode("latin-1")
+        out += bytes([len(nb)]) + nb
+        out += (r["id"] << 8).to_bytes(3, "big")
+        out += bytes([r["flags"]])
+        if r["id"] == 0:
+            out += bytes([r["version"]])
+    out += r["fmt"].encode("latin-1")
+    if r.get("value") is not None:
+        out += bytes([r["value"]])
+    if r.get("raw"):
+        out += bytes.fromhex(r["raw"])
     return bytes(out)
+
+
+def binary_record_spans(records):
+    """每条记录在记录流中的字节区间 [start, end)（W2 差分定位用）。
+
+    与 serialize_binary_records 的拼接顺序一致；banner 记录（不参与写出）区间为 None。
+    """
+    spans = []
+    pos = 0
+    for r in records:
+        if r.get("kind") == "banner":
+            spans.append(None)
+            continue
+        n = len(_binary_record_bytes(r))
+        spans.append((pos, pos + n))
+        pos += n
+    return spans
+
+
+def edit_binary_state_records(state_text, edits):
+    """W2 状态表安全编辑：只动已确证记录（G1/G9 产物），不碰尾部/魔数/其他记录。
+
+    edits: [{''index'': 记录序号, 字段...}]，字段可选 name/id/flags/version，
+          且仅允许**等宽**编辑（name 等长、id 3B、flags 1B、id==0 的 version 1B）；
+          任何变长编辑（改 name 长度、id<->0 增删 version 字节）抛 ValueError（留给 W1 全量重定位）。
+    返回 (new_state_bytes, changed_spans)：
+      new_state_bytes  = magic + banner + 打补丁后的记录流（latin-1 bytes）；
+      changed_spans    = 相对记录流的字节区间列表（差分验证：仅这些字节变动）。
+    """
+    body_all = state_text.encode("latin-1")
+    bm = re.search(rb"TRANSMIT FILE created by modeller version (\d+).{0,24}?SCH_([A-Za-z0-9_]+)",
+                   body_all)
+    offset = bm.end() if bm else 0
+    _tok, records, _magic, _ban = parse_state_table_binary(state_text)
+    patched = [dict(r) for r in records]
+    targets = []
+    for e in edits:
+        idx = int(e["index"])
+        if idx < 0 or idx >= len(patched):
+            raise ValueError("记录序号越界: %d" % idx)
+        r = patched[idx]
+        if r.get("kind") != "named":
+            raise ValueError("记录 %d 非 named（kind=%r），不可安全改头字段" % (idx, r.get("kind")))
+        p = {"index": idx, "kind": "named", "span_from": r}
+        if "name" in e:
+            nv = e["name"].encode("latin-1")
+            if len(nv) != len(r["name"].encode("latin-1")):
+                raise ValueError("改名变长（等长 %d -> %d）留给 W1" % (len(r["name"]), len(nv)))
+            r["name"] = e["name"]
+        if "id" in e:
+            nv = int(e["id"])
+            if nv < 0:
+                raise ValueError("id 非负: %d" % nv)
+            if (r["id"] == 0) != (nv == 0):
+                raise ValueError("id 在 0 与非 0 间切换需增删 version 字节（变长，留给 W1）")
+            r["id"] = nv
+        if "flags" in e:
+            nv = int(e["flags"])
+            if not (0 <= nv <= 2):
+                raise ValueError("flags 越界（须<=2）: %d" % nv)
+            r["flags"] = nv
+        if "version" in e:
+            if r["id"] != 0:
+                raise ValueError("非 id==0 记录无 version 字节")
+            r["version"] = int(e["version"])
+        targets.append(idx)
+    ser = serialize_binary_records(patched)
+    # 差分验证：除目标记录外逐字节不变（含 banner/magic 前缀）
+    spans = binary_record_spans(records)
+    orig_body = body_all[offset:]
+    changed = sorted(sp for (i, sp) in enumerate(spans)
+                     if sp is not None and i in targets)
+    spans2 = binary_record_spans(patched)
+    for i, sp in enumerate(spans):
+        if sp is None or i in targets:
+            continue
+        a, b = sp
+        a2, b2 = spans2[i]
+        if orig_body[a:b] != ser[a2:b2]:
+            raise AssertionError("非目标记录 %d 被意外改动" % i)
+    new_state = body_all[:offset] + ser
+    return new_state, changed
+
+
+def verify_binary_state_edit(state_text, new_bytes, edits):
+    """重解析新状态表并断言：仅目标记录的头字段按 edits 变化，其余记录逐字一致。"""
+    _t, records, _m, _b = parse_state_table_binary(state_text)
+    _t2, records2, _m2, _b2 = parse_state_table_binary(new_bytes.decode("latin-1"))
+    if len(records) != len(records2):
+        raise AssertionError("记录数变化 %d -> %d" % (len(records), len(records2)))
+    targets = set(int(e["index"]) for e in edits)
+    diffs = 0
+    for i, (r, r2) in enumerate(zip(records, records2)):
+        a = _binary_record_bytes(r)
+        b = _binary_record_bytes(r2)
+        if i in targets:
+            if a != b:
+                diffs += 1
+        elif a != b:
+            raise AssertionError("非目标记录 %d 序列化后改变" % i)
+    if diffs != len(targets):
+        raise AssertionError("目标记录变动数不符: %d/%d" % (diffs, len(targets)))
+    return True
 
 
 def parse_state_table(text):
@@ -3186,6 +3296,11 @@ def main(argv=None):
     ap.add_argument("--boundaries", action="store_true", help="边界→面片映射统计（by_part 面索引/覆盖）")
     ap.add_argument("--binary-decode", type=int, default=0, help="二进制状态表：解码前 N 个带 raw 记录（int/double 段显示）")
     ap.add_argument("--binary-verify", action="store_true", help="二进制状态表：完整文法无损往返校验（G9）")
+    ap.add_argument("--state-edit", metavar="EDIT", action="append", default=None,
+                    help="状态表安全编辑（W2）：'记录序号:字段=值'（如 5:id=222 / 6:flags=2 / "
+                         "12:version=3 / 4:name=x 等长）。仅等宽编辑已验证字段，不改他处字节")
+    ap.add_argument("--edit-out", metavar="PATH", default=None,
+                    help="--state-edit 的写出目标（默认同目录 *_edit.sim）")
     ap.add_argument("--export", metavar="DIR", help="导出到目录（数组 .npy/.csv + JSON）")
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
@@ -3542,6 +3657,62 @@ def main(argv=None):
                         print("    首个差异 @%d 原=%02x 新=%02x" % (
                             k, orig[k], rb[k]))
                         break
+
+    if args.state_edit:
+        print("== 状态表安全编辑（W2：只动已确证记录，差分验证） ==")
+        if sim.state_mode != "binary":
+            print("  状态表为 ASCII 编码；W2 安全编辑作用于 binary 记录流，跳过")
+        else:
+            edits = []
+            for spec in args.state_edit:
+                idx, _, rest = spec.partition(":")
+                fld, _, val = rest.partition("=")
+                val = int(val)
+                edits.append({"index": int(idx), fld: val})
+            new_bytes, changed = edit_binary_state_records(
+                sim.state_text, edits)
+            verify_binary_state_edit(sim.state_text, new_bytes, edits)
+            if len(new_bytes) != len(sim.state_text.encode("latin-1")):
+                raise SystemExit("等宽编辑应保持记录流总长不变（变长留给 W1）")
+            dest = args.edit_out or os.path.join(
+                os.path.dirname(os.path.abspath(sim.path)),
+                os.path.splitext(os.path.basename(sim.path))[0] + "_edit.sim")
+            src = sim.path
+            import shutil as _shutil
+            shutil_err = None
+            if src and os.path.isfile(src):
+                _shutil.copy2(src, dest)
+                with open(dest, "rb") as f:
+                    blob = bytearray(f.read())
+                # 原位替换存状态表的 Character1 数组载荷（同宽，偏移不变）
+                for _a in sim.arrays:
+                    if _a["type"] != "Character1":
+                        continue
+                    if _a.get("data") is None:
+                        continue
+                    if len(_a["data"]) == len(new_bytes):
+                        st = int(_a["start"])
+                        blob[st:st + len(new_bytes)] = new_bytes
+                        break
+                else:
+                    shutil_err = "未定位状态表 Character1 数组"
+            if shutil_err:
+                print("  ! %s（仅写出状态载荷到临时文件）" % shutil_err)
+                dest = os.path.join(
+                    os.path.dirname(os.path.abspath(dest)),
+                    os.path.basename(dest) + ".payload")
+                with open(dest, "wb") as f:
+                    f.write(new_bytes)
+            else:
+                with open(dest, "wb") as f:
+                    f.write(bytes(blob))
+            recs = parse_state_table_binary(sim.state_text)[1]
+            for e in edits:
+                r = recs[int(e["index"])]
+                print("  记录 %d (%s) id=%s flags=%s version=%s -> %s" % (
+                    e["index"], r["name"], r["id"], r["flags"], r["version"], e))
+            print("  差分区间（仅这些记录字节变动）: %s" % changed)
+            print("  写出 -> %s（其余字节逐字不变，重解析通过）" % dest)
 
     if args.boundaries:
         bf = sim.boundary_faces()
