@@ -451,10 +451,25 @@ def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
         raise IOError("没有可复制的源 .sim")
     dest_path = os.path.abspath(dest_path)
     src = os.path.abspath(src)
-    if dest_path != src:
-        shutil.copy2(src, dest_path)
-    with open(dest_path, "rb") as f:
-        blob = f.read()
+    with open(src, "rb") as f:
+        raw_src = f.read()
+    # W3：ZIP/PK 容器读写 —— 容器内单条最大条目即主载荷（压缩版 .sim 变体）。
+    # 补丁基底必须用解压后载荷（对象行/数组偏移均相对载荷），落盘前重新打包成容器。
+    container_entry = getattr(sim, "container_entry", None)
+    if raw_src[:2] == b"PK":
+        import io as _io
+        import zipfile as _zipfile
+        _zf = _zipfile.ZipFile(_io.BytesIO(raw_src))
+        if not container_entry:
+            _names = [n for n in _zf.namelist() if not n.endswith("/")]
+            if _names:
+                container_entry = max(
+                    _names, key=lambda n: _zf.getinfo(n).file_size)
+        blob = _zf.read(container_entry) if container_entry else raw_src
+        _zf.close()
+    else:
+        container_entry = None
+        blob = raw_src
     skip = set(deleted or [])
     blob = apply_array_payload_patches(blob, sim, array_patches or {})
     blocks = list(new_arrays or [])
@@ -465,8 +480,17 @@ def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
     cv_delta = {}
     if maintain_versions:
         blob, cv_delta = maintain_class_versions(blob, sim, created)
+    final = blob
+    if container_entry is not None:
+        # W3：重新打包 ZIP/PK 容器（单条载荷，保持原条目名，DEFLATED）
+        import io as _io
+        import zipfile as _zipfile
+        _bio = _io.BytesIO()
+        with _zipfile.ZipFile(_bio, "w", _zipfile.ZIP_DEFLATED) as _zout:
+            _zout.writestr(container_entry, blob)
+        final = _bio.getvalue()
     with open(dest_path, "wb") as f:
-        f.write(blob)
+        f.write(final)
     try:
         sim.class_versions_delta = cv_delta
     except Exception:

@@ -905,4 +905,64 @@ os.remove(_w5dst)
 print("W5 引用/字典/嵌套结构属性全可写 + 写侧白名单审计"
       "（悬空 up/down/已删除捕获）+ 重开一致 全通过")
 
+# --- W3：ZIP/PK 容器写出（读解压载荷补丁 → 重打包 → 重开一致） ---
+import io as _w3io
+import zipfile as _w3zip
+from sim_writer import save_sim as _w3save
+_W3SRC = "D:/training/caedecoder/stardecoding/adjointWing_start.sim"
+_w3raw = open(_W3SRC, "rb").read()
+_w3n0 = len(SimFile(_W3SRC).objects)
+_w3entry = "inner_model.sim"
+_w3bio = _w3io.BytesIO()
+with _w3zip.ZipFile(_w3bio, "w", _w3zip.ZIP_DEFLATED) as _z:
+    _z.writestr(_w3entry, _w3raw)
+_w3zsrc = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w3_src.sim")
+with open(_w3zsrc, "wb") as _fh:
+    _fh.write(_w3bio.getvalue())
+assert open(_w3zsrc, "rb").read(2) == b"PK", "合成 ZIP 容器应以 PK 头"
+# 读路径：识别容器、取主载荷、对象图与原始一致
+_w3f = SimFile(_w3zsrc)
+assert _w3f.container_entry == _w3entry, "读路径应识别容器条目名"
+assert len(_w3f.objects) == _w3n0, "容器内载荷对象图应与原始一致"
+# 写路径：对容器内 sim 打属性补丁，save_sim 应解压载荷补丁后重打包命中补丁
+_w3doc = SimDocument(_w3f, _w3zsrc)
+_w3target = next(o for o in _w3f.objects if o.dict.get("PresentationName"))
+_w3doc.set_property(_w3target.id, "PresentationName", "W3-ZIP-EDITED")
+_w3dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w3_out.sim")
+_w3save(_w3f, _w3dst, patches=_w3doc.patches, src_path=_w3zsrc)
+assert open(_w3dst, "rb").read(2) == b"PK", "ZIP 输入写出后仍应为 PK 容器"
+_w3r = SimFile(_w3dst)
+assert _w3r.container_entry == _w3entry, "重打包应保持原条目名"
+assert _w3r.objmap[_w3target.id].dict["PresentationName"] == "W3-ZIP-EDITED", \
+    "补丁应命中容器内载荷"
+assert len(_w3r.objects) == _w3n0, "重打包后对象图规模不变"
+assert len(_w3r.arrays) == len(_w3f.arrays), "重打包后数组块应不变"
+# 往返一致：除补丁属性外，逐对象逐字段一致
+_w3_ok = True
+for _oid, _o in _w3r.objmap.items():
+    _ob = _w3f.objmap.get(_oid)
+    if _ob is None:
+        _w3_ok = False
+        break
+    for _k, _v in _ob.dict.items():
+        if _oid == _w3target.id and _k == "PresentationName":
+            continue
+        if _o.dict.get(_k, _v) != _v and (_k in _o.dict or _k in _ob.dict):
+            _w3_ok = False
+            break
+    if not _w3_ok:
+        break
+assert _w3_ok, "ZIP 往返除补丁属性外对象图应逐字段一致"
+# 无补丁纯往返：原容器 -> save_sim -> 新容器，重开应完全一致（对象/数组/条目名）
+_w3dst0 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_w3_out0.sim")
+_w3save(SimFile(_w3zsrc), _w3dst0, src_path=_w3zsrc)
+_w3r0 = SimFile(_w3dst0)
+assert open(_w3dst0, "rb").read(2) == b"PK" and _w3r0.container_entry == _w3entry
+assert len(_w3r0.objects) == _w3n0 and len(_w3r0.arrays) == len(_w3f.arrays)
+os.remove(_w3zsrc)
+os.remove(_w3dst)
+os.remove(_w3dst0)
+print("W3 ZIP/PK 容器写出：读解压载荷补丁 + 重打包（保条目名/DEFLATED）"
+      " + 有补丁/纯往返重开一致 全通过")
+
 print("ALL CHECKS PASSED")
