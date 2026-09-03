@@ -117,7 +117,14 @@ def tessellate(shape, deflection=0.1, angular=0.5, occ=None):
     """
     m = occ or _occ()
     npx = m["np"]
-    m["BRepMesh_IncrementalMesh"](shape, deflection, True)  # angular=True→0.5rad
+    # 先清掉既有三角化：BRepMesh 在同一 shape 上是增量（只加密不加密精度下降），
+    # clean 后才可独立按本次 deflection/angular 重新细分（coarse/fine 交替可靠）。
+    try:
+        m["breptools"].Clean(shape)
+    except Exception:
+        pass
+    # 5 参构造：shape, linearDeflection, isRelative, angularDeflection, isRelativeAng
+    m["BRepMesh_IncrementalMesh"](shape, deflection, False, angular, False)
     FACE = m["TopAbs"][0]
     verts = []
     faces = []
