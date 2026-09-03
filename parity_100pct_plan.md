@@ -111,9 +111,9 @@ flowchart LR
 
 | 点 | 任务 | 路线 | 验收 |
 | --- | --- | --- | --- |
-| N1 | 网格流水线执行引擎（操作图、进度、预览、取消） | A | 自动网格节点右键可跑通空流水线 |
-| N2 | 表面 remesher（Delaunay/前沿推进、曲率自适应尺寸场） | A+B | 教程表面网格尺寸分布对标 |
-| N3 | 体积网格器三路线：tet(Delaunay)→Gmsh/netgen 桥；poly(tet 的 Voronoi 对偶)；trimmer(八叉树切割,自研排最后) | A+B | adjointWing 单元数同量级 |
+| N1 | 网格流水线执行引擎（操作图、进度、预览、取消） ✅ 2026-09-04 | A | 自动网格节点右键可跑通空流水线 —— **达成**：`mesh_pipeline.py` 落地 `MeshPipeline`/`MeshStage`（跨段共享 ctx、每段 progress(i,stage,total)、运行中取消 `canceled()`、`preview` 快照、空流水线可 run）。默认流水线 `default_volume_mesh_pipeline`：表面细分→体网格→质量→单元重编号四条真实操作。GUI `Mesh>GenerateVolume` 已接线 → `cmd_generate_volume_mesh`（HEADLESS 安全、QProgressDialog 取消、消息条回报单元数/质量、结果存 `_volume_mesh_result`）。`tests/test_mesh_quality.py`（N1 引擎/进度/取消/预览）+ `tests/test_mesh_gui.py`（动作接线+happy path）全绿 |
+| N2 | 表面 remesher（Delaunay/前沿推进、曲率自适应尺寸场） ◐ 2026-09-04 | A+B | 教程表面网格尺寸分布对标 —— **部分**：实现一致性边中点均匀细分 `refine_surface`（每级每共享边只拆一次 → 每三角 4 个，水密保持，多级 4^n 面；test 12→48 面且全水密）。Delaunay/前沿推进 + 曲率自适应尺寸场留待 N2b |
+| N3 | 体积网格器三路线：tet(Delaunay)→Gmsh/netgen 桥；poly(tet 的 Voronoi 对偶)；trimmer(八叉树切割,自研排最后) ◐ 2026-09-04 | A+B | adjointWing 单元数同量级 —— **tet 双路由达成**：`mesh_tet.py` `tet_mesh` 对水密闭合表面自动选路由——A)scipy.spatial.Delaunay（表面顶点+内部均匀栅格填充点，even-odd 射线法 `point_in_mesh`（Möller–Trumbore）判内，负体积裁剪）；B)Gmsh（面环→体、共享边去重 `edge_line`、Frontal-Delaunay 3D）。`tet_quality` 纯 numpy：逐四面体体积/负单元/6 边纵横比。非闭合输入抛 ValueError。对照面 cube 走通全部正体积。poly(tet Voronoi 对偶)/trimmer(八叉树) 留待 N3b |
 | N4 | prism 边界层（推进+碰撞处理） | A | y+/层数达标 |
 | N5 | 自定义控制（per part/surface/vertex 尺寸）、thin/directed/extruder | A+B | checkValve 类多控制算例 |
 | N6 | 质量诊断/统计/修复 + interface 处理 + AMR（运行时） | A | 质量 histogram 达标；AMR 在 P 波联调 |

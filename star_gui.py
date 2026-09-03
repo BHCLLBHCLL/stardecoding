@@ -219,7 +219,7 @@ class StarMainWindow(QMainWindow):
         self._add("Edit>Next", tr("Next Selection"), self.cmd_sel_next, "file")
         self._add("Mesh>Generate", tr("Generate Surface Mesh"), self.cmd_generate_mesh, "mesh")
         self._add("Mesh>GenerateVolume", tr("Generate Volume Mesh"),
-                  lambda: self._kernel_nyi("生成体网格"), "mesh")
+                  self.cmd_generate_volume_mesh, "mesh")
         self._add("Mesh>Clear", tr("Clear Generated Meshes"),
                   lambda: self._kernel_nyi("清除已生成网格"), "mesh")
         self._add("Mesh>Scale", tr("Scale Mesh..."), self.cmd_scale_mesh, "mesh")
@@ -1069,6 +1069,79 @@ class StarMainWindow(QMainWindow):
 
     def cmd_generate_mesh(self):
         self._try_star_macro("生成表面网格")
+
+    def cmd_generate_volume_mesh(self):
+        """生成体网格：用本地 N 波内核跑默认流水线（表面细分→tet→质量→重编号）。
+
+        输入取当前仿真抽取的水密表面；不平整/无网格则提示。结果存 self._volume_mesh_result，
+        消息条回报单元数与质量。
+        """
+        self._volume_mesh_result = None
+        if self.sim is None:
+            return self.msg("请先打开 .sim", "warn")
+        try:
+            m = self.sim.extract_mesh()
+        except Exception as exc:
+            return self.msg("表面抽取失败: %s" % exc, "error")
+        vet = (m or {}).get("vertices")
+        fac = (m or {}).get("faces")
+        if vet is None or fac is None or len(vet) < 4 or len(fac) < 4:
+            return self.msg("当前无可用表面网格（可先 导入>表面 一个 STL）", "warn")
+        from occ_repair import boundary_edges
+        b, _ = boundary_edges(vet, fac)
+        if len(b):
+            return self.msg("表面不水密（%d 条开放边界），先修复再生成体网格" % len(b), "warn")
+        import numpy as np
+        try:
+            diag = float(np.linalg.norm(np.asarray(vet, float).max(0)
+                                        - np.asarray(vet, float).min(0)))
+        except Exception:
+            diag = 1.0
+        cell_size = max(diag / 20.0, 1e-6)
+        from mesh_pipeline import default_volume_mesh_pipeline
+        pipe = default_volume_mesh_pipeline(vet, fac, cell_size=cell_size,
+                                            refine_levels=0)
+        cancel = {"off": True}
+        dlg = None
+        if not HEADLESS:
+            from PyQt5.QtWidgets import QProgressDialog
+            from PyQt5.QtCore import Qt
+            dlg = QProgressDialog("生成体网格…", "取消", 0, len(pipe.stages), self)
+            dlg.setWindowModality(Qt.WindowModal)
+            dlg.setMinimumDuration(0)
+            dlg.canceled.connect(lambda: cancel.__setitem__("off", False))
+        vp = (self.graphics_tabs.current_viewport()
+              if hasattr(self, "graphics_tabs") else None)
+
+        def progress(i, name, total):
+            if dlg is not None:
+                dlg.setValue(i)
+                dlg.setLabelText("%d/%d %s" % (i, total, name))
+            self.msg("网格流水线：%d/%d %s" % (i, total, name))
+            if vp is not None and hasattr(vp, "processEvents"):
+                vp.processEvents()
+
+        out = pipe.run(progress=progress,
+                       canceled=(lambda: not cancel["off"]))
+        if dlg is not None:
+            dlg.setValue(len(pipe.stages))
+        if out.get("cancelled"):
+            return self.msg("体网格生成已取消（已完成 %d 段）" % out["stages_ran"], "warn")
+        if not out.get("ok"):
+            return self.msg("体网格生成失败", "error")
+        ctx = out["ctx"]
+        Vn, Cn = ctx["volume"]
+        q = ctx.get("quality", {})
+        self._volume_mesh_result = {"name": self.sim_path,
+                                    "vertices": np.asarray(Vn, float),
+                                    "cells": np.asarray(Cn, np.int64),
+                                    "quality": q}
+        vq = (q.get("volume") if isinstance(q, dict) else None) or {}
+        amax = (vq.get("edge_aspect", {}).get("max", 0.0)
+                if isinstance(vq.get("edge_aspect"), dict) else 0.0)
+        msg = "体网格完成：%d 四面体 / %d 节点，负单元=%s，最大边纵横比=%.2f" % (
+            len(Cn), len(Vn), vq.get("n_negative", 0), amax)
+        return self.msg(msg)
 
     def _find_starccm(self):
         env = os.environ.get("STARCCM_HOME") or ""
