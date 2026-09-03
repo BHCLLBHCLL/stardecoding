@@ -70,7 +70,7 @@
 | ClassVersions 一致性维护 + NameManager 写入（W4） | persist（`maintain_class_versions`：create 后重写尾部 ClassVersions `Versions`（新对象类计数累加/新类增键、其余类原值），id=图序号+2 严格连续 `check_sequential_ids()`；`write_name_manager` 保守等宽写既有 `ObjectId`（width=0），变长新增/名字大表如实拒绝留 W1；原始 NameManager 空标记保留；CopyObject→Save As 重开 matched 不下降且尾段合法） |
 | 引用/字典/嵌套结构属性全可写（W5） | persist（`audit_write_references`：semantic_dict DOWN/UP 白名单扩展写侧，down 引用集合须可解析、up 标量引用须可解析/None、NON_REF 枚举跳过；悬空/已删除引用捕获；`format_repr` 嵌套 dict/list/str/float/None 忠实往返；重设 Parent（up）+ MonitorPrintOrder 嵌套 dict + DisplayerColor 嵌套 list→Save As 重开全命中、审计为空） |
 | ZIP/PK 容器写出（W3） | persist（`save_sim` 容器读写：`PK` 头检测→读侧取单条/最大条目为**主载荷**（补丁基底），写侧重打包成 ZIP 容器（保 `sim.container_entry` 条目名 + DEFLATED）；明文 `.sim` 不受影响；合成 ZIP 打补丁 Save As → 仍 `PK` 头 / 条目名保持 / 补丁命中载荷 / 对象图/数组不变；无补丁纯往返重开完全一致） |
-| 类型化属性编辑 | persist（bool/数/色/矢量/数值列表可编辑；`ClassName/Parent/Simulation/NameManager` 等只读） |
+| 差分回归自动化（W6） | test（`tests/test_diff_regression.py`：读语料→类型化补丁→Save As→重读→结构自检差分（对象/数组/Contants/id 序号）+ `compare_object_graph` 源/输出路径差分（仅目标字段 diff）；数组等宽载荷写回命中；`try_official_resave` 官方差分门控，无许可 auto-skip 结构自检主路径） |
 | 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
 | 保存视图 | persist（`persist_view` 写入 Scene `CurrentView` 对象行，不再只放内存） |
 | 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图/拉伸 needs_kernel） |
