@@ -30,8 +30,11 @@ def main():
         # 注意：QVTK 在 headless 平台退出时会段错误（-1073741819），但测试本身
         # 已全部通过——按 pytest 摘要行判定成败，而不是进程退出码。
         import re as _re
-        ok = bool(_re.search(r"\d+ passed", out)) and not _re.search(
-            r"\d+ failed|\d+ error|no tests ran", out)
+        failed_or_err = _re.search(r"\d+ failed|\d+ error|no tests ran", out)
+        # OCC 门控测试在非 OCC 环境整体 skip：全部跳过视为通过（不误报），
+        # 有任何 failed/error/no tests 仍判失败。
+        ok = (bool(_re.search(r"\d+ passed", out))
+              or bool(_re.search(r"\d+ skipped", out))) and not failed_or_err
         if not ok:
             failed.append((f, p.returncode))
             print(out[-1500:])

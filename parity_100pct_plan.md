@@ -100,12 +100,12 @@ flowchart LR
 
 | 点 | 任务 | 路线 | 验收 |
 | --- | --- | --- | --- |
-| C1 | OCP(OpenCascade) 集成层：Part→TopoDS 映射、三角化入图 ✅(自研显示级) 2026-09-03 | 本机 Python 3.14 **无 OCP wheel、无 STARCCM 许可**，OCP B-Rep 内核/官方 Parasolid 均不可用 → 改走自研轻量几何外壳：外部曲面经 `mesh_io.read_surface`→`star_gui_vtk.surface_polydata` 三角化入**本客户端显示图**（vtkPolyData 重建，顶点/面数一致可校验）；`.sim` 对象图**不写回**（parser 无 Imported 数组回填机制，写回留给 OCP/官方桥）——如实标注显示级 L1，非真 B-Rep | 教程几何在本客户端重建显示（显示级达成） |
-| C2 | 草图/拉伸/旋转/扫掠/放样/管道 | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
-| C3 | 布尔/圆角/倒角/抽壳/阵列/镜像 | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
-| C4 | 表面修复工具集（hole fill/coarse/fine/quality metrics） | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
-| C5 | 表面包裹 wrapper（收缩包裹+特征捕捉+局部尺寸） | A（自研）+B | 依赖包裹内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
-| C6 | CAD 导入导出格式族 ✅(自研 STL/OBJ) 2026-09-03 | 自研落地 **STL(ascii+binary)/OBJ 双向读写 + 往返面数一致**（`mesh_io.write_surface/write_obj/write_binary_stl` + `read_surface/read_obj/read_stl`，纯文件层零污染）：cube STL ascii/binary 写→读面数 12/顶点 8 一致、裸二进制无 solid 头也能读、OBJ 写→读 12 面一致、STL↔OBJ 交叉面数守恒、非 STL/OBJ（`.step/.iges/.brep`）写出明确 `ValueError`；`tests/test_cad_format_roundtrip.py`（7 用例，并入 run_all）。STEP/IGES/BREP 与 Parasolid 写回走 B 路（官方 ccmio/许可桥/OCP），本环境 **受限** | 格式往返面数一致（STL/OBJ 达成；STEP/IGES/BREP 受限） |
+| C1 | OCP(OpenCascade) 集成层：Part→TopoDS 映射、三角化入图 ✅ 2026-09-03 | 内核落地于 conda 环境 **occ**（pythonocc-core 7.9.3，`import OCC`；默认 Python 3.14 无 wheel，测试用 `pytest.importorskip`-风格门控，非 OCC 环境整体 skip 不误报）。`occ_bridge.py` 自含 DLL 解析（由 OCC 包路径反推环境根，把 `Library/bin,lib` 加入 PATH+`os.add_dll_directory`，无需 conda activate）。`tessellate`（B-RepMesh→BRep_Tool 遍历 faces→(verts,faces) numpy 三角网）box→12 三角/≥8 顶点、cone→曲面细分非零；`import_surface` 一条龙 读文件→三角网→面数，可送入 `mesh_polydata` 在本客户端重建显示（C1 三角化入图） | 教程几何在本客户端重建显示（OCC B-Rep 三角化入图 达成） |
+| C2 | 草图/拉伸/旋转/扫掠/放样/管道 ✅ 2026-09-03 | A+B | **达成（A 路线 OCC 构造算子，`occ_builder.py`）**：`Sketch` 二维折线草图（move_to/line_to/close → 线框 `wire()`/平面面 `face()`，方形→4 边/1 面）+ `wire3d` 3D 路径；`extrude`（MakePrism 方形面→六面体 6 面/12 三角）、`revolve`（MakeRevol 矩形剖面绕 Y 远轴→回转体非空≥3 面）、`loft`（ThruSections 两错位同形截面→6 面斜台）、`pipe`/`sweep`（MakePipe / MakePipeShell 方形剖面沿直线 spine→扫掠网格非空）；所有产物可 `tessellate` 入图 + `export_shape` 落 STEP/IGES/BREP（拉伸体 STEP 往返面数不变、BREP 往返三角恒 12）；`tests/test_occ_builder.py` 7 用例 OCC 门控（occ 环境真跑 / 非 OCC 整体 skip）；`run_all.py` 平滑接受全部跳过不误报（基线 19 文件全绿、occ 环境 19 全跑，其中 OCC 测试 8+7 真通过） | 教程几何可构造、拉伸/旋转/放样/管道产物重建显示（构造→入图→落盘 达成） |
+| C3 | 布尔/圆角/倒角/抽壳/阵列/镜像 | A+B | OCC 内核已就绪（occ 环境）→ 待 C 波后续阶段推进（本波未扩） |
+| C4 | 表面修复工具集（hole fill/coarse/fine/quality metrics） | A+B | OCC 内核已就绪（occ 环境）→ 待 C 波后续阶段推进（本波未扩） |
+| C5 | 表面包裹 wrapper（收缩包裹+特征捕捉+局部尺寸） | A（自研）+B | OCC 内核已就绪（occ 环境）→ 待 C 波后续阶段推进（本波未扩） |
+| C6 | CAD 导入导出格式族 ✅ 2026-09-03 | 自研 STL(ascii+binary)/OBJ 双向 + **OCC B-Rep STEP/IGES/BREP 双向**（`occ_bridge.import_shape/export_shape/import_surface`）：box→STEP 写出→导入→三角化 6 面/12 三角一致；IGES 6 面往返；BREP 6 面往返；`import_surface` 读自写 STEP 顶点/三角/面数一致；非 B-Rep/S格式扩展名写 `ValueError`。`tests/test_cad_format_roundtrip.py`（7 用例）+ `tests/test_occ_bridge.py`（8 用例，OCC 门控，occ 环境真跑 / 非 OCC 整体 skip）。Parasolid 写回仍走 B 路（有 STARCCM 许可时经里 ccmio/许可桥），本环境无许可 | 格式往返面数一致（STL/OBJ/STEP/IGES/BREP 达成） |
 
 ## 6. N 波 —— 网格内核（达 L3，双路线）
 
