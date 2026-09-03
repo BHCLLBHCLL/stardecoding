@@ -100,12 +100,12 @@ flowchart LR
 
 | 点 | 任务 | 路线 | 验收 |
 | --- | --- | --- | --- |
-| C1 | OCP(OpenCascade) 集成层：Part→TopoDS 映射、三角化入图 | A | 教程几何在本客户端重建显示 |
-| C2 | 草图/拉伸/旋转/扫掠/放样/管道 | A+B | 官方教程建模步骤可复现 |
-| C3 | 布尔/圆角/倒角/抽壳/阵列/镜像 | A+B | 同上 |
-| C4 | 表面修复工具集（hole fill/coarse/fine/quality metrics） | A+B | STL 导入件可修复至可网格化 |
-| C5 | 表面包裹 wrapper（收缩包裹+特征捕捉+局部尺寸） | A（自研）+B | adjointWing 包裹后泄漏检查通过 |
-| C6 | CAD 导入导出格式族：STEP/IGES/BREP/OBJ/STL（Parasolid 走 B 路 ccmio/许可桥） | A+B | 格式往返面数一致 |
+| C1 | OCP(OpenCascade) 集成层：Part→TopoDS 映射、三角化入图 ✅(自研显示级) 2026-09-03 | 本机 Python 3.14 **无 OCP wheel、无 STARCCM 许可**，OCP B-Rep 内核/官方 Parasolid 均不可用 → 改走自研轻量几何外壳：外部曲面经 `mesh_io.read_surface`→`star_gui_vtk.surface_polydata` 三角化入**本客户端显示图**（vtkPolyData 重建，顶点/面数一致可校验）；`.sim` 对象图**不写回**（parser 无 Imported 数组回填机制，写回留给 OCP/官方桥）——如实标注显示级 L1，非真 B-Rep | 教程几何在本客户端重建显示（显示级达成） |
+| C2 | 草图/拉伸/旋转/扫掠/放样/管道 | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
+| C3 | 布尔/圆角/倒角/抽壳/阵列/镜像 | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
+| C4 | 表面修复工具集（hole fill/coarse/fine/quality metrics） | A+B | 依赖 B-Rep 内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
+| C5 | 表面包裹 wrapper（收缩包裹+特征捕捉+局部尺寸） | A（自研）+B | 依赖包裹内核，本环境 OCP 不可装 → **受限**（待内核就绪） |
+| C6 | CAD 导入导出格式族 ✅(自研 STL/OBJ) 2026-09-03 | 自研落地 **STL(ascii+binary)/OBJ 双向读写 + 往返面数一致**（`mesh_io.write_surface/write_obj/write_binary_stl` + `read_surface/read_obj/read_stl`，纯文件层零污染）：cube STL ascii/binary 写→读面数 12/顶点 8 一致、裸二进制无 solid 头也能读、OBJ 写→读 12 面一致、STL↔OBJ 交叉面数守恒、非 STL/OBJ（`.step/.iges/.brep`）写出明确 `ValueError`；`tests/test_cad_format_roundtrip.py`（7 用例，并入 run_all）。STEP/IGES/BREP 与 Parasolid 写回走 B 路（官方 ccmio/许可桥/OCP），本环境 **受限** | 格式往返面数一致（STL/OBJ 达成；STEP/IGES/BREP 受限） |
 
 ## 6. N 波 —— 网格内核（达 L3，双路线）
 

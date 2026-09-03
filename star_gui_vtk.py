@@ -115,6 +115,20 @@ def mesh_polydata(vertices, faces, one_based=True):
     return normals.GetOutput()
 
 
+def surface_polydata(path, one_based=False):
+    """C1：外部 STL/OBJ 曲面 → vtkPolyData（几何在本客户端重建显示）。
+
+    用 mesh_io.read_surface 读入顶点/三角面，再经 mesh_polydata 三角化入显示图。
+    不触碰 .sim 对象图（本客户端 parser 无 Imported 数组回填机制，写回留给
+    OCP/官方桥），仅用于外部曲面在本视图的重建显示与面数校验。
+    """
+    from mesh_io import read_surface
+    verts, faces = read_surface(path)
+    pd = mesh_polydata(verts, faces, one_based=one_based)
+    return {"polydata": pd, "vertices": verts, "faces": faces,
+            "n_vertices": len(verts), "n_triangles": len(faces)}
+
+
 def _face_vertex_wants(faces):
     """根据面下标推断配套顶点表规模（跨度优先，再 0/1 基）。"""
     lo, hi = int(faces.min()), int(faces.max())

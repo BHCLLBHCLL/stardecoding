@@ -73,7 +73,7 @@
 | 差分回归自动化（W6） | test（`tests/test_diff_regression.py`：读语料→类型化补丁→Save As→重读→结构自检差分（对象/数组/Contants/id 序号）+ `compare_object_graph` 源/输出路径差分（仅目标字段 diff）；数组等宽载荷写回命中；`try_official_resave` 官方差分门控，无许可 auto-skip 结构自检主路径） |
 | 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
 | 保存视图 | persist（`persist_view` 写入 Scene `CurrentView` 对象行，不再只放内存） |
-| 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图/拉伸 needs_kernel） |
+| 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图/拉伸 needs_kernel）+ C1/C6 自研显示级：`surface_polydata` 外部 STL/OBJ→vtkPolyData 重建显示（顶点/面数校验）；`mesh_io` STL(ascii+binary)/OBJ 双向读写往返面数一致；B-Rep 建模（拉伸/布尔/圆角/包裹）与 STEP/IGES/BREP 依赖 OCP/官方桥→受限 |
 | 绘图标签（监视器/报告数值） | view（Monitor/Report/Plot/Residual 标量 + 1D 数组折线≤512 点；明确标注非求解器采样；无数据降级为文本） |
 | 体网格线框 | view（`extract_volume_mesh` + `volume_mesh_actors`，G3 存储体系精确抽取；数组对不上时禁用并写原因） |
 | 场景显示参数（G8） | view（`extract_scene_display`：背景/灯光/显示器/场范围/图例/官方色表 4n 断点/注记链；CLI `--scenes` 同源只读；GUI `lut_from_colormap` 官方 ColorMap→vtkLookupTable 断点插值重采样 256 级真渲染标量着色） |

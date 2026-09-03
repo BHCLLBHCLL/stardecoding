@@ -111,6 +111,50 @@ def write_ascii_stl(path, vertices, faces, name="sim"):
     return path
 
 
+def write_binary_stl(path, vertices, faces, name="sim"):
+    """二进制 STL 写出（C6 格式族；与 read_stl 二进制分支对称）。"""
+    n = len(faces)
+    header = b"solid " + bytes(name, "ascii", "replace")[:70] + b"\x00" * 4
+    header = (header + b"\x00" * 80)[:80]
+    with open(path, "wb") as fh:
+        fh.write(header)
+        fh.write(struct.pack("<I", n))
+        for tri in faces:
+            a, b, c = (vertices[i] for i in tri)
+            fh.write(struct.pack(
+                "<12fH",
+                0.0, 0.0, 0.0,
+                a[0], a[1], a[2],
+                b[0], b[1], b[2],
+                c[0], c[1], c[2],
+                0))
+    return path
+
+
+def write_obj(path, vertices, faces, name="sim"):
+    """OBJ 写出（C6 格式族；与 read_obj 对称，仅三角面）。"""
+    with open(path, "w", encoding="ascii") as fh:
+        fh.write("# %s\n" % name)
+        fh.write("o %s\n" % name)
+        for p in vertices:
+            fh.write("v %.9g %.9g %.9g\n" % (p[0], p[1], p[2]))
+        for tri in faces:
+            fh.write("f %d %d %d\n" % (tri[0] + 1, tri[1] + 1, tri[2] + 1))
+    return path
+
+
+def write_surface(path, vertices, faces, name="sim", binary_stl=False):
+    """按扩展名分派写出（.stl→ascii/binary、.obj→OBJ），与 read_surface 对称。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".obj":
+        return write_obj(path, vertices, faces, name)
+    if ext in (".stl", ".stla", ".stlb"):
+        if binary_stl or ext == ".stlb":
+            return write_binary_stl(path, vertices, faces, name)
+        return write_ascii_stl(path, vertices, faces, name)
+    raise ValueError("不支持的写出格式: %s（支持 .stl/.obj）" % ext)
+
+
 def cube_mesh(size=1.0):
     s = float(size)
     v = [
