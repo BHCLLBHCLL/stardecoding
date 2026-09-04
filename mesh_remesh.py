@@ -174,7 +174,8 @@ def _split_pass(V, F, L, adj, bv, max_rounds=20):
         over = np.where(lens > tgt)[0]
         if len(over) == 0:
             break
-        order = over[np.argsort(-lens[over])]
+        # 显式全序：边长降序、同长按边索引升序 → 各 numpy 版本/平台完全确定
+        order = sorted(over.tolist(), key=lambda k: (-float(lens[k]), int(k)))
         made = False
         n_split = 0
         # 动态 VA（分裂补点）以列表承载
@@ -413,7 +414,8 @@ def _collapse_pass(V, F, L, adj):
     interior = np.array([len(adj[k]) == 2 for k in keys])
     nb = np.array([not (k[0] in bv or k[1] in bv) for k in keys])
     choose = np.where(short & interior & nb)[0]
-    order = choose[np.argsort(lens[choose])]
+    # 显式全序：边长升序、同长按边索引升序 → 各 numpy 版本/平台完全确定
+    order = sorted(choose.tolist(), key=lambda k: (float(lens[k]), int(k)))
     for k in order:
         i, j = keys[int(k)]
         # 重新检查存在性与 link

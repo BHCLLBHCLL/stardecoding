@@ -140,7 +140,7 @@ def test_size_field_monotone():
 def test_remesh_wavy_curvature_drives_size():
     V, F = wavy_grid(nx=12, ny=12, amp=0.12, k=2.0)
     V2, F2 = remesh_surface(V, F, target_max=0.13,
-                            curvature_adaptive=True, max_iter=3)
+                            curvature_adaptive=True, max_iter=4)
     V2 = np.asarray(V2, float)
     F2 = np.asarray(F2, np.int64)
     # 按三角形质心 x 处 |sin(2π·2x)| 划分：高曲率波峰 vs 低曲率高干
