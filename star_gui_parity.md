@@ -23,12 +23,12 @@
 | 编辑>复制/粘贴/删除/重命名 | persist（复制→created 插入对象图行；删除→Keys 摘除；重命名→对象行补丁） |
 | 编辑>上一选择/下一选择/按名称搜索 | session |
 | 网格>生成表面网格 | macro（找到 starccmw 则写宏 → 工作副本 `-batch` → 加载 out.sim；注意宏体实为 `generateVolumeMesh()`，语义错位待 G/W 波宏模板细分） |
-| 网格>生成体网格 | kernel（`cmd_generate_volume_mesh` 本地 N 波流水线：表面细分→tet（scipy/Gmsh 双路由）→质量→重编号，N1+N3；水密守门+HEADLESS 安全） |
+| 网格>生成体网格 | kernel（`cmd_generate_volume_mesh` 本地 N 波流水线：表面细分→tet（scipy/Gmsh 双路由）→质量→重编号，N1+N3；水密守门+HEADLESS 安全；N6 统一质量 histogram/repair 接入 `mesh_quality.py`） |
 | 网格>生成多面体网格 | kernel（`cmd_generate_poly_mesh`：tet→Voronoi 对偶 poly 单元，N3b；结果存 `_poly_mesh_result`） |
 | 网格>生成 Trimmer 网格 | kernel（`cmd_generate_trimmer_mesh`：八叉树分级加密+表面切割单元，N3b；结果存 `_trimmer_mesh_result`） |
 | 网格>清除/转 2D | needs_kernel（`_kernel_nyi`） |
 | 网格>缩放 | persist（`TransformPartCommand` → Float8 顶点/`ImportedVertices` 回写，可撤销） |
-| 网格>诊断 | view（指纹/长度/ClassVersions 自洽标志） |
+| 网格>诊断 | view（指纹/长度/ClassVersions 自洽标志）；kernel N6 侧在 `mesh_quality.py` 提供质量 histogram/repair/`mesh_interface.py` interface/`mesh_amr.py` AMR 钩子，供运行环（P10）与湍流（P6）联调 |
 | 场景>（本客户端保留，官方在 Vis 工具栏） | view |
 | 求解/连接 | disabled（Run/Pause/Step/Stop 与 Server 均 `setEnabled(False)`，测试锁定） |
 | 工具>诊断/选项 | view / session |
