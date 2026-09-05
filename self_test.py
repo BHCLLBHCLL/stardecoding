@@ -965,4 +965,44 @@ os.remove(_w3dst0)
 print("W3 ZIP/PK 容器写出：读解压载荷补丁 + 重打包（保条目名/DEFLATED）"
       " + 有补丁/纯往返重开一致 全通过")
 
+# --- P2：场函数表达式求值器（math/vector/logic + interpolate，与官方语法对齐） ---
+from field_fn import FieldFunction as _P2FF, Table as _P2Table, \
+    numeric as _p2, compile_expression as _p2c
+import math as _p2m
+assert _p2("1 + 2 * 3") == 7.0
+assert _p2("(1 + 2) * 3") == 9.0
+assert _p2("7 % 3") == 1.0
+assert round(_p2("sqrt(9)"), 9) == 3.0
+assert round(_p2("pow(2, 10)"), 9) == 1024.0
+assert _p2("3 > 2") == 1.0 and _p2("3 == 3") == 1.0 and _p2("3 != 3") == 0.0
+assert _p2("1 && 0") == 0.0 and _p2("0 || 1") == 1.0 and _p2("!0") == 1.0
+assert _p2("1 < 2 ? 10 : 20") == 10.0
+assert _p2("(1 < 0) ? 10 : ((2 < 3) ? 30 : 40)") == 30.0
+assert round(_p2("mag($$Velocity)", {"Velocity": (3.0, 4.0, 0.0)}), 9) == 5.0
+assert _p2("dot($$u, $$v)", {"u": (1.0, 0.0, 0.0), "v": (0.0, 1.0, 0.0)}) == 0.0
+assert _p2("$$Velocity[0]", {"Velocity": (3.0, 4.0, 0.0)}) == 3.0
+assert _p2("$$Velocity.y", {"Velocity": (3.0, 4.0, 0.0)}) == 4.0
+assert tuple(_p2("[1, 2, 3]")) == (1.0, 2.0, 3.0)
+_p2A = ((2.0, 0.0, 0.0), (0.0, 3.0, 0.0), (0.0, 0.0, 4.0))
+assert round(_p2("trace($$$A)", {"A": _p2A}), 9) == 9.0
+assert round(_p2("$$$A.eigValue(0)", {"A": _p2A}), 9) == 2.0
+_p2t = _P2Table("t", [0.0, 1.0, 2.0], {"u": [0.0, 10.0, 20.0]})
+assert abs(_p2('interpolateTable(@Table("t"), "u", LINEAR, "", ${Position}[0])',
+               tables={"t": _p2t}, position=(0.5, 0.0, 0.0)) - 5.0) < 1e-9
+assert _p2("alternateValue(1 / 0, 99)") == 99.0
+assert _p2("alternateValue(1 / 0, sqrt(-1), 42)") == 42.0
+assert _p2c("1 + 2 * 3 + mag($$v)") is not None
+# 诚实拒绝：非法/未知/越界 明确报错而非静默
+for _bad in ("1 +", "nope(1)", "${Nope}", "1 / 0", "$$v[3]"):
+    try:
+        if _bad == "$$v[3]":
+            _p2("$$v[3]", {"v": (1.0, 2.0, 3.0)})
+        else:
+            _p2(_bad)
+    except Exception:
+        continue
+    raise AssertionError("P2 应拒绝 %s" % _bad)
+print("P2 场函数表达式求值器：算术/逻辑/三元/数学/矢量/张量/插值/交替值/"
+      "编译预检 + 诚实拒绝 全通过")
+
 print("ALL CHECKS PASSED")

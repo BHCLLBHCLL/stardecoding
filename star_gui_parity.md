@@ -75,6 +75,7 @@
 | ZIP/PK 容器写出（W3） | persist（`save_sim` 容器读写：`PK` 头检测→读侧取单条/最大条目为**主载荷**（补丁基底），写侧重打包成 ZIP 容器（保 `sim.container_entry` 条目名 + DEFLATED）；明文 `.sim` 不受影响；合成 ZIP 打补丁 Save As → 仍 `PK` 头 / 条目名保持 / 补丁命中载荷 / 对象图/数组不变；无补丁纯往返重开完全一致） |
 | 差分回归自动化（W6） | test（`tests/test_diff_regression.py`：读语料→类型化补丁→Save As→重读→结构自检差分（对象/数组/Contants/id 序号）+ `compare_object_graph` 源/输出路径差分（仅目标字段 diff）；数组等宽载荷写回命中；`try_official_resave` 官方差分门控，无许可 auto-skip 结构自检主路径） |
 | 物理参数语义行（G7: 模型/值/运动） | persist（P1 写侧：物理量/选项/嵌套组标量/顶层标量描述符行可编辑——kind/oid/key 锚点经 objmap 路由 SetPropertyCommand，Save 走 patches 整行替换；CLI `--physics` 同源只读） |
+| 场函数表达式求值器（P2） | view（`field_fn.py` 词法-语法-求值全链：数学/矢量/逻辑 + 嵌套三元 + 插值器（`interpolateTable(@Table("name"), "column", SPLINE|LINEAR, "units", ${Position}[i])`）+ 惰性 `alternateValue`/`altValue` 多参；与官方语法对齐——变量引用 `${Name}`/`$$Name`/`$$$Name`、矢量字面量 `[a,b,c]`、张量点方法 `$$$A.eigValue(i)`/`$$$A.mag()`；依赖网格/几何（insidePart/distanceToPart/curl/div/grad）诚实 `NotImplementedError`，`compile_expression` 编译预检 + 错误路径诚实拒绝；`tests/test_field_fn.py` 39 项全绿，occ+scdm 两环境 self_test/batch_parse/run_all 无回归） |
 | 保存视图 | persist（`persist_view` 写入 Scene `CurrentView` 对象行，不再只放内存） |
 | 3D-CAD 模式外壳 | session（剖面/变换走三角化；草图/拉伸 needs_kernel）+ C1/C6 自研显示级：`surface_polydata` 外部 STL/OBJ→vtkPolyData 重建显示（顶点/面数校验）；`mesh_io` STL(ascii+binary)/OBJ 双向读写往返面数一致；B-Rep 建模（拉伸/布尔/圆角/包裹）与 STEP/IGES/BREP 依赖 OCP/官方桥→受限 |
 | 绘图标签（监视器/报告数值） | view（Monitor/Report/Plot/Residual 标量 + 1D 数组折线≤512 点；明确标注非求解器采样；无数据降级为文本） |
