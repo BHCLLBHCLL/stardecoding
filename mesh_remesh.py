@@ -13,6 +13,9 @@
   - flip：内边四角若旋转后最小角增大则翻边（角度/Delaunay 改善）；
   - smooth：非边界顶点沿切平面各向同性光滑（Botsch 式）。
 
+N5 扩展：`remesh_surface(..., sizes=…)` 接受外部逐顶点目标边长（自定义控制
+解析结果），旁路曲率场并随 split 演化（新顶点目标 = 两端平均）。
+
 闭环输入保持水密、开面输入保持边界（同数目边界半环）。纯 Python / numpy，两环境皆可用。
 """
 import numpy as np
@@ -196,7 +199,7 @@ def _split_pass(V, F, L, adj, bv, max_rounds=20):
             if le2 <= 1.3333 * 0.5 * (L[u] + L[v]):
                 continue
             if len(F) + 2 > _CAP:
-                return V, F, adj, changed
+                return V, F, adj, L, changed
             i, j = key
             mil = 0.5 * (L[i] + L[j])
             V, F, adj = _split_edge(V, F, adj, key, len(V))
@@ -211,7 +214,7 @@ def _split_pass(V, F, L, adj, bv, max_rounds=20):
         VA = np.asarray(VL, float)
         if not made:
             break
-    return V, F, adj, changed
+    return V, F, adj, L, changed
 
 
 _CAP = 300000
@@ -339,26 +342,41 @@ def _smooth_pass(V, F, adj, iters=4, omega=0.5):
 
 def remesh_surface(V, F, target_max, curvature_adaptive=True,
                    refine=True, collapse=True, smooth=True, flip=True,
-                   max_iter=25):
+                   max_iter=25, sizes=None):
     """曲率自适应表面重网格化，返回 (V', F')。
 
     - target_max：平坦区目标边长；
-    - curvature_adaptive：开则用曲率尺寸场（高曲率加密），关则各向同性均匀重网格。
+    - curvature_adaptive：开则用曲率尺寸场（高曲率加密），关则各向同性均匀重网格；
+    - sizes：外部逐顶点目标边长（N5 自定义控制解析结果），给定后旁路曲率场，
+      随 split 演化（新顶点目标 = 两端平均），长度须等于输入顶点数。
     """
     V = [list(map(float, p)) for p in V]
     F = list(map(tuple, (map(lambda t: tuple(t), F))))
     F = [tuple(map(int, f)) for f in F]
     tm = float(target_max)
+    if sizes is not None:
+        Lext = np.asarray(sizes, float).ravel()
+        if Lext.shape[0] != len(V):
+            raise ValueError("sizes 长度须等于顶点数")
+        L = Lext.copy()
+    else:
+        L = None
     for _ in range(max_iter):
-        kappa = curvature_field(np.asarray(V, float), np.asarray(F, np.int64))
-        L = size_field(kappa, tm, curvature_adaptive)
+        if sizes is not None:
+            L0 = L                      # sizes 模式：场随 split 演化
+        else:
+            kappa = curvature_field(np.asarray(V, float), np.asarray(F, np.int64))
+            L0 = size_field(kappa, tm, curvature_adaptive)
         adj = _build_adj(F)
         bv = _boundary_vertices(F, adj)
-        V, F, adj, ch_split = _split_pass(V, F, L, adj, bv)
+        V, F, adj, L, ch_split = _split_pass(V, F, L0, adj, bv)
         if collapse:
-            # split 会使顶点变多，重算当前尺寸场供折叠使用
-            k2 = curvature_field(np.asarray(V, float), np.asarray(F, np.int64))
-            L2 = size_field(k2, tm, curvature_adaptive)
+            # split 会使顶点变多：曲率模式重算当前尺寸场，sizes 模式沿用演化 L
+            if sizes is not None:
+                L2 = L
+            else:
+                k2 = curvature_field(np.asarray(V, float), np.asarray(F, np.int64))
+                L2 = size_field(k2, tm, curvature_adaptive)
             V, F, adj, ch_col = _collapse_pass(V, F, L2, adj)
         else:
             ch_col = False

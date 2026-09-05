@@ -9,6 +9,10 @@ STAR-CCM+ prism mesher 的核心思想：从边界面向体内逐层推进三棱
   - `vertex_normals`：面积加权顶点法向（与面片绕向一致，不预设外向）；
   - `ray_hit_distance`：Möller–Trumbore 最近三角命中距离（含边界容差，
     t≈0 的共点命中跳过——射线自表面顶点出发的安全前提）；
+    `ray_hit_nearest` 同判定但返回 (距离, 面索引)，同距取最小面索引
+    （N5 thin mesher 对面配对去重用）；
+  - `_side_sign`：side → 绕向法向的符号（inward/outward 闭合面探针
+    自动定向；+n/-n 显式；开放表面 inward/outward 抛 ValueError）；
   - `prism_layers`：边界层推进主入口——
       · 每顶点沿推进方向射线到最近表面的距离 h_v，允许深度 =
         gap_fraction·h_v（gap_fraction 即「边界层最多占据通道的比例」，
@@ -56,14 +60,24 @@ def ray_hit_distance(p, d, V, F, t_eps=1e-9, bnd=1e-9):
     Möller–Trumbore：barycentric 含边界容差 bnd（对角/棱上的退化命中
     不丢）；t > t_eps 跳过出发面上的共点命中（射线自表面顶点出发）。
     """
+    return ray_hit_nearest(p, d, V, F, t_eps, bnd)[0]
+
+
+def ray_hit_nearest(p, d, V, F, t_eps=1e-9, bnd=1e-9):
+    """p 沿 d 的最近三角命中 → (距离, 面索引)；无命中 (inf, -1)。
+
+    同距命中（打在共享棱/顶点上，相邻三角同点）取最小面索引——
+    确定性配对（N5 thin mesher 用它做对面配对去重）。
+    """
     p = np.asarray(p, float)
     d = np.asarray(d, float)
     V = np.asarray(V, float)
     F = np.asarray(F, np.int64)
     if float(np.linalg.norm(d)) < 1e-300:
-        return float("inf")
+        return float("inf"), -1
     best = float("inf")
-    for a, b, c in F:
+    best_fi = -1
+    for fi, (a, b, c) in enumerate(F):
         A, B, C = V[a], V[b], V[c]
         E1 = B - A
         E2 = C - A
@@ -81,9 +95,13 @@ def ray_hit_distance(p, d, V, F, t_eps=1e-9, bnd=1e-9):
         if not (-bnd <= v <= 1.0 + bnd) or u + v > 1.0 + bnd:
             continue
         t = float(E2 @ Q) * inv
-        if t > t_eps and t < best:
-            best = t
-    return best
+        if t > t_eps:
+            tol = 1e-12 * max(1.0, abs(t))
+            if t < best - tol:
+                best, best_fi = t, fi          # 更近的命中
+            elif t <= best + tol and (best_fi < 0 or fi < best_fi):
+                best, best_fi = t, fi          # 同距取最小面索引
+    return best, best_fi
 
 
 def _probe_inward(V, F):
@@ -112,6 +130,22 @@ def _probe_inward(V, F):
             return False                      # 绕向法向 = 外向
         return None                           # 开放表面，无法判定
     return None
+
+
+def _side_sign(V, F, side):
+    """绕向法向 → 推进方向的符号（+1 沿绕向 / −1 逆绕向）。
+
+    side="inward"/"outward" 需闭合表面（探针自动定向，开放表面抛
+    ValueError）；"+n"/"-n" 显式沿/逆绕向法向（开放表面用）。
+    """
+    if side in ("inward", "outward"):
+        iw = _probe_inward(V, F)
+        if iw is None:
+            raise ValueError("无法判定内外向（表面可能开放），请用 side='+n'/'-n'")
+        return 1.0 if ((side == "inward") == iw) else -1.0
+    if side in ("+n", "-n"):
+        return 1.0 if side == "+n" else -1.0
+    raise ValueError("side 须为 inward/outward/+n/-n")
 
 
 # --------------------------------------------------------------- 边界层推进
@@ -150,16 +184,7 @@ def prism_layers(vertices, faces, n_layers=3, first_thickness=None,
         levels.append(d)
 
     nrm = vertex_normals(V, F)
-    if side in ("inward", "outward"):
-        inward_winding = _probe_inward(V, F)
-        if inward_winding is None:
-            raise ValueError("无法判定内外向（表面可能开放），请用 side='+n'/'-n'")
-        along = (side == "inward") == inward_winding
-    elif side in ("+n", "-n"):
-        along = (side == "+n")
-    else:
-        raise ValueError("side 须为 inward/outward/+n/-n")
-    dirs = nrm if along else -nrm
+    dirs = _side_sign(V, F, side) * nrm
 
     # 每顶点允许深度 → 顶点层高 K_v（碰撞处理：超通道比例自动降层）
     K = np.zeros(N, dtype=int)

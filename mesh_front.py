@@ -167,7 +167,7 @@ def delaunay_refine_surface(V, F, target_max, curvature_adaptive=True,
         L = size_field(kap, tm, curvature_adaptive, min_ratio=min_ratio)
         adj = _build_adj(F)
         bv = _boundary_vertices(F, adj)
-        V, F, adj, ch_split = _split_pass(V, F, L, adj, bv)
+        V, F, adj, _L, ch_split = _split_pass(V, F, L, adj, bv)
         k2 = curvature_field(np.asarray(V, float), np.asarray(F, np.int64))
         L2 = size_field(k2, tm, curvature_adaptive, min_ratio=min_ratio)
         V, F, adj, ch_col = _collapse_pass(V, F, L2, adj)
