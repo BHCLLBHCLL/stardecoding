@@ -127,6 +127,7 @@ def test_tet_cube_scipy_positive_volume():
     assert not np.isclose(q["edge_aspect"]["max"], float("inf"))
 
 
+@pytest.mark.skipif(not _has("scipy"), reason="无 scipy")
 def test_tet_quality_metrics():
     V, F = cube_mesh(1.0)
     out = tet_mesh(V, F, spacing=0.4, method=("scipy" if _has("scipy") else None))
@@ -147,6 +148,7 @@ def test_tet_reject_open_surface():
 
 
 # ---------------------------------------------------------------- 默认流水线
+@pytest.mark.skipif(not _has("scipy"), reason="无 scipy")
 def test_default_volume_mesh_pipeline_full():
     V, F = cube_mesh(1.0)
     pipe = default_volume_mesh_pipeline(V, F, cell_size=0.5, refine_levels=1)

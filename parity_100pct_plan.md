@@ -135,9 +135,9 @@ flowchart LR
 | P7 | 能量/传热（对流扩散+共轭）+ 简化辐射谱系 | 教程传热工况 |
 | P8 | 多相 VOF（几何重构）→ Mixture → DPM 粒子轨 | 自由面算例 |
 | P9 | 运动谱系：rotating/translating/滑移 interface → morphing → DFBI 6DOF → overset | 教程旋转机械工况 |
-| P10 | 监视器/报告/停止准则/Update Events 运行时闭环 + 残差实时曲线 | Run/暂停/步进/停止全按钮生效 |
+| P10 | 监视器/报告/停止准则/Update Events 运行时闭环 + 残差实时曲线 ✅ 2026-09-05 | Run/暂停/步进/停止全按钮生效 —— **达成**：新增 `solver_run.py`（SolverBackend 抽象 + DemoDiffusionSolver 真推演 + 监视器/报告/停止准则/Update Events/RunLoop 运行时闭环），`star_gui.py` 菜单 Run/Pause/Step/Stop 全启用（控制器 + 残差实时曲线），`tests/test_solver_run.py` 26 项 / `test_gui_editor.py` 24 项全绿；occ+scdm 两环境 `self_test`+`batch_parse`+`run_all` 全绿无回归 |
 
-B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行日志回流输出窗。
+B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行日志回流输出窗 ✅ 2026-09-05（P10 同批落地，`test_star_macro_b.py` 7 项全绿）。
 验收：airfoil 升阻力、cylinder Strouhal、manifold 压降等教程工况与官方结果误差带内
 （新增 `tests/test_solver_regression.py`，长耗时用例标记 skip 条件）。
 

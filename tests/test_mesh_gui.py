@@ -12,6 +12,14 @@ import pytest
 SIM = os.path.join(ROOT, "adjointWing_start.sim")
 
 
+def _has(name):
+    try:
+        __import__(name)
+        return True
+    except Exception:
+        return False
+
+
 @pytest.fixture(scope="module")
 def app():
     from PyQt5.QtWidgets import QApplication
@@ -43,6 +51,7 @@ def test_generate_volume_no_sim_graceful(app):
     app.processEvents()
 
 
+@pytest.mark.skipif(not _has("scipy"), reason="无 scipy")
 def test_generate_volume_happy_path(app):
     from star_gui import StarMainWindow
     from sim_parser import SimFile
@@ -110,6 +119,7 @@ def test_generate_poly_no_sim_graceful(app):
     app.processEvents()
 
 
+@pytest.mark.skipif(not _has("scipy"), reason="无 scipy")
 def test_generate_poly_happy_path(app):
     win = _open_with_cube_surface(app)
     win.cmd_generate_poly_mesh()

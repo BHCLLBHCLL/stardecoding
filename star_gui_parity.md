@@ -45,7 +45,7 @@
 | 系统：新建/打开/保存 | persist（保存走 `save_sim`） |
 | 编辑：复制/粘贴/选择历史 | persist / session（选择历史 session） |
 | 网格生成：导入/修复/生成 | 导入 persist；修复 needs_kernel；生成 macro（同上宏桥） |
-| 求解 | disabled |
+| 求解 | session/persist（Run/Pause/Step/Stop + 控制器 + 残差实时曲线，P10） |
 | Vis：适配/视图/透明/网格开闭/派生零件/标量着色 | view + session；标量着色在**点数或面数吻合**的一维数组上生效（`cmd_scalar_color`），无候选数组时禁用并说明 |
 | 选择：框选缩放 / 测距 / Parts 过滤器 | 框选=VTK rubber band 真实现；测距=两点真实现；Parts 过滤器=勾选 Part/PartSurface → `Collector.Keys` persist |
 | 3D-CAD | session 外壳（模式切换 + 三角化变换/显隐）；草图/拉伸/旋转/放样/管道（OCC 构造算子 `occ_builder.py`）+ 布尔/圆角/倒角/抽壳/阵列/镜像（OCC 编辑算子 `occ_edit.py`）+ 表面修复（hole fill/coarse/fine/质量指标 `occ_repair.py`）+ 表面包裹（收缩包裹/局部加密/特征捕捉 `occ_wrap.py`），产物三角化入图可显示、落 STEP/IGES/BREP |
@@ -89,4 +89,4 @@
    - 「生成表面网格」宏体实为 `generateVolumeMesh()`，表面/体网格宏模板未细分（W/A 波宏映射表）；
    - 体网格导入只取边界三角化，体单元表未重建（G3）；
    - `Save All`/AutoSave/.simt 模板未实现（X1）；
-   - 求解/连接保持诚实禁用（P 波）。
+   - Server/连接保持诚实禁用；求解 Run/Pause/Step/Stop 已随 P10 闭环启用（`solver_run.py` + 残差实时曲线，见菜单栏「求解/连接」）。

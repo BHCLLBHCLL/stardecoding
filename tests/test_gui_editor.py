@@ -183,8 +183,10 @@ def test_menus_toolbars_and_disabled_solver(app):
     for n in ("File", "Solve", "View", "Display"):
         assert n in names, names
     assert win.windowTitle().startswith("STAR-CCM+ .sim Viewer / Editor")
-    assert not win.actions["Solution>Run"].isEnabled()
+    assert win.actions["Solution>Run"].isEnabled()
     assert not win.actions["Solution>Pause"].isEnabled()
+    assert not win.actions["Solution>Step"].isEnabled()
+    assert not win.actions["Solution>Stop"].isEnabled()
     assert not win.actions["Connection>Server"].isEnabled()
     assert "File>Save" in win.actions
     assert "Edit>Undo" in win.actions

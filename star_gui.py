@@ -66,6 +66,82 @@ class LoadWorker(QObject):
             self.failed.emit(self.path, "%s\n%s" % (exc, traceback.format_exc()))
 
 
+class SolverController(QObject):
+    """P10 求解运行闭环控制器（GUI 侧）。
+
+    把 solver_run.SolverBackend 的 run_loop 驱动在后台线程（python threading），
+    GUI 线程通过 pause/step/stop 写入控制标志；运行时事件经 UpdateEvents 监听转成
+    Qt 信号（AutoConnection 排队到 GUI 线程），驱动状态按钮、状态栏与残差实时曲线。
+    后端用 DemoDiffusionSolver（纯 numpy）读取真实残差/监视器，不依赖 CCM 许可。
+    """
+
+    state_changed = pyqtSignal(str)      # RUNNING/PAUSED/STOPPED/COMPLETED/ERROR
+    iterated = pyqtSignal(int, dict)     # (iteration, payload)
+    finished = pyqtSignal(dict)          # run_loop 返回的 result
+    failed = pyqtSignal(str)             # 异常消息
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from solver_run import DemoDiffusionSolver, SolverBackend, demo_mesh
+        self.backend = SolverBackend(solver=DemoDiffusionSolver(*demo_mesh(nx=6)))
+        self._thread = None
+        self._max_iter = 1_000_000_000
+        self._wire_events()
+
+    def _wire_events(self):
+        from solver_run import SolverState
+        ev = self.backend.events
+        ev.register("start", lambda **k: self.state_changed.emit(SolverState.RUNNING))
+        ev.register("pause", lambda **k: self.state_changed.emit(SolverState.PAUSED))
+        ev.register("resume", lambda **k: self.state_changed.emit(SolverState.RUNNING))
+        ev.register("stop", lambda **k: self.state_changed.emit(SolverState.STOPPED))
+        ev.register("finish", lambda **k: self.state_changed.emit(SolverState.COMPLETED))
+        ev.register("iterate", self._on_iterate)
+        ev.register("step", self._on_iterate)
+
+    def _on_iterate(self, iteration, payload, state="working", **kw):
+        self.iterated.emit(int(iteration), dict(payload))
+
+    def begin(self):
+        """启动/恢复 run_loop：线程未起则起新线程，已挂起则 resume。"""
+        from solver_run import SolverState
+        if self._thread is not None and self._thread.is_alive():
+            if self.backend.state() == SolverState.PAUSED:
+                self.backend.resume()
+            return
+        self._thread = threading.Thread(target=self._work, daemon=True)
+        self._thread.start()
+
+    def _work(self):
+        try:
+            result = self.backend.run_loop(max_iter=self._max_iter)
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+    def pause(self):
+        self.backend.pause()
+
+    def step(self):
+        if self.backend.step():
+            self.state_changed.emit(self.backend.state())
+
+    def stop(self):
+        self.backend.stop()
+
+    def metrics(self):
+        return self.backend.metrics()
+
+    def curve_items(self):
+        return self.backend.curve_items()
+
+    def report_lines(self):
+        return self.backend.report_lines()
+
+    def thread_alive(self):
+        return self._thread is not None and self._thread.is_alive()
+
+
 class StarMainWindow(QMainWindow):
     """主窗口（M0：骨架 + 打开 + 摘要；M1-M6 逐步补齐窗格）。"""
 
@@ -79,6 +155,7 @@ class StarMainWindow(QMainWindow):
         self.sim_path = None
         self._thread = None
         self._worker = None
+        self.solver_controller = None
         from star_gui_document import SimDocument
         self.document = SimDocument()
         self.document.bus.on_change = self._sync_edit_actions
@@ -88,8 +165,19 @@ class StarMainWindow(QMainWindow):
         self._build_menus()
         self._build_toolbar()
         self._wire_editor_ui()
+        self._setup_solver_controller()
         self._sync_edit_actions()
         self.msg("STAR-CCM+ .sim Viewer / Editor 就绪 — 文件>打开 加载项目")
+
+    def _setup_solver_controller(self):
+        """P10：创建求解运行控制器并接线（状态/迭代/完成/失败 → GUI）。"""
+        from solver_run import SolverState
+        self.solver_controller = SolverController(self)
+        self.solver_controller.state_changed.connect(self._on_solver_state)
+        self.solver_controller.iterated.connect(self._on_solver_iterated)
+        self.solver_controller.finished.connect(self._on_solver_finished)
+        self.solver_controller.failed.connect(self._on_solver_failed)
+        self._sync_solution_actions(SolverState.IDLE)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -236,20 +324,16 @@ class StarMainWindow(QMainWindow):
         self._add("Scene>AddDisplayer", tr("Add Displayer"), self.cmd_add_displayer, "displayer")
         self._add("Vis>SaveView", tr("Save View"), self.cmd_save_view, "reset")
         self._add("Vis>RestoreView", tr("Restore View"), self.cmd_restore_view, "fit")
-        for path, label in [
-            ("Solution>Run", tr("Run")),
-            ("Solution>Pause", tr("Pause")),
-            ("Solution>Step", tr("Step")),
-            ("Solution>Stop", tr("Stop")),
-            ("Connection>Server", tr("Connect to Server")),
-        ]:
-            icon = {
-                "Solution>Run": "play", "Solution>Pause": "pause",
-                "Solution>Step": "step", "Solution>Stop": "stop",
-                "Connection>Server": "server",
-            }.get(path, "unknown")
-            self._add(path, label, lambda checked=False, p=path: self._nyi(p), icon)
-            self.actions[path].setEnabled(False)
+        self._add("Solution>Run", tr("Run"), self.cmd_solution_run, "play")
+        self._add("Solution>Pause", tr("Pause"), self.cmd_solution_pause, "pause")
+        self._add("Solution>Step", tr("Step"), self.cmd_solution_step, "step")
+        self._add("Solution>Stop", tr("Stop"), self.cmd_solution_stop, "stop")
+        self.actions["Solution>Pause"].setEnabled(False)
+        self.actions["Solution>Step"].setEnabled(False)
+        self.actions["Solution>Stop"].setEnabled(False)
+        self._add("Connection>Server", tr("Connect to Server"),
+                  lambda checked=False: self._nyi("Connection>Server"), "server")
+        self.actions["Connection>Server"].setEnabled(False)
         self._add("Tools>Fingerprint", tr("Version Fingerprint"), self.cmd_fingerprint, "fingerprint")
         self._add("Tools>Check Length", tr("State Length Check"), self.cmd_check_length, "ruler")
         self._add("Tools>Validate", tr("ClassVersions Validate"), self.cmd_validate, "validate")
@@ -722,6 +806,11 @@ class StarMainWindow(QMainWindow):
             w._on_shown()
 
     def closeEvent(self, event):
+        if self.solver_controller is not None:
+            try:
+                self.solver_controller.stop()
+            except Exception:
+                pass
         if not self.confirm_discard_dirty("未保存", "文档已修改，是否保存？"):
             event.ignore()
             return
@@ -1421,6 +1510,78 @@ class StarMainWindow(QMainWindow):
     def cmd_show_plots(self):
         self.actions["Window>Plots"].setChecked(True)
         self._toggle_plots()
+
+    # ---------------- P10 求解运行闭环 ----------------
+    def _sync_solution_actions(self, state):
+        """按运行态切换 Run/Pause/Step/Stop 可用性。"""
+        from solver_run import SolverState
+        self.actions["Solution>Run"].setEnabled(
+            state != SolverState.RUNNING)
+        self.actions["Solution>Pause"].setEnabled(
+            state == SolverState.RUNNING)
+        self.actions["Solution>Step"].setEnabled(
+            state == SolverState.PAUSED)
+        self.actions["Solution>Stop"].setEnabled(
+            state in (SolverState.RUNNING, SolverState.PAUSED))
+
+    def _on_solver_state(self, state):
+        self._sync_solution_actions(state)
+        self.set_status("求解器 %s" % state)
+
+    def _on_solver_iterated(self, iteration, payload):
+        if self.solver_controller is None:
+            return
+        items = self.solver_controller.curve_items()
+        if getattr(self, "plot_pane", None) is not None:
+            self.plot_pane.canvas.set_series(items[:3])
+            self.plot_pane.canvas.setVisible(bool(items))
+        res = payload.get("residual")
+        self.set_status("迭代 %d  残差 %s" % (
+            iteration, ("%.4g" % res) if res is not None else "-"))
+
+    def _on_solver_finished(self, result):
+        from solver_run import SolverState
+        state = result.get("state", SolverState.COMPLETED)
+        self._sync_solution_actions(state)
+        self.set_status("求解结束: %s" % state)
+        self._append_solver_report()
+
+    def _on_solver_failed(self, message):
+        from solver_run import SolverState
+        self._sync_solution_actions(SolverState.ERROR)
+        self.set_status("求解错误")
+        self.msg("求解错误: %s" % message, "error")
+
+    def _append_solver_report(self):
+        if self.solver_controller is None:
+            return
+        for line in self.solver_controller.report_lines():
+            self.messages.log(line, "info")
+
+    def _reset_solution_plots(self):
+        if getattr(self, "plot_pane", None) is not None:
+            self.plot_pane.canvas.set_series([])
+
+    def cmd_solution_run(self):
+        if self.solver_controller is None:
+            return
+        if not self.solver_controller.thread_alive():
+            self._reset_solution_plots()
+            if getattr(self, "plot_pane", None) is not None and self.bottom_tabs:
+                self.bottom_tabs.setCurrentWidget(self.plot_pane)
+        self.solver_controller.begin()
+
+    def cmd_solution_pause(self):
+        if self.solver_controller is not None:
+            self.solver_controller.pause()
+
+    def cmd_solution_step(self):
+        if self.solver_controller is not None:
+            self.solver_controller.step()
+
+    def cmd_solution_stop(self):
+        if self.solver_controller is not None:
+            self.solver_controller.stop()
 
     def cmd_toggle_cad(self, on=False):
         show = self.actions["Window>Cad"].isChecked()
