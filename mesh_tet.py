@@ -29,12 +29,21 @@ def _watertight_ok(vertices, faces):
 
 # ------------------------------------------------------------ 点在水密体内
 def point_in_mesh(p, vertices, faces, eps=1e-9):
-    """even-odd 射线法（沿 +x）：点 p 是否在闭合三角网格内部（含表面）。"""
+    """even-odd 射线法（沿 +x）：点 p 是否在闭合三角网格内部（含表面）。
+
+    表面判定对**所有**三角前置（任意朝向一致），且要求真实贴近三角形
+    （平面距离 + 重心坐标双重检查）——只查重心会把面外侧近处点误判在面上。
+    命中按射线参数 t 去重：恰好打在共享棱/顶点上时相邻三角会同点重复
+    计数，直接数会把奇偶翻错（轴对齐盒的对角棱是系统性命中）。
+    """
     p = np.asarray(p, float)
     V = np.asarray(vertices, float)
     F = np.asarray(faces, np.int64)
+    for a, b, c in F:
+        if _pt_on_tri(p, V[a], V[b], V[c], eps):
+            return True
     D = np.array([1.0, 0.0, 0.0])          # +x 射线
-    hits = 0
+    ts = []
     for a, b, c in F:
         A, B, C = V[a], V[b], V[c]
         E1 = B - A
@@ -42,10 +51,7 @@ def point_in_mesh(p, vertices, faces, eps=1e-9):
         P = np.cross(D, E2)
         det = float(E1 @ P)
         if abs(det) < 1e-300:
-            # 射线与三角形平行/共面：共面且 p 落在三角形则视为在面上
-            if _pt_on_tri(p, A, B, C, eps):
-                return True
-            continue
+            continue                        # 平行/共面且不在面上 → 跳过
         inv = 1.0 / det
         T = p - A
         u = float(T @ P) * inv
@@ -57,7 +63,18 @@ def point_in_mesh(p, vertices, faces, eps=1e-9):
             continue
         t = float(E2 @ Q) * inv
         if t > 1e-9:
-            hits += 1
+            ts.append(t)
+    if not ts:
+        return False
+    ts.sort()
+    diag = float(np.linalg.norm(V.max(axis=0) - V.min(axis=0)))
+    tol = eps * max(1.0, diag)              # 同点/近棱双计的合并容差
+    hits = 0
+    prev = None
+    for t in ts:
+        if prev is None or t - prev > tol:
+            hits += 1                       # 新的一簇命中（去重后计 1）
+        prev = t
     return (hits % 2) == 1
 
 
@@ -65,6 +82,12 @@ def _pt_on_tri(p, A, B, C, eps):
     v0 = C - A
     v1 = B - A
     v2 = p - A
+    n = np.cross(v0, v1)
+    ln = float(np.linalg.norm(n))
+    if ln < 1e-300:
+        return False
+    if abs(float(n @ v2)) > eps * ln:       # 离三角形平面太远（相对面积尺度）
+        return False
     d00 = float(v0 @ v0)
     d01 = float(v0 @ v1)
     d11 = float(v1 @ v1)
