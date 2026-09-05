@@ -220,6 +220,10 @@ class StarMainWindow(QMainWindow):
         self._add("Mesh>Generate", tr("Generate Surface Mesh"), self.cmd_generate_mesh, "mesh")
         self._add("Mesh>GenerateVolume", tr("Generate Volume Mesh"),
                   self.cmd_generate_volume_mesh, "mesh")
+        self._add("Mesh>GeneratePoly", tr("Generate Polyhedral Mesh"),
+                  self.cmd_generate_poly_mesh, "mesh")
+        self._add("Mesh>GenerateTrimmer", tr("Generate Trimmer Mesh"),
+                  self.cmd_generate_trimmer_mesh, "mesh")
         self._add("Mesh>Clear", tr("Clear Generated Meshes"),
                   lambda: self._kernel_nyi("清除已生成网格"), "mesh")
         self._add("Mesh>Scale", tr("Scale Mesh..."), self.cmd_scale_mesh, "mesh")
@@ -322,7 +326,8 @@ class StarMainWindow(QMainWindow):
             "Edit>Delete", "Edit>Rename", None, "Edit>Prev", "Edit>Next",
             "Edit>Search"])
         menu(tr("Mesh") + "(&M)", [
-            "Mesh>Generate", "Mesh>GenerateVolume", "Mesh>Clear", None,
+            "Mesh>Generate", "Mesh>GenerateVolume", "Mesh>GeneratePoly",
+            "Mesh>GenerateTrimmer", "Mesh>Clear", None,
             "Mesh>Scale", "Mesh>Diagnostics", "Mesh>Convert2D", "Mesh>Repair"])
         menu(tr("Scene") + "(&S)", [
             "Scene>New", "Scene>AddDisplayer", None,
@@ -1142,6 +1147,99 @@ class StarMainWindow(QMainWindow):
         msg = "体网格完成：%d 四面体 / %d 节点，负单元=%s，最大边纵横比=%.2f" % (
             len(Cn), len(Vn), vq.get("n_negative", 0), amax)
         return self.msg(msg)
+
+    def _poly_surface_input(self):
+        """poly/trimmer 共用：抽取当前水密表面 (V,F)；失败已提示并返回 None。"""
+        if self.sim is None:
+            self.msg("请先打开 .sim", "warn")
+            return None
+        try:
+            m = self.sim.extract_mesh()
+        except Exception as exc:
+            self.msg("表面抽取失败: %s" % exc, "error")
+            return None
+        vet = (m or {}).get("vertices")
+        fac = (m or {}).get("faces")
+        if vet is None or fac is None or len(vet) < 4 or len(fac) < 4:
+            self.msg("当前无可用表面网格（可先 导入>表面 一个 STL）", "warn")
+            return None
+        from occ_repair import boundary_edges
+        b, _ = boundary_edges(vet, fac)
+        if len(b):
+            self.msg("表面不水密（%d 条开放边界），先修复再生成" % len(b), "warn")
+            return None
+        return vet, fac
+
+    def cmd_generate_poly_mesh(self):
+        """生成多面体网格：tet(Delaunay) → Voronoi 对偶（N3b poly 内核）。
+
+        结果存 self._poly_mesh_result，消息条回报单元数/总体积。
+        """
+        self._poly_mesh_result = None
+        got = self._poly_surface_input()
+        if got is None:
+            return
+        vet, fac = got
+        import numpy as np
+        try:
+            diag = float(np.linalg.norm(np.asarray(vet, float).max(0)
+                                        - np.asarray(vet, float).min(0)))
+        except Exception:
+            diag = 1.0
+        try:
+            from mesh_poly import poly_mesh
+            out = poly_mesh(vet, fac, spacing=max(diag / 8.0, 1e-6))
+        except ValueError as exc:
+            return self.msg("多面体网格生成失败：%s" % exc, "error")
+        except Exception as exc:                      # 内核意外错误也不崩 GUI
+            return self.msg("多面体网格生成异常：%s" % exc, "error")
+        if not out.get("ok"):
+            return self.msg("多面体网格生成失败（无有效单元）", "error")
+        self._poly_mesh_result = {
+            "name": self.sim_path, "cells": out["poly"]["cells"],
+            "n_cells": out["n_cells"], "volume_total": out["volume_total"],
+            "quality": out["quality"], "method": out["method"]}
+        q = out["quality"]
+        return self.msg("多面体网格完成：%d 单元 / 总体积=%.4g，最小单元体积=%.3g，"
+                        "平均面数=%.1f（%s）" % (
+                            out["n_cells"], out["volume_total"],
+                            q.get("volume_min", 0.0), q.get("faces_mean", 0.0),
+                            out["method"]))
+
+    def cmd_generate_trimmer_mesh(self):
+        """生成 Trimmer 网格：八叉树加密 + 表面切割单元（N3b trimmer 内核）。
+
+        结果存 self._trimmer_mesh_result，消息条回报六面体/切割单元数与体积。
+        """
+        self._trimmer_mesh_result = None
+        got = self._poly_surface_input()
+        if got is None:
+            return
+        vet, fac = got
+        import numpy as np
+        try:
+            diag = float(np.linalg.norm(np.asarray(vet, float).max(0)
+                                        - np.asarray(vet, float).min(0)))
+        except Exception:
+            diag = 1.0
+        try:
+            from mesh_trimmer import trimmer_mesh
+            out = trimmer_mesh(vet, fac, cell_size=max(diag / 8.0, 1e-6))
+        except ValueError as exc:
+            return self.msg("Trimmer 网格生成失败：%s" % exc, "error")
+        except Exception as exc:
+            return self.msg("Trimmer 网格生成异常：%s" % exc, "error")
+        if not out.get("ok"):
+            return self.msg("Trimmer 网格生成失败（无有效单元）", "error")
+        self._trimmer_mesh_result = {
+            "name": self.sim_path, "cells": out["cells"],
+            "n_cells": out["n_cells"], "n_hex": out["n_hex"],
+            "n_cut": out["n_cut"], "volume_total": out["volume_total"],
+            "quality": out["quality"], "max_depth": out["max_depth"]}
+        return self.msg("Trimmer 网格完成：%d 单元（%d 六面体 + %d 切割），"
+                        "总体积=%.4g，最深 %d 级" % (
+                            out["n_cells"], out["n_hex"], out["n_cut"],
+                            out["volume_total"], out["max_depth"]))
 
     def _find_starccm(self):
         env = os.environ.get("STARCCM_HOME") or ""
