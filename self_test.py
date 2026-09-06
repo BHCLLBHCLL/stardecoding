@@ -1058,4 +1058,97 @@ except ValueError:
     pass
 print("P3 初始化器：常量/表格/场函数初值 + Run 前 Initialize 可用 全通过")
 
+# ---------------- P4 FVM 离散核心（梯度 Gauss/LSQ、限制器、通量格式 ----------------
+# 保持一致网格的守恒 / 线性复原验证（纯 numpy，occ / scdm 两环境皆可用）
+from fvm_core import FVM as _p4FVM, cube_tet_mesh as _p4cube
+import numpy as _p4np
+# 守恒：cube_tet_mesh 6-tet Kuhn 分解体积精确填满单位立方体
+for _p4n in (1, 2, 3):
+    _p4V, _p4C = _p4cube(nx=_p4n)
+    _p4f = _p4FVM(_p4V, _p4C)
+    _p4vsum = _p4f.volumes.sum()
+    assert abs(_p4vsum - 1.0) < 1e-9, "P4 网格体积应填满单位立方体: %.6f" % _p4vsum
+    # 拓扑不变量：面数 = 内面 + 边界面；欧拉关系 2*内面 + 边界面 = 4*单元
+    assert _p4f.n_faces == _p4f.n_interior_faces + _p4f.n_boundary_faces
+    assert _p4f.is_boundary.sum() == _p4f.n_boundary_faces
+    assert (_p4f.neighbor >= 0).sum() == _p4f.n_interior_faces
+    assert 2 * _p4f.n_interior_faces + _p4f.n_boundary_faces == 4 * _p4f.n_cells
+# 线性场复原：phi = 1 + 2x + 3y + 4z，梯度应为 (2,3,4) 到机器精度
+_p4V, _p4C = _p4cube(nx=2)
+_p4f = _p4FVM(_p4V, _p4C)
+_p4cx = _p4f.centroids
+_p4fx = _p4f.face_centroid
+_p4phi = 1.0 + 2.0 * _p4cx[:, 0] + 3.0 * _p4cx[:, 1] + 4.0 * _p4cx[:, 2]
+_p4fb = 1.0 + 2.0 * _p4fx[:, 0] + 3.0 * _p4fx[:, 1] + 4.0 * _p4fx[:, 2]
+_p4g_exact = _p4np.array([2.0, 3.0, 4.0])
+# LSQ 梯度 + 精确边界面样本 = 机器精度线性复原
+_p4g_lsq = _p4f.grad_lsq(_p4phi, boundary=_p4fb)
+assert _p4np.abs(_p4g_lsq - _p4g_exact).max() < 1e-10, \
+    "P4 LSQ 梯度应精确复原线性场: %s" % _p4g_lsq
+# 无边界时零梯度外推：不要求精确，但必须有限且非全零（法方程不奇异）
+_p4g_lsq_nb = _p4f.grad_lsq(_p4phi)
+assert _p4np.isfinite(_p4g_lsq_nb).all()
+assert _p4np.abs(_p4g_lsq_nb).max() > 1e-3
+# GG + LSQ 重构 = 机器精度线性复原；GG(naive) 在 Kuhn 网格上有 O(1) 偏差（不要求精确）
+_p4g_gg = _p4f.grad_gauss(_p4phi, boundary=_p4fb, recon=_p4g_lsq)
+assert _p4np.abs(_p4g_gg - _p4g_exact).max() < 1e-10, \
+    "P4 Green-Gauss(重构) 梯度应精确复原线性场: %s" % _p4g_gg
+_p4g_gg_naive = _p4f.grad_gauss(_p4phi, boundary=_p4fb)
+assert _p4g_gg_naive.shape == (_p4f.n_cells, 3)
+assert _p4np.isfinite(_p4g_gg_naive).all()
+# 面插值：边界面 = 精确面值；内部面反距离权重有限
+_p4phi_f = _p4f.face_value(_p4phi, boundary=_p4fb)
+assert _p4np.isfinite(_p4phi_f).all()
+_p4is_int = _p4f.neighbor >= 0
+assert _p4np.abs(_p4phi_f[~_p4is_int] - _p4fb[~_p4is_int]).max() < 1e-12
+# 限制器：线性场精确 = 1；随机场有界 [0,1]
+_p4lim = _p4f.limiter(_p4phi, _p4g_lsq)
+assert _p4np.abs(_p4lim - 1.0).max() < 1e-9, "P4 线性场限制器应为 1"
+_p4rng = _p4np.random.RandomState(0)
+_p4rnd = _p4phi + 0.3 * _p4rng.rand(_p4f.n_cells)
+_p4g_rnd = _p4f.grad_lsq(_p4rnd, boundary=_p4np.zeros(_p4f.n_faces))
+_p4lim_rnd = _p4f.limiter(_p4rnd, _p4g_rnd)
+assert (_p4lim_rnd >= 0.0).all() and (_p4lim_rnd <= 1.0).all()
+# 通量格式：扩散 常数场零通量（零梯度边界）；内部面成对抵消 → 全局守恒
+_p4flux_d0 = _p4f.diffusion_flux(_p4np.full(_p4f.n_cells, 7.0), gamma=2.5)
+assert abs(_p4flux_d0).max() < 1e-12, "P4 扩散 常数场应为零通量"
+_p4flux_d = _p4f.diffusion_flux(_p4phi)
+assert _p4np.isfinite(_p4flux_d).all()
+_p4net = _p4np.zeros(_p4f.n_cells)
+_p4np.add.at(_p4net, _p4f.owner[_p4is_int], _p4flux_d[_p4is_int])
+_p4np.add.at(_p4net, _p4f.neighbor[_p4is_int], -_p4flux_d[_p4is_int])
+assert abs(_p4net.sum()) < 1e-12, "P4 扩散通量应在迭代中全局守恒"
+assert (_p4flux_d[~_p4is_int] == 0.0).all()
+# 对流 上风：正 mdot 取 owner、负 mdot 取 neighbor；边界入流取边界值
+_p4lin2 = _p4np.arange(_p4f.n_cells, dtype=float)
+_p4mdot = _p4np.zeros(_p4f.n_faces)
+_p4mdot[_p4is_int] = 1.0
+_p4fu = _p4f.convection_flux_upwind(_p4mdot, _p4lin2)
+assert _p4np.abs(_p4fu[_p4is_int] - _p4lin2[_p4f.owner[_p4is_int]]).max() < 1e-12
+_p4mdot[_p4is_int] = -1.0
+_p4fu = _p4f.convection_flux_upwind(_p4mdot, _p4lin2)
+assert _p4np.abs(_p4fu[_p4is_int] - (-1.0) * _p4lin2[_p4f.neighbor[_p4is_int]]).max() < 1e-12
+# 对流 中心：mdot=1 时等于面插值面值
+_p4mdot_1 = _p4np.ones(_p4f.n_faces)
+_p4fc = _p4f.convection_flux_central(_p4mdot_1, _p4phi, boundary=_p4fb)
+assert _p4np.isfinite(_p4fc).all()
+assert _p4np.abs(_p4fc - _p4f.face_value(_p4phi, boundary=_p4fb)).max() < 1e-12
+# 诚实拒绝：网格/场量/梯度/通量 形状不匹配 明确报错
+for _p4bad in (
+    lambda: _p4FVM(_p4V[:3], _p4C),
+    lambda: _p4FVM(_p4V, _p4C[:, :3]),
+    lambda: _p4f.grad_gauss(_p4phi[:-1]),
+    lambda: _p4f.grad_lsq(_p4phi[:-1]),
+    lambda: _p4f.limiter(_p4phi, _p4g_lsq[:, :2]),
+    lambda: _p4f.diffusion_flux(_p4phi[:-1]),
+    lambda: _p4f.convection_flux_upwind(_p4mdot[:-1], _p4phi),
+):
+    try:
+        _p4bad()
+        raise AssertionError("P4 应拒绝非法输入")
+    except ValueError:
+        pass
+print("P4 FVM 离散核心：网格守恒/梯度(Gauss/LSQ 线性复原)/限制器/通量格式/"
+      "诚实拒绝 全通过")
+
 print("ALL CHECKS PASSED")

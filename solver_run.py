@@ -493,6 +493,159 @@ class DemoDiffusionSolver:
                 "u_mean": float(self._field.mean())}
 
 
+class FvmDiffusionSolver:
+    """P4 接入：基于 FVM 面离散核心的标量扩散求解器（P10 闭环可驱动）。
+
+    与 `DemoDiffusionSolver` 的**节点图拉普拉斯**不同，本类用 `FVM` 构建
+    **单元中心** 的面拓扑（owner/neighbor/面积/质心），以 `diffusion_flux`
+    （中心差分，γ 电导率）做面通量守恒：V·dφ/dt = -Σ_f F_f，显式前向欧拉
+    推进。残差 = ||Δφ||/||φ_old|| 单调衰减，产出与 DemoDiffusionSolver 相同的
+    监视器/报告载荷（residual/u_min/u_max/u_mean），可由 `SolverBackend`
+    状态机直接驱动（P10 求解器可调用 fvm 离散）。
+
+    单元初场经 `Initializer` 在 cell 质心求值；若初场为节点数组则自动做
+    节点→单元均值映射（cell 四顶点平均）。`set_mesh(V, C)`（AMR 运行时接入）
+    重建 FVM 并重算源单元 / 稳定时间步。
+    """
+
+    def __init__(self, vertices, cells, conductivity=1.0, source_value=1.0,
+                 source_axis=0, source_side="min", edge_source_frac=0.05,
+                 name="FvmDiffusion", initializer=None):
+        self.name = name
+        self.conductivity = float(conductivity)
+        self.source_value = float(source_value)
+        self.source_axis = int(source_axis)
+        self.source_side = source_side
+        self.edge_source_frac = float(edge_source_frac)
+        self.initializer = initializer
+        self.vertices = None
+        self.cells = None
+        self.iteration = 0
+        self._fv = None
+        self._field = None
+        self._source_mask = None
+        self._dt = None
+        self._last_residual = float("nan")
+        self.set_mesh(vertices, cells)
+
+    # -- 网格 / FVM 构建 -----------------------------------------------
+    def set_mesh(self, vertices, cells):
+        V = np.asarray(vertices, float)
+        C = np.asarray(cells, np.int64)
+        if C.ndim != 2 or C.shape[1] != 4:
+            raise ValueError("FvmDiffusionSolver 需要四面体单元(4 列)")
+        if len(V) < 4 or len(C) < 1:
+            raise ValueError("网格过小，无法扩散")
+        self.vertices = V
+        self.cells = C
+        from fvm_core import FVM
+        self._fv = FVM(V, C)
+        self._rebuild_dt()
+        self._initialize_field()
+
+    def _rebuild_dt(self):
+        """显式扩散稳定时间步：dt = 0.8 / max_cell(Σ_f γ A/d_n / V)。"""
+        fv = self._fv
+        is_int = fv.neighbor >= 0
+        nbr = np.where(is_int, fv.neighbor, 0)
+        A_over_d = fv.face_area / np.maximum(fv._d_n, 1e-12)
+        coef = np.zeros(fv.n_cells, float)
+        np.add.at(coef, fv.owner, A_over_d)
+        np.add.at(coef, nbr[is_int], A_over_d[is_int])
+        coef *= self.conductivity / np.maximum(fv.volumes, 1e-12)
+        self._dt = 0.8 / max(float(coef.max()), 1e-12)
+
+    def _source_cells(self):
+        fv = self._fv
+        ax = fv.centroids[:, self.source_axis]
+        diag = _safe_norm(self.vertices.max(axis=0) - self.vertices.min(axis=0)) or 1.0
+        tol = self.edge_source_frac * diag
+        if self.source_side == "min":
+            cut = float(ax.min())
+            return np.where(ax <= cut + tol)[0]
+        cut = float(ax.max())
+        return np.where(ax >= cut - tol)[0]
+
+    def set_initializer(self, init):
+        """P3 注入初始化器：Run 前 Initialize 用它生成初场（None 恢复默认零场+源定值）。"""
+        self.initializer = init
+
+    def _set_initial_field(self, arr):
+        """P4 写入初场：接受节点长 (n_vertices,) 或单元长 (n_cells,)；节点→单元均值映射。"""
+        arr = np.asarray(arr, float).ravel()
+        fv = self._fv
+        if arr.shape == (fv.n_cells,):
+            field = arr.copy()
+        elif arr.shape == (len(self.vertices),):
+            field = arr[self.cells].mean(axis=1)
+        else:
+            raise ValueError("P4 初场维度不匹配：%s（需节点 %d 或单元 %d）"
+                             % (arr.shape, len(self.vertices), fv.n_cells))
+        self._field = field
+        self.iteration = 0
+        self._last_residual = float("nan")
+
+    def _initialize_field(self):
+        self._source_mask = self._source_cells()
+        if self.initializer is not None and self.initializer.source_field is not None:
+            # P3：初场由初始化器生成（Run 前 Initialize 可用）；求值失败诚实抛出
+            self.initializer.apply_initial(self)
+            self.iteration = 0
+            self._last_residual = float("nan")
+            return
+        fv = self._fv
+        self._field = np.zeros(fv.n_cells, float)
+        self._field[self._source_mask] = self.source_value
+        self.iteration = 0
+        self._last_residual = float("nan")
+
+    # -- 场 / 迭代 ------------------------------------------------------
+    def field(self):
+        return self._field
+
+    def source_nodes(self):
+        return self._source_mask
+
+    def residual(self):
+        return float("nan") if self._field is None else self._last_residual
+
+    def _diffusion_step(self):
+        """一步显式扩散（FVM 面通量守恒）：返回新场（未应用到实例）。"""
+        fv = self._fv
+        phi = self._field
+        F = fv.diffusion_flux(phi, gamma=self.conductivity, boundary=None)
+        is_int = fv.neighbor >= 0
+        nbr = np.where(is_int, fv.neighbor, 0)
+        contrib = np.zeros(fv.n_cells, float)
+        np.add.at(contrib, fv.owner, -F)
+        np.add.at(contrib, nbr[is_int], F[is_int])
+        dphi = contrib / np.maximum(fv.volumes, 1e-12)
+        new = phi + self._dt * dphi
+        new[self._source_mask] = self.source_value
+        return new
+
+    def step(self):
+        """执行一步扩散，更新时间/迭代/残差；返回本步指标字典。"""
+        new = self._diffusion_step()
+        old = self._field
+        denom = max(_safe_norm(old), 1e-12)
+        res = _safe_norm(new - old) / denom
+        self._field = new
+        self.iteration += 1
+        self._last_residual = res
+        return {"residual": res,
+                "u_min": float(new.min()),
+                "u_max": float(new.max()),
+                "u_mean": float(new.mean())}
+
+    def monitor_payload(self):
+        """本步指标的监视器映射：残差 + 场统计（与 step() 返回键一致）。"""
+        return {"residual": self._last_residual,
+                "u_min": float(self._field.min()),
+                "u_max": float(self._field.max()),
+                "u_mean": float(self._field.mean())}
+
+
 # ---------------------------------------------------------------------------
 # 求解后端（状态机 + 闭环驱动器）
 # ---------------------------------------------------------------------------

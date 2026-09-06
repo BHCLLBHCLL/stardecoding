@@ -26,9 +26,9 @@ import numpy as np
 import pytest
 
 from mesh_amr import refine_tets, register_amr_hook, unregister_amr_hook
-from solver_run import (DemoDiffusionSolver, Monitor, MonitorManager,
-                        Report, SolverBackend, SolverState, StopCriterion,
-                        UpdateEvents, demo_mesh)
+from solver_run import (DemoDiffusionSolver, FvmDiffusionSolver, Monitor,
+                        MonitorManager, Report, SolverBackend, SolverState,
+                        StopCriterion, UpdateEvents, demo_mesh)
 
 
 def _wait_until(fn, timeout=1.5):
@@ -345,3 +345,82 @@ def test_run_loop_threaded_pause_step_resume_stop():
     t.join(timeout=3)
     assert not t.is_alive()
     assert holder["r"]["state"] in (SolverState.STOPPED, SolverState.COMPLETED)
+
+
+# ---------------------------------------------------------------- FvmDiffusionSolver（P4 接入）
+def test_fvm_solver_initialization_cell_centered():
+    V, C = demo_mesh(nx=3)
+    s = FvmDiffusionSolver(V, C)
+    assert s._fv.n_cells == len(C)
+    assert s.field().shape == (len(C),)
+    assert s.source_nodes().size > 0
+    assert np.isnan(s.residual())
+    assert s.cells.shape[1] == 4
+
+
+def test_fvm_solver_step_monotone_residual():
+    V, C = demo_mesh(nx=3)
+    s = FvmDiffusionSolver(V, C)
+    prev = None
+    for _ in range(10):
+        p = s.step()
+        assert set(p) == {"residual", "u_min", "u_max", "u_mean"}
+        if prev is not None:
+            assert p["residual"] <= prev * 1.05     # 单调不减（容忍数值小波动）
+        prev = p["residual"]
+    assert s.iteration == 10
+    assert s.monitor_payload()["residual"] == pytest.approx(prev)
+
+
+def test_fvm_solver_set_mesh_rebuilds():
+    V, C = demo_mesh(nx=3)
+    s = FvmDiffusionSolver(V, C)
+    n0 = len(s.cells)
+    s.set_mesh(*demo_mesh(nx=4))
+    assert len(s.cells) != n0                      # 单元数随细化改变
+    assert s.field().shape == (len(s.cells),)
+    assert s._fv.n_cells == len(s.cells)
+
+
+def test_fvm_solver_node_initializer_maps_to_cells():
+    from init_solver import Initializer
+    V, C = demo_mesh(nx=3)
+    init = Initializer(source_field="T")
+    init.add_constant("T0", 300.0)
+    init.add_function("T", "T0 + 100.0 * ${Position}[0]")
+    init.compile()
+    s = FvmDiffusionSolver(V, C, initializer=init)
+    s._initialize_field()
+    f = s.field()
+    assert f.shape == (len(C),)
+    xc = s._fv.centroids[:, 0]
+    assert np.allclose(f, 300.0 + 100.0 * xc, atol=1e-6)
+
+
+def test_fvm_solver_run_loop_via_backend():
+    V, C = demo_mesh(nx=3)
+    be = SolverBackend(FvmDiffusionSolver(V, C))
+    be.initialize()
+    r = be.run_loop(max_iter=10)
+    assert r["state"] == SolverState.COMPLETED
+    assert r["iteration"] == 10
+    assert r["residual"] is not None
+    assert len(be.curve_items()) == 4
+
+
+def test_fvm_solver_conservative_with_source():
+    # 源单元定值 + 其余单元扩散：非源单元体积加权总和 = 常数（无源无汇）
+    V, C = demo_mesh(nx=3)
+    s = FvmDiffusionSolver(V, C)
+    fv = s._fv
+    is_src = s.source_nodes()
+    mask = np.ones(fv.n_cells, bool)
+    mask[is_src] = False
+    s._initialize_field()
+    s._diffusion_step()
+    w = fv.volumes[mask]
+    assert w.sum() > 0
+    # 常数场（源单元未激活时设置为均值）→ 扩散残差为零
+    f = np.full(fv.n_cells, 2.0, float)
+    flux = fv.diffusion_flux(f, gamma=s.conductivity, boundary=None)
+    assert np.allclose(flux[~fv.is_boundary], 0.0, atol=1e-12)
