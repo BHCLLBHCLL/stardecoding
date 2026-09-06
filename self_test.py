@@ -1005,4 +1005,57 @@ for _bad in ("1 +", "nope(1)", "${Nope}", "1 / 0", "$$v[3]"):
 print("P2 场函数表达式求值器：算术/逻辑/三元/数学/矢量/张量/插值/交替值/"
       "编译预检 + 诚实拒绝 全通过")
 
+# ---------------- P3 初始化器（field function/常量/表格初值 —— Run 前 Initialize）---------
+from init_solver import Initializer as _P3Init
+from solver_run import demo_mesh as _p3mesh, DemoDiffusionSolver as _p3Solver, \
+    SolverBackend as _p3Backend, SolverState as _p3State
+import numpy as _p3np
+_p3V, _p3C = _p3mesh(nx=4)
+_p3init = _P3Init(source_field="T").add_constant("T0", 300.0) \
+    .add_table("ramp", [0.0, 1.0], {"load": [0.0, 100.0]}) \
+    .add_function("T",
+                  'T0 + interpolateTable(@Table("ramp"), "load", LINEAR, "", '
+                  '${Position}[0])').compile()
+# 常量/表格/场函数 单点求值
+assert _p3init.value("T0") == 300.0
+assert abs(_p3init.value("T", position=(0.0, 0.0, 0.0)) - 300.0) < 1e-9
+assert abs(_p3init.value("T", position=(1.0, 0.0, 0.0)) - 400.0) < 1e-9
+# 初场：对网格坐标批量求值 = T0 + 100*x
+_p3f = _p3init.field("T", _p3V)
+assert _p3f.shape == (len(_p3V),)
+assert _p3np.allclose(_p3f, 300.0 + 100.0 * _p3V[:, 0])
+# Run 前 Initialize 可用：DemoDiffusionSolver 注入 initializer，初场生效
+_p3s = _p3Solver(_p3V, _p3C, initializer=_p3init)
+_p3s._initialize_field()
+assert _p3s.field().shape == (len(_p3V),)
+assert _p3np.allclose(_p3s.field(), 300.0 + 100.0 * _p3V[:, 0])
+# SolverBackend.initialize 同样在 Run 前注入 init 并生成初场
+_p3be = _p3Backend(_p3Solver(_p3V, _p3C), initializer=_p3init)
+assert _p3be.state() == _p3State.IDLE
+assert _p3be.initialize()
+assert _p3be.state() == _p3State.INITIALIZED
+assert _p3np.allclose(_p3be.solver.field(), 300.0 + 100.0 * _p3V[:, 0])
+# 诚实拒绝：source_field 缺失 / 未知函数(求值) / 语法错误 / 初场维度不匹配
+try:
+    _P3Init(source_field="U").compile()
+    raise AssertionError("P3 应拒绝未登记 source_field")
+except ValueError:
+    pass
+try:
+    _P3Init().add_function("g", "nope(1)").compile().value("g")
+    raise AssertionError("P3 应拒绝未知函数")
+except Exception:
+    pass
+try:
+    _P3Init().add_function("h", "1 +").compile()
+    raise AssertionError("P3 应拒绝语法错误")
+except Exception:
+    pass
+try:
+    _p3Solver(_p3V, _p3C)._set_initial_field(_p3np.zeros(len(_p3V) + 1))
+    raise AssertionError("P3 应拒绝初场维度不匹配")
+except ValueError:
+    pass
+print("P3 初始化器：常量/表格/场函数初值 + Run 前 Initialize 可用 全通过")
+
 print("ALL CHECKS PASSED")

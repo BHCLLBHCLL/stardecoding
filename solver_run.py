@@ -347,13 +347,14 @@ class DemoDiffusionSolver:
 
     def __init__(self, vertices, cells, conductivity=1.0, source_value=1.0,
                  source_axis=0, source_side="min", edge_source_frac=0.05,
-                 name="DemoDiffusion"):
+                 name="DemoDiffusion", initializer=None):
         self.name = name
         self.conductivity = float(conductivity)
         self.source_value = float(source_value)
         self.source_axis = int(source_axis)
         self.source_side = source_side
         self.edge_source_frac = float(edge_source_frac)
+        self.initializer = initializer
         self.vertices = None
         self.cells = None
         self.iteration = 0
@@ -421,11 +422,32 @@ class DemoDiffusionSolver:
         cut = float(ax.max())
         return np.where(ax >= cut - tol)[0]
 
+    def set_initializer(self, init):
+        """P3 注入初始化器：Run 前 Initialize 用它生成初场（None 恢复默认零场+源定值）。"""
+        self.initializer = init
+
+    def _set_initial_field(self, arr):
+        """P3 写入初场：校验维度与节点数一致后整场替换（迭代/残差重置）。"""
+        arr = np.asarray(arr, float)
+        if arr.shape != (len(self.vertices),):
+            raise ValueError("P3 初场维度与网格节点数不匹配：%s vs %d"
+                             % (arr.shape, len(self.vertices)))
+        self._field = arr.copy()
+        self.iteration = 0
+        self._last_residual = float("nan")
+
     def _initialize_field(self):
         self._source_mask = self._source_nodes()
+        if self.initializer is not None and self.initializer.source_field is not None:
+            # P3：初场由初始化器生成（Run 前 Initialize 可用）；求值失败诚实抛出
+            self.initializer.apply_initial(self)
+            self.iteration = 0
+            self._last_residual = float("nan")
+            return
         self._field = np.zeros(len(self.vertices), float)
         self._field[self._source_mask] = self.source_value
         self.iteration = 0
+        self._last_residual = float("nan")
 
     # -- 场 / 迭代 ------------------------------------------------------
     def field(self):
@@ -488,8 +510,9 @@ class SolverBackend:
     """
 
     def __init__(self, solver=None, stop_criteria=None, monitors=None,
-                 events=None):
+                 events=None, initializer=None):
         self.solver = solver
+        self.initializer = initializer
         self.monitors = monitors or MonitorManager()
         self.events = events or UpdateEvents()
         self.stop_criteria = list(stop_criteria) if stop_criteria else []
@@ -530,6 +553,8 @@ class SolverBackend:
             if self._state not in (SolverState.IDLE, SolverState.INITIALIZED,
                                    SolverState.COMPLETED, SolverState.STOPPED):
                 return False
+            if self.initializer is not None and hasattr(self.solver, "set_initializer"):
+                self.solver.set_initializer(self.initializer)
             try:
                 self.solver._initialize_field()
             except Exception:
@@ -613,6 +638,8 @@ class SolverBackend:
         每次迭代检查状态标志 —— RUNNING 步进，PAUSED 按 step_requested 单步或
         睡眠等待，STOPPED/COMPLETED/ERROR 退出。max_iter 作为运行时附加停止准则。
         """
+        if self.initializer is not None and hasattr(self.solver, "set_initializer"):
+            self.solver.set_initializer(self.initializer)
         self.solver._initialize_field()
         self.monitors.clear()
         self._iteration = 0
