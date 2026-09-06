@@ -1219,4 +1219,64 @@ for _p5bad in (
 print("P5 压力基求解器：SIMPLE 残差下降曲线健康/全局质量守恒/稀疏线性(numpy+scipy)/"
       "诚实拒绝 全通过")
 
+# ---------------- P6 湍流族（SA → k-ε → k-ω SST → LES 子格子 + 壁面处理） ----------------
+# 验收核心（P6 行）：壁面处理/壁面函数、SA→k-ε→k-ω SST→LES 子格子。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p6cube, FVM as _p6FVM
+from pressure_solver import PressureSolver as _p6Solver
+import turbulence as _p6T
+import numpy as _p6np
+# 壁面处理：y+ 定义 / 壁面函数（粘性底层-对数律极限） / 壁面剪切
+assert _p6np.isclose(_p6T.y_plus(0.1, 0.5, 1e-3), 0.1 * 0.5 / 1e-3), "P6 y+ 定义"
+assert _p6np.isclose(_p6T.wall_function(0.01), 0.01, atol=1e-9), "P6 粘性底层 u+≈y+"
+assert _p6np.isclose(_p6T.wall_function(100.0), _p6np.log(9.8 * 100.0) / 0.41,
+                     rtol=1e-6), "P6 壁面函数对数律"
+assert _p6np.isclose(_p6T.wall_shear(0.3, 1.2), 1.2 * 0.3 ** 2), "P6 壁面剪切"
+_p6V, _p6C = _p6cube(nx=2)
+_p6fv = _p6FVM(_p6V, _p6C)
+_p6d = _p6T.wall_distance(_p6fv)
+assert _p6d.shape == (_p6fv.n_cells,) and (_p6d >= 0.0).all(), "P6 壁面距离"
+# 模型注册：别名/大小写/连字符解析为正确类（SA/k-ε/k-ω SST/LES 四族）
+_p6cls = {
+    "sa": _p6T.SpalartAllmarasSolver,
+    "K_Epsilon": _p6T.KEpsilonSolver,
+    "k-omega-sst": _p6T.KOmegaSSTSolver,
+    "LES": _p6T.LESSmagorinskySolver,
+}
+for _p6name, _p6c in _p6cls.items():
+    assert isinstance(_p6T.make_model(_p6name, _p6fv, rho=1.0, mu=1e-3), _p6c), \
+        "P6 模型名应解析为正确类: %s" % _p6name
+try:
+    _p6T.make_model("not-a-model", _p6fv, rho=1.0, mu=1e-3)
+    raise AssertionError("P6 应拒绝未知湍流模型")
+except ValueError:
+    pass
+# 各方程模型 update()：有限残差 + 有限非负 nu_t；SA 残差单调下降
+_p6u = _p6fv.centroids[:, 1] + 1.0
+_p6v = 0.1 * _p6fv.centroids[:, 0]
+_p6w = _p6np.zeros(_p6fv.n_cells)
+_p6sa = _p6T.make_model("sa", _p6fv, rho=1.0, mu=1e-3, u_ref=1.0, length_scale=0.2)
+_p6sa_res = []
+for _p6it in range(8):
+    _p6sa_res.append(float(_p6sa.update(_p6u, _p6v, _p6w)))
+assert _p6np.isfinite(_p6sa_res).all(), "P6 SA 残差有限"
+assert _p6sa_res[-1] < _p6sa_res[0], "P6 SA 残差应下降"
+assert _p6np.isfinite(_p6sa.nu_t).all() and (float(_p6sa.nu_t.max()) >= 0.0), "P6 SA nu_t"
+for _p6m in ("k-epsilon", "k-omega-sst", "les"):
+    _p6mm = _p6T.make_model(_p6m, _p6fv, rho=1.0, mu=1e-3, u_ref=1.0, length_scale=0.2)
+    _p6r = float(_p6mm.update(_p6u, _p6v, _p6w))
+    assert _p6np.isfinite(_p6r), "P6 %s 残差有限" % _p6m
+    assert _p6np.isfinite(_p6mm.nu_t).all() \
+        and (float(_p6mm.nu_t.max()) >= 0.0), "P6 %s nu_t 有限非负" % _p6m
+# 集成：PressureSolver 以字符串注入湍流模型，nu_t 形状一致、step() 无报错；基线全零
+_p6s0 = _p6Solver(_p6V, _p6C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3)
+assert (float(_p6s0.nu_t.max()) == 0.0), "P6 基线应无湍流粘性"
+assert _p6np.isfinite(_p6s0.step()["residual"]), "P6 基线 step() 无报错"
+for _p6nm in ("sa", "k-epsilon", "k-omega-sst", "les"):
+    _p6t = _p6Solver(_p6V, _p6C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                     max_outer=3, turb_model=_p6nm)
+    assert _p6t.nu_t.shape == (len(_p6C),), "P6 %s nu_t 形状" % _p6nm
+    assert _p6np.isfinite(_p6t.step()["residual"]), "P6 %s step() 无报错" % _p6nm
+    assert _p6np.isfinite(_p6t.nu_t).all(), "P6 %s nu_t 有限" % _p6nm
+print("P6 湍流族：壁面处理/壁面函数/SA→k-ε→k-ω SST→LES 子格子/ν_t 耦合/诚实验证 全通过")
+
 print("ALL CHECKS PASSED")

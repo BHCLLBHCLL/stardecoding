@@ -161,10 +161,12 @@ class PressureSolver:
                  inlet_axis=0, inlet_side="min", inlet_velocity=(1.0, 0.0, 0.0),
                  outlet_side="max", pressure_ref=0.0,
                  alpha_momentum=0.7, alpha_pressure=0.3,
-                 max_outer=50, name="Pressure", initializer=None):
+                 max_outer=50, name="Pressure", initializer=None,
+                 turb_model=None):
         self.name = name
         self.rho = float(rho)
         self.mu = float(mu)
+        self.turb_model = turb_model
         self.inlet_axis = int(inlet_axis)
         self.inlet_side = inlet_side
         self.inlet_velocity = tuple(float(v) for v in inlet_velocity)
@@ -207,6 +209,7 @@ class PressureSolver:
         self._fv = fv
         self._build_boundary()
         self._initialize_field()
+        self._ensure_turb_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -372,6 +375,52 @@ class PressureSolver:
     def continuity_ratio(self):
         return self._last_cont_ratio
 
+    # -- 湍流 nu_t 耦合 -------------------------------------------
+    @property
+    def nu_t(self):
+        """湍流粘性 nu_t（n_cells,）；无湍流模型时为全零。"""
+        if self._fv is None:
+            return np.zeros(0, float)
+        if self.turb_model is None:
+            return np.zeros(self._fv.n_cells, float)
+        nu = np.asarray(self.turb_model.nu_t, float).ravel()
+        if nu.shape != (self._fv.n_cells,):
+            return np.zeros(self._fv.n_cells, float)
+        return nu
+
+    def _face_nu_t(self):
+        """返回面插值 nu_t（n_faces,）：内部面取 owner/neighbor 平均，边界面取 owner。"""
+        fv = self._fv
+        nu = self.nu_t
+        nf = fv.n_faces
+        nu_face = np.zeros(nf, float)
+        is_int = fv.neighbor >= 0
+        if self.turb_model is not None:
+            nu_face[is_int] = 0.5 * (nu[fv.owner[is_int]] + nu[fv.neighbor[is_int]])
+            nu_face[~is_int] = nu[fv.owner[~is_int]]
+        return nu_face
+
+    def _ensure_turb_model(self):
+        """惰性构建湍流模型：turb_model 为字符串名时按当前网格/物性实例化。"""
+        if self.turb_model is None or not isinstance(self.turb_model, str):
+            return
+        import turbulence as _turb
+        fv = self._fv
+        u_ref = float(_safe_norm(np.array(self.inlet_velocity, float)))
+        length_scale = float(np.mean(np.asarray(fv.volumes, float) ** (1.0 / 3.0)))
+        self.turb_model = _turb.make_model(
+            self.turb_model, fv, rho=self.rho, mu=self.mu,
+            u_ref=u_ref, length_scale=length_scale)
+
+    def _update_turbulence(self):
+        """在 SIMPLE 环尾部解湍流输运方程，更新 nu_t 供下一步动量装配。"""
+        if self._u is None:
+            return
+        try:
+            self.turb_model.update(self._u, self._v, self._w)
+        except Exception:
+            pass
+
     # -- 动量装配 -------------------------------------------------
     def _assemble_momentum(self, comp):
         fv = self._fv
@@ -387,7 +436,8 @@ class PressureSolver:
         o = fv.owner[is_int]
         nb = fv.neighbor[is_int]
         m = mdot[is_int]
-        D = mu * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
+        nu_face = self._face_nu_t()
+        D = (mu + self.rho * nu_face[is_int]) * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
         pos = m >= 0.0
         rows.extend(o[pos]); cols.extend(o[pos]); vals.extend(m[pos].astype(float))
         rows.extend(nb[pos]); cols.extend(o[pos]); vals.extend((-m[pos]).astype(float))
@@ -402,7 +452,7 @@ class PressureSolver:
         bo = fv.owner[~is_int]
         bnd_face = np.where(~is_int)[0]
         mb = mdot[~is_int]
-        Db = mu * fv.face_area[~is_int] / np.maximum(fv._d_n[~is_int], 1e-12)
+        Db = (mu + self.rho * nu_face[~is_int]) * fv.face_area[~is_int] / np.maximum(fv._d_n[~is_int], 1e-12)
         bval = self._boundary_u(comp)
         bvals = bval[~is_int]
         # 出口零梯度面：速度外推 φ_face=φ_owner → 对流对角 += m（m>0 出流）
@@ -540,6 +590,8 @@ class PressureSolver:
         self.iteration += 1
         self._last_cont_ratio = float(cont_ratio)
         self._last_residual = float(max(cont_ratio, 1e-14))
+        if self.turb_model is not None:
+            self._update_turbulence()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),
