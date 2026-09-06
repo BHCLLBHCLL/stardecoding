@@ -162,11 +162,17 @@ class PressureSolver:
                  outlet_side="max", pressure_ref=0.0,
                  alpha_momentum=0.7, alpha_pressure=0.3,
                  max_outer=50, name="Pressure", initializer=None,
-                 turb_model=None):
+                 turb_model=None, energy_model=None, inlet_temp=None,
+                 beta=0.0, gravity=(0.0, 0.0, -9.81), buoy_ref_temp=300.0):
         self.name = name
         self.rho = float(rho)
         self.mu = float(mu)
         self.turb_model = turb_model
+        self.energy_model = energy_model
+        self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
+        self.beta = float(beta)
+        self.gravity = tuple(float(g) for g in gravity)
+        self.buoy_ref_temp = float(buoy_ref_temp)
         self.inlet_axis = int(inlet_axis)
         self.inlet_side = inlet_side
         self.inlet_velocity = tuple(float(v) for v in inlet_velocity)
@@ -210,6 +216,7 @@ class PressureSolver:
         self._build_boundary()
         self._initialize_field()
         self._ensure_turb_model()
+        self._ensure_energy_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -421,6 +428,33 @@ class PressureSolver:
         except Exception:
             pass
 
+    # -- 能量 / 传热耦合 -------------------------------------------
+    def _ensure_energy_model(self):
+        """惰性构建能量模型：energy_model 为字符串名时按当前网格/物性实例化。"""
+        if self.energy_model is None or not isinstance(self.energy_model, str):
+            return
+        import energy as _eng
+        fv = self._fv
+        kwargs = {}
+        if self.inlet_temp is not None:
+            kwargs["inlet_temp"] = self.inlet_temp
+        if self.beta > 0.0:
+            kwargs["wall_btype"] = _eng.BND_FIXED_TEMP
+        self.energy_model = _eng.make_energy(fv, model=self.energy_model, **kwargs)
+
+    def _update_energy(self):
+        """在 SIMPLE 环尾部解能量方程，更新温度场供浮力动量源使用。"""
+        if self._u is None:
+            return
+        if self.energy_model is None:
+            return
+        try:
+            mdot = getattr(self, "_mdot", None)
+            self.energy_model.update(
+                self._u, self._v, self._w, mdot=mdot, nu_t=self.nu_t)
+        except Exception:
+            pass
+
     # -- 动量装配 -------------------------------------------------
     def _assemble_momentum(self, comp):
         fv = self._fv
@@ -479,6 +513,13 @@ class PressureSolver:
         # 压力梯度源：-V ∇p
         grad_p = self._grad_pressure(self._p)
         rhs += -fv.volumes * grad_p[:, comp]
+        # Boussinesq 浮力源：S = -ρ₀ β (T - T₀) g · V（仅 beta>0 且启用能量模型）
+        if self.beta > 0.0 and self.energy_model is not None:
+            T = np.asarray(getattr(self.energy_model, "T", None), float)
+            if T is not None and T.shape == (fv.n_cells,):
+                rhs += (-self.rho * self.beta
+                        * (T - self.buoy_ref_temp) * self.gravity[comp]
+                        * fv.volumes)
         # 速度欠松弛：aP = ap/α；RHS 补偿 (1-α)/α * ap * φ_old
         rows = np.array(rows, np.int64)
         cols = np.array(cols, np.int64)
@@ -592,6 +633,7 @@ class PressureSolver:
         self._last_residual = float(max(cont_ratio, 1e-14))
         if self.turb_model is not None:
             self._update_turbulence()
+        self._update_energy()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),

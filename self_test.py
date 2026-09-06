@@ -1279,4 +1279,105 @@ for _p6nm in ("sa", "k-epsilon", "k-omega-sst", "les"):
     assert _p6np.isfinite(_p6t.nu_t).all(), "P6 %s nu_t 有限" % _p6nm
 print("P6 湍流族：壁面处理/壁面函数/SA→k-ε→k-ω SST→LES 子格子/ν_t 耦合/诚实验证 全通过")
 
+# ---------------- P7 能量/传热（对流扩散+共轭）+ 简化辐射谱系 ----------------
+# 验收核心（P7 行）：能量/传热（对流扩散+共轭）+ 简化辐射谱系。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p7cube, FVM as _p7FVM
+from pressure_solver import PressureSolver as _p7Solver
+import energy as _p7E
+import numpy as _p7np
+# 常量 / 边界类型：互异枚举 + Stefan-Boltzmann
+assert _p7np.isclose(_p7E.SIGMA_STEFAN, 5.67e-8), "P7 Stefan-Boltzmann 常数"
+assert len({_p7E.BND_ADIABATIC, _p7E.BND_FIXED_TEMP, _p7E.BND_FIXED_FLUX,
+            _p7E.BND_ROBIN, _p7E.BND_RADIATION}) == 5, "P7 传热边界类型互异"
+# 装配 / 求解：形状 + 有界性（定温 Dirichlet 锚定，避免奇异）
+_p7V, _p7C = _p7cube(nx=2)
+_p7fv = _p7FVM(_p7V, _p7C)
+_p7n = _p7fv.n_cells
+_p7mdot = _p7E.volume_to_mass(_p7fv, _p7np.full(_p7n, 1.0),
+                              _p7np.zeros(_p7n), _p7np.zeros(_p7n),
+                              _p7np.full(_p7n, _p7E.DEFAULT_RHO))
+_p7rows, _p7cols, _p7vals, _p7rhs, _p7ap = _p7E.assemble_energy_transport(
+    _p7fv, _p7mdot, _p7np.full(_p7n, _p7E.DEFAULT_KAPPA),
+    _p7np.full(_p7n, _p7E.DEFAULT_CP), _p7np.full(_p7n, 300.0),
+    _p7np.zeros(_p7n))
+assert _p7np.isfinite(_p7vals).all() and _p7np.isfinite(_p7rhs).all(), "P7 能量装配有限"
+assert _p7rhs.shape == (_p7n,) and _p7ap.shape == (_p7n,), "P7 能量装配形状"
+# 纯导热定温锚定：落在 [300, 350]
+_p7bt = _p7np.full(_p7fv.n_faces, _p7E.BND_ADIABATIC, int)
+_p7bv = _p7np.zeros(_p7fv.n_faces, float)
+_p7in, _p7out, _p7wall, _ = _p7E.classify_thermal(_p7fv)
+_p7bt[_p7in] = _p7E.BND_FIXED_TEMP; _p7bv[_p7in] = 300.0
+_p7bt[_p7out] = _p7E.BND_FIXED_TEMP; _p7bv[_p7out] = 350.0
+_p7Tnew, _ = _p7E.solve_energy(_p7fv, _p7np.zeros(_p7fv.n_faces),
+                              _p7np.full(_p7n, 1.0), _p7np.full(_p7n, 1.0),
+                              _p7np.full(_p7n, 320.0), _p7np.zeros(_p7n),
+                              btype=_p7bt, bval=_p7bv, relax=1.0)
+assert _p7np.isfinite(_p7Tnew).all(), "P7 纯导热 T 有限"
+assert _p7Tnew.min() >= 300.0 - 1e-6 and _p7Tnew.max() <= 350.0 + 1e-6, "P7 纯导热有界"
+# 边界分类 / 辅助：全覆盖不重叠 + 四元组
+assert (_p7in.size + _p7out.size + _p7wall.size
+        == int(_p7np.sum(_p7fv.is_boundary))), "P7 边界全覆盖"
+_p7btp, _p7bvp, _p7hp, _p7ep = _p7E.thermal_btypes(
+    _p7fv, _p7in, _p7out, _p7wall, inlet_temp=310.0,
+    wall_btype=_p7E.BND_FIXED_TEMP, wall_bval=320.0)
+assert _p7np.all(_p7btp[_p7in] == _p7E.BND_FIXED_TEMP) \
+    and _p7np.allclose(_p7bvp[_p7in], 310.0), "P7 入口定温"
+assert _p7np.all(_p7btp[_p7wall] == _p7E.BND_FIXED_TEMP) \
+    and _p7np.allclose(_p7bvp[_p7wall], 320.0), "P7 壁面定温"
+# EnergySolver：对流收敛 + 定温壁加热有界
+_p7es = _p7E.EnergySolver(_p7fv, inlet_temp=300.0)
+_p7u = _p7np.full(_p7n, 1.0); _p7v = _p7np.zeros(_p7n); _p7w = _p7np.zeros(_p7n)
+_p7first = None
+for _p7i in range(60):
+    _p7r = float(_p7es.update(_p7u, _p7v, _p7w))
+    _p7first = _p7first if _p7first is not None else _p7r
+assert _p7np.isfinite(_p7es.T).all() and _p7r < _p7first, "P7 能量残差下降"
+assert _p7np.allclose(_p7es.T, 300.0, atol=1.0), "P7 对流稳态温度"
+_p7es2 = _p7E.EnergySolver(_p7fv, inlet_temp=300.0,
+                          wall_btype=_p7E.BND_FIXED_TEMP, wall_bval=350.0)
+for _p7i in range(80):
+    _p7es2.update(_p7u, _p7v, _p7w)
+assert _p7np.isfinite(_p7es2.T).all() and float(_p7es2.T.max()) > 300.0 \
+    and float(_p7es2.T.max()) <= 350.0 + 1e-3, "P7 定温壁加热有界"
+# 共轭：材料分区（固体区） + 有限温度
+_p7es3 = _p7E.EnergySolver(_p7fv, inlet_temp=300.0,
+                           wall_btype=_p7E.BND_FIXED_TEMP, wall_bval=350.0)
+_p7ph = _p7np.zeros(_p7n, int); _p7ph[_p7fv.centroids[:, 0] > 0.5] = 1
+_p7es3.set_materials(cell_phase=_p7ph, rho_s=7800.0, cp_s=500.0, kappa_s=16.0)
+assert int(_p7es3.phase.sum()) > 0 and _p7es3.phase.dtype.kind in "iu", "P7 材料分区"
+for _p7i in range(6):
+    _p7es3.update(_p7u, _p7v, _p7w)
+assert _p7np.isfinite(_p7es3.T).all(), "P7 共轭 T 有限"
+# 简化辐射：净发射 / 辐射权重 / 体源 / 线性化
+_p7rm = _p7E.RadiationModel(emissivity=0.8, tref=300.0)
+assert _p7rm.emittance(300.0) == _p7np.float64(0.8 * _p7E.SIGMA_STEFAN * 300.0 ** 4), \
+    "P7 灰体发射率"
+assert _p7rm.net_emission(400.0) > 0.0 and _p7rm.net_emission(200.0) < 0.0, "P7 净发射号"
+assert float(_p7rm.h_rad(300.0, 300.0)) > 0.0, "P7 辐射权重"
+_p7prod, _p7diss = _p7rm.linear_source()
+assert _p7prod > 0.0 and _p7diss > 0.0, "P7 线性化体源"
+# 工厂：别名/大小写解析，未知报 ValueError
+assert isinstance(_p7E.make_energy(_p7fv, "energy"), _p7E.EnergySolver), "P7 工厂 energy"
+assert isinstance(_p7E.make_energy(_p7fv, "CHT"), _p7E.ConjugateSolver), "P7 工厂 cht"
+try:
+    _p7E.make_energy(_p7fv, "nope")
+    raise AssertionError("P7 应拒绝未知能量模型")
+except ValueError:
+    pass
+# 集成：PressureSolver 字符串注入能量模型 + Boussinesq 浮力；基线无能量模型
+_p7s0 = _p7Solver(_p7V, _p7C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3)
+assert _p7s0.energy_model is None, "P7 基线应无能量模型"
+assert _p7np.isfinite(_p7s0.step()["residual"]), "P7 基线 step() 无报错"
+_p7se = _p7Solver(_p7V, _p7C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                  max_outer=3, energy_model="energy", inlet_temp=350.0,
+                  beta=1.0e-3, gravity=(0.0, 0.0, -9.81))
+assert _p7se.energy_model is not None, "P7 应构建能量模型"
+assert _p7se.energy_model.T.shape == (len(_p7C),), "P7 能量模型 T 形状"
+for _p7i in range(5):
+    _p7pe = _p7se.step()
+assert _p7np.isfinite(_p7se.energy_model.T).all(), "P7 耦合 T 有限"
+assert _p7np.isfinite(_p7se.velocity()).all() and _p7np.isfinite(_p7pe["residual"]), \
+    "P7 耦合流场/残差有限"
+print("P7 能量/传热：对流-扩散能量方程/共轭传热/简化辐射/Boussinesq 耦合 全通过")
+
 print("ALL CHECKS PASSED")
