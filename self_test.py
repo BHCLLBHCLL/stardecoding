@@ -1151,4 +1151,72 @@ for _p4bad in (
 print("P4 FVM 离散核心：网格守恒/梯度(Gauss/LSQ 线性复原)/限制器/通量格式/"
       "诚实拒绝 全通过")
 
+# ---------------- P5 压力基求解器（SIMPLE + Rhie-Chow + 稀疏线性求解） ----------------
+# 验收核心（P5 行）：残差下降曲线健康。纯 numpy（scdm 无 scipy）亦可用。
+from fvm_core import cube_tet_mesh as _p5cube
+from pressure_solver import PressureSolver as _p5Solver, solve_linear as _p5solve
+import numpy as _p5np
+# 稀疏线性求解：numpy / scipy(AMG/ILU) / auto 三路径同一精确解（M 矩阵）
+_p5n = 6
+_p5row, _p5col, _p5data = [], [], []
+for _p5i in range(_p5n):
+    _p5row.append(_p5i); _p5col.append(_p5i); _p5data.append(2.0)
+    if _p5i > 0:
+        _p5row.append(_p5i); _p5col.append(_p5i - 1); _p5data.append(-1.0)
+        _p5row.append(_p5i - 1); _p5col.append(_p5i); _p5data.append(-1.0)
+_p5b = _p5np.ones(_p5n)
+_p5ax = _p5np.zeros(_p5n)
+for _p5kind in ("numpy", "scipy", "auto"):
+    _p5x = _p5solve(_p5np.array(_p5row, _p5np.int64),
+                    _p5np.array(_p5col, _p5np.int64),
+                    _p5np.array(_p5data, float), _p5b, _p5n,
+                    tol=1e-12, maxit=8000, kind=_p5kind)
+    _p5ax[:] = 0.0
+    _p5np.add.at(_p5ax, _p5row, _p5data * _p5x[_p5col])
+    assert _p5np.sqrt(((_p5ax - _p5b) ** 2).sum()) < 1e-8, \
+        "P5 线性求解应给出精确解 (kind=%s): %s" % (_p5kind, _p5ax - _p5b)
+# RHS 维度不匹配应报 ValueError
+try:
+    _p5solve(_p5np.array(_p5row), _p5np.array(_p5col),
+             _p5np.array(_p5data), _p5np.ones(_p5n + 1), _p5n)
+    raise AssertionError("P5 线性求解应拒绝维度不匹配 RHS")
+except ValueError:
+    pass
+# SIMPLE：残差下降曲线健康（P5 验收核心）；全局质量守恒 + 内部散度趋零
+_p5V, _p5C = _p5cube(nx=2)
+_p5s = _p5Solver(_p5V, _p5C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                 alpha_momentum=0.7, alpha_pressure=0.3)
+_p5hist = []
+for _p5it in range(40):
+    _p5hist.append(float(_p5s.step()["residual"]))
+assert _p5s.iteration == 40
+assert _p5s.residual() == _p5hist[-1]
+assert _p5np.isfinite(_p5s.velocity()).all()
+assert _p5s.pressure().shape == (len(_p5C),)
+assert _p5s.mass_flux().shape == (_p5s._fv.n_faces,)
+assert _p5hist[-1] < 1e-5, "P5 残差应收敛到 <1e-5: %.2e" % _p5hist[-1]
+assert max(_p5hist[20:]) < max(_p5hist[:20]) * 0.1, \
+    "P5 残差曲线应健康下降（后半程远低于前半程）"
+assert _p5hist[-1] < _p5hist[0], "P5 终态残差应低于初值"
+# 全局守恒：边界面净通量 sum(imb)~0；出口对入口闭合；内部散度归一化范数 ~0
+_p5mdot = _p5s.mass_flux()
+_p5imb = _p5s._continuity_imbalance()
+assert abs(_p5imb.sum()) < 1e-8, "P5 边界面净通量应守恒: %.2e" % _p5imb.sum()
+assert abs(_p5mdot[_p5s._outlet_faces].sum()
+           + _p5mdot[_p5s._inlet_faces].sum()) < 1e-8, "P5 出口对入口应闭合质量通量"
+assert _p5np.sqrt((_p5imb * _p5imb).sum()) < 1e-6, \
+    "P5 内部连续性残差应趋零: %.2e" % float(_p5np.sqrt((_p5imb * _p5imb).sum()))
+# 诚实拒绝：非四面体 / 过小网格 明确报错
+for _p5bad in (
+    lambda: _p5Solver(_p5V, _p5C[:, :3]),
+    lambda: _p5Solver(_p5np.zeros((3, 3)), _p5np.zeros((0, 4), _p5np.int64)),
+):
+    try:
+        _p5bad()
+        raise AssertionError("P5 应拒绝非法网格输入")
+    except ValueError:
+        pass
+print("P5 压力基求解器：SIMPLE 残差下降曲线健康/全局质量守恒/稀疏线性(numpy+scipy)/"
+      "诚实拒绝 全通过")
+
 print("ALL CHECKS PASSED")
