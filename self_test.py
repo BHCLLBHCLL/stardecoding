@@ -1380,4 +1380,73 @@ assert _p7np.isfinite(_p7se.velocity()).all() and _p7np.isfinite(_p7pe["residual
     "P7 耦合流场/残差有限"
 print("P7 能量/传热：对流-扩散能量方程/共轭传热/简化辐射/Boussinesq 耦合 全通过")
 
+# ---------------- P8 多相 VOF（几何重构）→ Mixture → DPM 粒子轨 ----------------
+# 验收核心（P8 行）：多相 VOF（几何重构）→ Mixture → DPM 粒子轨。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p8cube, FVM as _p8FVM
+from pressure_solver import PressureSolver as _p8Solver
+import vof as _p8V
+import numpy as _p8np
+# 常量 / 两相物性混合：水-空气密度比 (~850×)，混合场单调落在两相之间
+assert _p8np.isclose(_p8V.DEFAULT_RHO1, 998.0), "P8 相 1 密度"
+assert _p8np.isclose(_p8V.DEFAULT_RHO2, 1.18), "P8 相 2 密度"
+assert _p8np.isclose(_p8V.DEFAULT_SIGMA, 0.072), "P8 表面张力"
+assert _p8np.isclose(_p8V.two_phase_rho(_p8np.array([1.0])), 998.0), "P8 混合密度 α=1"
+assert _p8np.isclose(_p8V.two_phase_rho(_p8np.array([0.0])), 1.18), "P8 混合密度 α=0"
+assert _p8V.EPS > 0.0 and _p8V.BISECT_MAX >= 1, "P8 数值常量"
+# 几何重构（PLIC）：法向由 ∇α 确定 + 体积截断满足目标 α，逐单元一致
+_p8Vc, _p8Cc = _p8cube(nx=2)
+_p8fv = _p8FVM(_p8Vc, _p8Cc)
+_p8n = _p8fv.n_cells
+_p8alpha = _p8np.clip(_p8fv.centroids[:, 0], 0.0, 1.0)
+_p8normals, _p8offsets = _p8V.plic_reconstruct(_p8fv, _p8alpha, axis=0)
+assert _p8normals.shape == (_p8n, 3) and _p8offsets.shape == (_p8n,), "P8 PLIC 形状"
+assert _p8np.isfinite(_p8normals).all() and _p8np.isfinite(_p8offsets).all(), "P8 PLIC 有限"
+for _p8i in range(_p8n):
+    _p8vol = _p8V.keep_phase1_volume(_p8fv, _p8i, _p8normals[_p8i], _p8offsets[_p8i])
+    _p8tgt = float(_p8np.clip(_p8alpha[_p8i], 0.0, 1.0)) * _p8fv.volumes[_p8i]
+    assert abs(_p8vol - _p8tgt) <= 1e-5 * max(_p8fv.volumes[_p8i], 1e-12), "P8 几何体积一致"
+# VofSolver：初始全 α=0（空气）、update() 注入入口 α 增长、混合物性有界
+_p8vs = _p8V.VofSolver(_p8fv, rho1=998.0, rho2=1.18, mu1=1.0e-3, mu2=1.8e-5,
+                       inlet_alpha=1.0)
+assert _p8np.all(_p8vs.alpha == 0.0), "P8 VOF 初始 α"
+assert _p8np.allclose(_p8vs.rho, 1.18), "P8 VOF 初始混合密度"
+_p8u = _p8np.full(_p8n, 1.0); _p8v = _p8np.zeros(_p8n); _p8w = _p8np.zeros(_p8n)
+_p8r0 = float(_p8vs.update(_p8u, _p8v, _p8w))
+assert _p8np.isfinite(_p8r0), "P8 VOF update 残差有限"
+assert _p8vs.iteration == 1 and _p8vs.phase1_volume > 0.0, "P8 VOF 注入 α 增长"
+assert _p8vs.alpha.min() >= 0.0 and _p8vs.alpha.max() <= 1.0, "P8 VOF α 有界"
+assert _p8vs.rho.max() <= 998.0 + 1e-9 and _p8vs.rho.min() >= 1.18 - 1e-9, "P8 混合密度有界"
+# 表面张力（CSF）：均匀 α 场下界面曲率 0 → 体积力 ≈ 0
+_p8sf = _p8V.surface_tension_force(_p8fv, _p8np.full(_p8n, 0.5))
+assert _p8sf.shape == (_p8n, 3) and _p8np.isfinite(_p8sf).all(), "P8 CSF 形状有限"
+assert _p8np.allclose(_p8sf, 0.0, atol=1e-9), "P8 均匀 α CSF≈0"
+# 工厂：别名/大小写解析，未知报 ValueError
+assert isinstance(_p8V.make_vof(_p8fv, "vof"), _p8V.VofSolver), "P8 工厂 vof"
+assert isinstance(_p8V.make_vof(_p8fv, "volume_of_fluid"), _p8V.VofSolver), "P8 工厂 alias"
+try:
+    _p8V.make_vof(_p8fv, "nope")
+    raise AssertionError("P8 应拒绝未知 VOF 模型")
+except ValueError:
+    pass
+# 集成：PressureSolver 字符串注入 VOF（单流体恒密度面物性）+ step() 稳定、α 增长
+_p8s0 = _p8Solver(_p8Vc, _p8Cc, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3)
+assert _p8s0.vof_model is None, "P8 基线应无 VOF 模型"
+assert _p8np.isfinite(_p8s0.step()["residual"]), "P8 基线 step() 无报错"
+_p8sv = _p8Solver(_p8Vc, _p8Cc, mu=1.8e-5, rho=1.18,
+                  inlet_velocity=(1.0, 0.0, 0.0), max_outer=3,
+                  vof_model="vof", inlet_alpha=1.0)
+assert _p8sv.vof_model is not None, "P8 应构建 VOF 模型"
+assert _p8np.allclose(_p8sv._face_rho(), 1.18), "P8 单流体恒密度面物性"
+assert _p8np.allclose(_p8sv._face_mu(), 1.8e-5), "P8 单流体恒粘度面物性"
+for _p8i in range(5):
+    _p8pv = _p8sv.step()
+assert _p8np.isfinite(_p8sv.velocity()).all() and _p8np.isfinite(_p8pv["residual"]), \
+    "P8 耦合流场/残差有限"
+assert _p8sv.vof_model.alpha.min() >= 0.0 and _p8sv.vof_model.alpha.max() <= 1.0, \
+    "P8 耦合 α 有界"
+assert _p8sv.vof_model.phase1_volume > 0.0, "P8 耦合 α 增长"
+_p8m = _p8sv.monitor_payload()
+assert {"alpha_min", "alpha_max", "phase1_volume"} <= set(_p8m), "P8 monitor 含 α 键"
+print("P8 多相 VOF：α 守恒输运/PLIC 几何重构/两相物性混合/CSF 表面张力/单流体耦合 全通过")
+
 print("ALL CHECKS PASSED")

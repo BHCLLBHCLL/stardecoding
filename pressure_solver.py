@@ -163,10 +163,13 @@ class PressureSolver:
                  alpha_momentum=0.7, alpha_pressure=0.3,
                  max_outer=50, name="Pressure", initializer=None,
                  turb_model=None, energy_model=None, inlet_temp=None,
-                 beta=0.0, gravity=(0.0, 0.0, -9.81), buoy_ref_temp=300.0):
+                 beta=0.0, gravity=(0.0, 0.0, -9.81), buoy_ref_temp=300.0,
+                 vof_model=None, inlet_alpha=1.0):
         self.name = name
-        self.rho = float(rho)
-        self.mu = float(mu)
+        self._rho0 = float(rho)
+        self._mu0 = float(mu)
+        self.vof_model = vof_model
+        self.inlet_alpha = float(np.clip(inlet_alpha, 0.0, 1.0))
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -217,6 +220,7 @@ class PressureSolver:
         self._initialize_field()
         self._ensure_turb_model()
         self._ensure_energy_model()
+        self._ensure_vof_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -254,7 +258,7 @@ class PressureSolver:
         n = fv.face_normal[self._inlet_faces]
         A = fv.face_area[self._inlet_faces]
         un = vel[0] * n[:, 0] + vel[1] * n[:, 1] + vel[2] * n[:, 2]
-        return max(float(self.rho * np.sum(np.abs(un) * A)), 1e-12)
+        return max(float(np.sum(self._face_rho()[self._inlet_faces] * np.abs(un) * A)), 1e-12)
 
     # -- 几何 / FVM 便利 -------------------------------------------
     @property
@@ -314,7 +318,7 @@ class PressureSolver:
         wf = fv.face_value(self._w, boundary=self._boundary_u(2))
         un = uf * fv.face_normal[:, 0] + vf * fv.face_normal[:, 1] \
             + wf * fv.face_normal[:, 2]
-        self._mdot = self.rho * un * fv.face_area
+        self._mdot = self._face_rho() * un * fv.face_area
         self._fix_boundary_mdot()
 
     def _fix_boundary_mdot(self):
@@ -325,7 +329,7 @@ class PressureSolver:
             n = fv.face_normal[self._inlet_faces]
             A = fv.face_area[self._inlet_faces]
             un = vel[0] * n[:, 0] + vel[1] * n[:, 1] + vel[2] * n[:, 2]
-            self._mdot[self._inlet_faces] = self.rho * un * A
+            self._mdot[self._inlet_faces] = self._face_rho()[self._inlet_faces] * un * A
         if len(self._wall_faces):
             self._mdot[self._wall_faces] = 0.0
         # 出口零梯度外推：由修正后单元速度重构（保证全局质量守恒一致）
@@ -335,7 +339,7 @@ class PressureSolver:
             A = fv.face_area[self._outlet_faces]
             un = (self._u[oo] * n[:, 0] + self._v[oo] * n[:, 1]
                   + self._w[oo] * n[:, 2])
-            self._mdot[self._outlet_faces] = self.rho * un * A
+            self._mdot[self._outlet_faces] = self._face_rho()[self._outlet_faces] * un * A
             # 全局质量守恒对标：出口面为压力 Neumann（∂p'/∂n=0），不进泊松矩阵，
             # 其通量仅由单元速度外推，可能与入口不闭合 → 统一的出口单元残差平台。
             # 对出口通量做全局缩放，使 sum(mdot)=0（入口固定、壁面=0，出口为唯一可调边界面）。
@@ -382,6 +386,64 @@ class PressureSolver:
     def continuity_ratio(self):
         return self._last_cont_ratio
 
+    # -- 物性：单相标量 / VOF 可变密度 ----------------------------
+    @property
+    def rho(self):
+        """密度：无 VOF 时为标量 _rho0；有 VOF 时为逐单元混合密度场。"""
+        if self.vof_model is not None and not isinstance(self.vof_model, str):
+            return self.vof_model.rho
+        return self._rho0
+
+    @property
+    def mu(self):
+        """动力粘度：无 VOF 时为标量 _mu0；有 VOF 时为逐单元混合粘度场。"""
+        if self.vof_model is not None and not isinstance(self.vof_model, str):
+            return self.vof_model.mu
+        return self._mu0
+
+    @property
+    def rho_cell(self):
+        """逐单元密度场（n_cells,）；单相时返回满标量的数组。"""
+        r = self.rho
+        if np.isscalar(r):
+            return np.full(self._fv.n_cells, float(r), float)
+        return np.asarray(r, float).ravel()
+
+    def _face_rho(self):
+        """面密度（n_faces,）：恒为参考密度 _rho0。
+
+        单流体 VOF：压力/动量矩阵采用单相参考密度以保持 SIMPLE 稳定，密度差通过
+        动量 RHS 的显式重力体源进入（见 `_assemble_momentum`），故此处不做可变密度。
+        """
+        return np.full(self._fv.n_faces, float(self._rho0), float)
+
+    def _face_mu(self):
+        """面动力粘度（n_faces,）：恒为参考粘度 _mu0（动机同 `_face_rho`）。"""
+        return np.full(self._fv.n_faces, float(self._mu0), float)
+
+    # -- 多相 VOF 耦合 --------------------------------------------
+    def _ensure_vof_model(self):
+        """惰性构建 VOF 模型：vof_model 为字符串名时按当前网格/边界实例化。"""
+        if self.vof_model is None or not isinstance(self.vof_model, str):
+            return
+        import vof as _vof
+        fv = self._fv
+        kwargs = dict(
+            flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+            outlet_side=self.outlet_side, inlet_alpha=self.inlet_alpha)
+        self.vof_model = _vof.make_vof(fv, model=self.vof_model, **kwargs)
+
+    def _update_vof(self):
+        """在 SIMPLE 环尾部用当前速度场推进一次 α 输运，更新 PLIC 界面与混合密度。"""
+        if self._u is None:
+            return
+        if self.vof_model is None or isinstance(self.vof_model, str):
+            return
+        try:
+            self.vof_model.update(self._u, self._v, self._w)
+        except Exception:
+            pass
+
     # -- 湍流 nu_t 耦合 -------------------------------------------
     @property
     def nu_t(self):
@@ -416,7 +478,7 @@ class PressureSolver:
         u_ref = float(_safe_norm(np.array(self.inlet_velocity, float)))
         length_scale = float(np.mean(np.asarray(fv.volumes, float) ** (1.0 / 3.0)))
         self.turb_model = _turb.make_model(
-            self.turb_model, fv, rho=self.rho, mu=self.mu,
+            self.turb_model, fv, rho=self._rho0, mu=self._mu0,
             u_ref=u_ref, length_scale=length_scale)
 
     def _update_turbulence(self):
@@ -459,7 +521,8 @@ class PressureSolver:
     def _assemble_momentum(self, comp):
         fv = self._fv
         mdot = self._mdot
-        mu = self.mu
+        mu_face = self._face_mu()
+        rho_face = self._face_rho()
         n = fv.n_cells
         rows = []
         cols = []
@@ -471,7 +534,7 @@ class PressureSolver:
         nb = fv.neighbor[is_int]
         m = mdot[is_int]
         nu_face = self._face_nu_t()
-        D = (mu + self.rho * nu_face[is_int]) * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
+        D = (mu_face[is_int] + rho_face[is_int] * nu_face[is_int]) * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
         pos = m >= 0.0
         rows.extend(o[pos]); cols.extend(o[pos]); vals.extend(m[pos].astype(float))
         rows.extend(nb[pos]); cols.extend(o[pos]); vals.extend((-m[pos]).astype(float))
@@ -486,7 +549,7 @@ class PressureSolver:
         bo = fv.owner[~is_int]
         bnd_face = np.where(~is_int)[0]
         mb = mdot[~is_int]
-        Db = (mu + self.rho * nu_face[~is_int]) * fv.face_area[~is_int] / np.maximum(fv._d_n[~is_int], 1e-12)
+        Db = (mu_face[~is_int] + rho_face[~is_int] * nu_face[~is_int]) * fv.face_area[~is_int] / np.maximum(fv._d_n[~is_int], 1e-12)
         bval = self._boundary_u(comp)
         bvals = bval[~is_int]
         # 出口零梯度面：速度外推 φ_face=φ_owner → 对流对角 += m（m>0 出流）
@@ -520,6 +583,9 @@ class PressureSolver:
                 rhs += (-self.rho * self.beta
                         * (T - self.buoy_ref_temp) * self.gravity[comp]
                         * fv.volumes)
+        # VOF 重力耦合暂不启用显式密度差体源：水/气密度比 (~850×) 下该源项过大，
+        # 且未在压力方程中以 p_rgh（剔除静水压）同步处理，导致 SIMPLE 发散。
+        # 单流体界面捕捉保持稳定即可；浮力/静水耦合留给自由面算例用 p_rgh 形式完善。
         # 速度欠松弛：aP = ap/α；RHS 补偿 (1-α)/α * ap * φ_old
         rows = np.array(rows, np.int64)
         cols = np.array(cols, np.int64)
@@ -574,7 +640,7 @@ class PressureSolver:
         dface = 0.5 * (d_cell[o] + d_cell[nb])
         A = fv.face_area[is_int]
         dn = np.maximum(fv._d_n[is_int], 1e-12)
-        gamma = self.rho * A * dface / dn
+        gamma = self._face_rho()[is_int] * A * dface / dn
         rows = np.concatenate([o, nb, o, nb])
         cols = np.concatenate([o, nb, nb, o])
         vals = np.concatenate([gamma, gamma, -gamma, -gamma])
@@ -634,6 +700,7 @@ class PressureSolver:
         if self.turb_model is not None:
             self._update_turbulence()
         self._update_energy()
+        self._update_vof()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),
@@ -654,7 +721,7 @@ class PressureSolver:
         wf = fv.face_value(self._w, boundary=self._boundary_u(2))
         un = uf * fv.face_normal[:, 0] + vf * fv.face_normal[:, 1] \
             + wf * fv.face_normal[:, 2]
-        mdot = self.rho * un * fv.face_area
+        mdot = self._face_rho() * un * fv.face_area
         # Rhie-Chow 动量插值（消除棋盘压力）：面通量 = 插值速度通量 +
         #   d_f [ (∇p)_interp·n - (p_N - p_O)/d_n ]
         # 标准推导：u = H/a_p - d ∇p（压力力 -V∇p），面速度用直接压力梯度
@@ -673,15 +740,20 @@ class PressureSolver:
                 + gp[nb, 1] * fv.face_normal[:, 1]
                 + gp[nb, 2] * fv.face_normal[:, 2])
             corr = d_face * (gradn_interp - gradn_face)
-            mdot[is_int] += self.rho * fv.face_area[is_int] * corr[is_int]
+            mdot[is_int] += self._face_rho()[is_int] * fv.face_area[is_int] * corr[is_int]
         self._mdot = mdot
         self._fix_boundary_mdot()
 
     # -- 监视器 -----------------------------------------------------
     def monitor_payload(self):
         """本步指标的监视器映射：残差 + 场统计（与 step() 返回键一致）。"""
-        return {"residual": self._last_residual,
-                "cont_residual": self._last_cont_ratio,
-                "u_min": float(self._u.min()),
-                "u_max": float(self._u.max()),
-                "u_mean": float(self._u.mean())}
+        payload = {"residual": self._last_residual,
+                   "cont_residual": self._last_cont_ratio,
+                   "u_min": float(self._u.min()),
+                   "u_max": float(self._u.max()),
+                   "u_mean": float(self._u.mean())}
+        if self.vof_model is not None and not isinstance(self.vof_model, str):
+            payload["alpha_min"] = float(self.vof_model.alpha.min())
+            payload["alpha_max"] = float(self.vof_model.alpha.max())
+            payload["phase1_volume"] = self.vof_model.phase1_volume
+        return payload
