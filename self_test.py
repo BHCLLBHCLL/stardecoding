@@ -1549,4 +1549,146 @@ _p8md = _p8sd.monitor_payload()
 assert {"n_particles", "n_active", "n_escaped"} <= set(_p8md), "P8 DPM monitor 含粒子键"
 print("P8 DPM：拉格朗日粒子注入/运动积分/连续相耦合源/单流体耦合 全通过")
 
+# ---------------- P9 燃烧算例：组分输运（质量分数）+ 全局 Arrhenius 反应动力学 ----------------
+# 验收核心（P9 行）：组分输运 + 燃烧反应动力学（star.species / star.combustion）。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p9cube, FVM as _p9FVM
+from pressure_solver import PressureSolver as _p9Solver
+import species as _p9Sp
+import combustion as _p9Cb
+import numpy as _p9np
+# 组分换算：质量↔摩尔彼此往返，混合摩尔质量为正，理想气体密度命中 P W/(R T)
+_p9Y = _p9np.array([[0.0, 0.233, 0.0, 0.0, 0.767]], float)
+_p9X = _p9Sp.mass_to_mole_frac(_p9Y, _p9Sp.DEFAULT_MW)
+_p9Y2 = _p9Sp.mole_to_mass_frac(_p9X, _p9Sp.DEFAULT_MW)
+assert _p9np.allclose(_p9Y2, _p9Y, atol=1e-9), "P9 质量↔摩尔往返"
+_p9W = _p9Sp.mixture_molar_mass(_p9Y, _p9Sp.DEFAULT_MW)
+assert _p9W.shape == (1,) and float(_p9W[0]) > 0.0, "P9 混合摩尔质量"
+_p9rho = _p9Sp.gas_density(_p9W, 300.0, 101325.0)
+assert _p9np.isfinite(_p9rho).all() and _p9np.all(_p9rho > 0.0), "P9 理想气体密度"
+assert _p9np.isclose(float(_p9rho[0]),
+                     101325.0 * float(_p9W[0]) / (_p9Sp.R_UNIV * 300.0)), "P9 密度公式"
+# 零组分保护：全零分数 → 摩尔分数 全 0（无除零）
+assert _p9np.all(_p9Sp.mass_to_mole_frac(_p9np.zeros((3, 5), float),
+                                         _p9Sp.DEFAULT_MW) == 0.0), "P9 零组分保护"
+# 输运装配/求解：形状 + 有限；Schmidt 数/扩散系数常量正值
+assert _p9Sp.DEFAULT_SC_TURB > 0.0 and _p9Sp.DEFAULT_SCALAR_DIFF > 0.0, "P9 输运常量"
+assert len({_p9Sp.SP_ZERO_GRAD, _p9Sp.SP_FIXED}) == 2, "P9 组分边界类型互异"
+_p9V, _p9C = _p9cube(nx=2)
+_p9fv = _p9FVM(_p9V, _p9C)
+_p9n = _p9fv.n_cells
+_p9u = _p9np.full(_p9n, 1.0); _p9v = _p9np.zeros(_p9n); _p9w = _p9np.zeros(_p9n)
+_p9mdot = _p9Sp.volume_mass(_p9fv, _p9u, _p9v, _p9w, _p9np.full(_p9n, 1.0))
+_p9gm = _p9np.full(_p9n, 1.0 * _p9Sp.DEFAULT_SCALAR_DIFF, float)
+_p9Yc = _p9np.full(_p9n, 0.233, float)
+_p9rows, _p9cols, _p9vals, _p9rhs, _p9ap = _p9Sp.assemble_species_transport(
+    _p9fv, _p9mdot, _p9gm, _p9Yc, _p9np.zeros(_p9n))
+assert _p9np.isfinite(_p9vals).all() and _p9np.isfinite(_p9rhs).all(), "P9 组分装配有限"
+assert _p9rhs.shape == (_p9n,) and _p9ap.shape == (_p9n,), "P9 组分装配形状"
+# 边界分类：入口/出口/壁面全覆盖不重叠
+_p9in, _p9out, _p9wall, _p9bnd = _p9Sp.classify_species(_p9fv)
+assert (_p9in.size + _p9out.size + _p9wall.size) == int(_p9np.sum(_p9fv.is_boundary)), \
+    "P9 边界全覆盖"
+assert _p9bnd.size == int(_p9np.sum(_p9fv.is_boundary)), "P9 边界面全集"
+assert len(set(_p9in.tolist()) & set(_p9out.tolist()) & set(_p9wall.tolist())) == 0, \
+    "P9 边界不重叠"
+# SpeciesSolver：初始 Σ Y = 1，update() 收敛且有界
+_p9sp = _p9Sp.SpeciesSolver(_p9fv,
+                            inlet_fractions=[0.0, 0.233, 0.0, 0.0, 0.767])
+assert _p9np.allclose(_p9sp.Y.sum(axis=1), 1.0, atol=1e-9), "P9 组分 ΣY=1"
+_p9sr = float(_p9sp.update(_p9u, _p9v, _p9w, mdot=_p9mdot,
+                           nu_t=_p9np.zeros(_p9n, float)))
+assert _p9np.isfinite(_p9sr) and _p9np.allclose(_p9sp.Y.sum(axis=1), 1.0, atol=1e-9), \
+    "P9 组分 update 收敛"
+assert _p9sp.Y.min() >= 0.0 and _p9sp.Y.max() <= 1.0, "P9 组分有界"
+# P10 后端门面：initialize/step/residual/monitor_payload 可用
+assert _p9Sp.make_species(_p9fv, "species") is not None, "P9 组分工厂"
+assert _p9np.isfinite(_p9sp.residual()), "P9 组分残差"
+assert {"n_species", "sum_max"} <= set(_p9sp.monitor_payload()), "P9 组分 monitor 键"
+# Arrhenius 速率：随温度单调升；β 指数提升
+_p9a_cold = _p9Cb.arrhenius_rate(_p9Cb.DEFAULT_A, _p9Cb.DEFAULT_EA, 0.0, 300.0)
+_p9a_hot = _p9Cb.arrhenius_rate(_p9Cb.DEFAULT_A, _p9Cb.DEFAULT_EA, 0.0, 2000.0)
+assert _p9a_hot > _p9a_cold > 0.0, "P9 Arrhenius 单调"
+assert _p9Cb.arrhenius_rate(_p9Cb.DEFAULT_A, _p9Cb.DEFAULT_EA, 1.0, 2000.0) > _p9a_hot, \
+    "P9 β 提升速率"
+# GlobalReaction：反应速率/质量源自动守恒 (Σ S_i = 0)/热释放非负
+_p9reac = _p9Cb.make_prequick_mech()
+_p9conc = _p9np.array([[0.5, 1.0, 0.0, 0.0, 0.0]], float)
+_p9wc = float(_p9reac.rate(_p9conc, _p9np.array([300.0]))[0])
+_p9wh = float(_p9reac.rate(_p9conc, _p9np.array([2000.0]))[0])
+assert _p9wc >= 0.0 and _p9wh >= 0.0 and _p9wh > _p9wc, "P9 反应速率"
+# 质量守恒：按 nu 与平衡分子量，Σ Mw_i ν_i = 0 → Σ S_i = 0
+_p9r2 = _p9Cb.GlobalReaction(nu=[-1.0, 1.0], reactant_idx=[0],
+                             reactant_orders=[1.0], A=1.0e6, Ea=1.0e8)
+_p9Yr = _p9np.array([[0.5, 0.5]], float)
+_p9Mwr = _p9np.array([10.0, 10.0], float)
+_p9S = _p9r2.mass_source(_p9Yr, _p9np.array([1500.0], float),
+                         _p9np.array([1.0], float), _p9Mwr)
+assert _p9S.shape == (1, 2) and _p9np.allclose(_p9np.sum(_p9S, axis=1), 0.0, atol=1e-9), \
+    "P9 质量源守恒"
+assert _p9np.all(_p9r2.heat_release(_p9Yr, _p9np.array([1500.0], float),
+                                    _p9np.array([1.0], float), _p9Mwr) >= 0.0), "P9 放热非负"
+# 层流火焰速度/厚度/进度变量
+assert _p9np.isclose(_p9Cb.laminar_flame_speed(300.0), 0.4), "P9 火焰速度"
+assert _p9Cb.laminar_flame_speed(600.0) > _p9Cb.laminar_flame_speed(300.0), "P9 火焰速度升"
+assert _p9np.isclose(_p9Cb.flame_thickness(0.4), 2.2e-5 / 0.4), "P9 火焰厚度"
+_p9cp = _p9Cb.combustion_progress(_p9np.array([[0.05, 0.0], [0.0, 0.0]], float),
+                                  fuel_idx=0, Y_fuel_inlet=0.05)
+assert _p9np.allclose(_p9cp, [0.0, 1.0], atol=1e-9), "P9 进度变量"
+# 点火器：温度/火花/进度 调制
+_p9tig = _p9Cb.TemperatureIgnitor(threshold=1500.0)
+assert _p9np.all(_p9tig.factor(_p9fv.centroids,
+                               T=_p9np.full(_p9n, 2000.0)) == 1.0), "P9 高温点火"
+assert _p9np.all(_p9tig.factor(_p9fv.centroids,
+                               T=_p9np.full(_p9n, 300.0)) == 0.0), "P9 低温点火"
+_p9sig = _p9Cb.SparkIgnitor(position=(0.5, 0.5, 0.5), radius=0.6, energy=1.0e5,
+                            duration=1.0)
+_p9f = _p9sig.factor(_p9fv.centroids)
+assert _p9np.all(_p9f >= 0.0) and _p9np.all(_p9f <= 1.0), "P9 火花系数有界"
+assert float(_p9np.max(_p9sig.heat_source(_p9fv.centroids))) > 0.0, "P9 火花热源"
+_p9pig = _p9Cb.ProgressVariableIgnitor(threshold=0.5)
+assert _p9np.all(_p9pig.factor(_p9fv.centroids,
+                               progress=_p9np.full(_p9n, 0.9)) == 1.0), "P9 进度点火"
+# 工厂：别名/大小写解析，未知报 ValueError
+assert isinstance(_p9Cb.make_ignitor("temperature"), _p9Cb.TemperatureIgnitor), \
+    "P9 点火器工厂 temperature"
+assert isinstance(_p9Cb.make_ignitor("spark"), _p9Cb.SparkIgnitor), "P9 点火器工厂 spark"
+assert isinstance(_p9Cb.make_combustion(_p9fv, "combustion"), _p9Cb.CombustionModel), \
+    "P9 燃烧工厂 combustion"
+try:
+    _p9Cb.make_combustion(_p9fv, "nope")
+    raise AssertionError("P9 应拒绝未知燃烧模型")
+except ValueError:
+    pass
+# CombustionModel：低温未燃 Q≈0 + 燃料保存；高温燃料放热 + ΣY=1
+_p9cm = _p9Cb.CombustionModel(_p9fv, inlet_fractions=[0.05, 0.20, 0.0, 0.0, 0.75])
+_p9cm.set_temperature(_p9np.full(_p9n, 300.0, float))
+_p9cm._chemical_source()
+assert _p9cm.omega.max() < 1.0e6 and _p9np.allclose(_p9cm.Y.sum(axis=1), 1.0), \
+    "P9 低温未燃"
+for _p9i in range(3):
+    _p9cr = float(_p9cm.update(_p9u, _p9v, _p9w, mdot=_p9mdot,
+                               nu_t=_p9np.zeros(_p9n, float),
+                               T=_p9np.full(_p9n, 2000.0, float)))
+assert _p9np.isfinite(_p9cr) and float(_p9cm.heat_release.max()) > 0.0, "P9 高温放热"
+assert _p9np.allclose(_p9cm._sp.Y.sum(axis=1), 1.0, atol=1e-9), "P9 燃烧组分守恒"
+# 集成：PressureSolver 字符串注入 species/combustion，step() 无报错；基线无模型无回归
+_p9s0 = _p9Solver(_p9V, _p9C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3)
+assert _p9s0.species_model is None and _p9s0.combustion_model is None, "P9 基线无模型"
+assert _p9np.isfinite(_p9s0.step()["residual"]), "P9 基线 step() 无报错"
+_p9sc = _p9Solver(_p9V, _p9C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3,
+                  species_model="species", combustion_model="combustion",
+                  combustion_inlet_fractions=[0.05, 0.20, 0.0, 0.0, 0.75])
+for _p9i in range(5):
+    _p9ps = _p9sc.step()
+assert _p9np.isfinite(_p9sc.velocity()).all() and _p9np.isfinite(_p9ps["residual"]), \
+    "P9 耦合流场/残差有限"
+assert _p9sc.combustion_model is not None and not isinstance(_p9sc.combustion_model, str), \
+    "P9 应构建燃烧模型"
+assert not isinstance(_p9sc.species_model, str) and _p9sc.species_model is not None, \
+    "P9 应构建组分模型"
+_p9m9 = _p9sc.monitor_payload()
+assert {"combo_Q_max", "combo_T_max"} <= set(_p9m9), "P9 燃烧 monitor 键"
+print("P9 燃烧算例：组分质量分数输运/换算/全局 Arrhenius 反应动力学/火焰诊断/"
+      "点火器/PressureSolver 耦合 全通过")
+
 print("ALL CHECKS PASSED")

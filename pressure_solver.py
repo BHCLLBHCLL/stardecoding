@@ -168,7 +168,9 @@ class PressureSolver:
                  mixture_model=None, mixture_inlet_alphas=None,
                  mixture_alpha0=None,
                  dpm_model=None, dpm_rho_p=None, dpm_dia_p=None,
-                 dpm_mass_flow=None, dpm_parcels_per_step=None):
+                 dpm_mass_flow=None, dpm_parcels_per_step=None,
+                 species_model=None, combustion_model=None,
+                 combustion_inlet_fractions=None, combustion_ref_temp=300.0):
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
@@ -182,6 +184,10 @@ class PressureSolver:
         self.dpm_dia_p = dpm_dia_p
         self.dpm_mass_flow = dpm_mass_flow
         self.dpm_parcels_per_step = dpm_parcels_per_step
+        self.species_model = species_model
+        self.combustion_model = combustion_model
+        self.combustion_inlet_fractions = combustion_inlet_fractions
+        self.combustion_ref_temp = float(combustion_ref_temp)
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -235,6 +241,8 @@ class PressureSolver:
         self._ensure_vof_model()
         self._ensure_mixture_model()
         self._ensure_dpm_model()
+        self._ensure_species_model()
+        self._ensure_combustion_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -520,6 +528,62 @@ class PressureSolver:
         except Exception:
             pass
 
+    # -- 组分 / 燃烧耦合 -----------------------------------------
+    def _ensure_species_model(self):
+        """惰性构建组分输运模型：species_model 为字符串名时按当前网格/边界实例化。"""
+        if self.species_model is None or not isinstance(self.species_model, str):
+            return
+        import species as _sp
+        fv = self._fv
+        kwargs = dict(flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+                      outlet_side=self.outlet_side)
+        self.species_model = _sp.make_species(fv, model=self.species_model,
+                                              **kwargs)
+
+    def _update_species(self):
+        """在 SIMPLE 环尾部用当前速度场推进组分质量分数输运。"""
+        if self._u is None:
+            return
+        if self.species_model is None or isinstance(self.species_model, str):
+            return
+        try:
+            mdot = getattr(self, "_mdot", None)
+            self.species_model.update(self._u, self._v, self._w,
+                                      mdot=mdot, nu_t=self.nu_t)
+        except Exception:
+            pass
+
+    def _ensure_combustion_model(self):
+        """惰性构建燃烧模型：combustion_model 为字符串名时按当前网格/边界实例化。"""
+        if self.combustion_model is None or not isinstance(self.combustion_model, str):
+            return
+        import combustion as _cb
+        fv = self._fv
+        kwargs = dict(flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+                      outlet_side=self.outlet_side,
+                      T_ref=self.combustion_ref_temp)
+        if self.combustion_inlet_fractions is not None:
+            kwargs["inlet_fractions"] = self.combustion_inlet_fractions
+        self.combustion_model = _cb.make_combustion(
+            fv, model=self.combustion_model, **kwargs)
+
+    def _update_combustion(self):
+        """在 SIMPLE 环尾部用当前流场/温度推进燃烧源项，更新组分与热释放。"""
+        if self._u is None:
+            return
+        if self.combustion_model is None or isinstance(self.combustion_model, str):
+            return
+        try:
+            T = None
+            if (self.energy_model is not None
+                    and not isinstance(self.energy_model, str)):
+                T = getattr(self.energy_model, "T", None)
+            mdot = getattr(self, "_mdot", None)
+            self.combustion_model.update(self._u, self._v, self._w,
+                                         mdot=mdot, nu_t=self.nu_t, T=T)
+        except Exception:
+            pass
+
     # -- 湍流 nu_t 耦合 -------------------------------------------
     @property
     def nu_t(self):
@@ -787,6 +851,8 @@ class PressureSolver:
         self._update_vof()
         self._update_mixture()
         self._update_dpm()
+        self._update_species()
+        self._update_combustion()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),
@@ -850,4 +916,14 @@ class PressureSolver:
             payload["n_particles"] = self.dpm_model.n_particles
             payload["n_active"] = self.dpm_model.n_active
             payload["n_escaped"] = self.dpm_model.n_escaped
+        if self.species_model is not None and not isinstance(self.species_model, str):
+            y = np.asarray(self.species_model.Y, float)
+            payload["sp_y_min"] = float(y.min())
+            payload["sp_y_max"] = float(y.max())
+            payload["sp_sum_max"] = float(y.sum(axis=1).max())
+        if self.combustion_model is not None and not isinstance(self.combustion_model, str):
+            payload["combo_Q_max"] = float(self.combustion_model.heat_release.max())
+            payload["combo_T_max"] = float(self.combustion_model.T.max())
+            payload["combo_n_ignited"] = int(np.count_nonzero(
+                self.combustion_model.ignited))
         return payload
