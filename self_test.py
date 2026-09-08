@@ -1691,4 +1691,117 @@ assert {"combo_Q_max", "combo_T_max"} <= set(_p9m9), "P9 燃烧 monitor 键"
 print("P9 燃烧算例：组分质量分数输运/换算/全局 Arrhenius 反应动力学/火焰诊断/"
       "点火器/PressureSolver 耦合 全通过")
 
+# ---------------- P10 多相欧拉-欧拉：相体积分数输运 + 相间作用力 + 群体平衡 ----------------
+# 验收核心（P10 行）：star.multiphase（EulerianPhase + PhaseInteraction + Population
+# Balance）：相间拖曳/升力/虚拟质量/壁面润滑 + 聚并/破碎/成核。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p10cube, FVM as _p10FVM
+from pressure_solver import PressureSolver as _p10Solver
+import eulerian_multiphase as _p10EM
+import numpy as _p10np
+# 常量：升力/虚拟质量/壁面润滑常数 + 群体平衡核常数（默认群体平衡关闭）
+assert _p10EM.DEFAULT_LIFT_COEF > 0.0 and _p10EM.DEFAULT_VIRTUAL_MASS_COEF > 0.0, \
+    "P10 相间力常量"
+assert _p10EM.DEFAULT_WALL_LUB_COEF_CW1 < 0.0 and _p10EM.DEFAULT_WALL_LUB_COEF_CW2 > 0.0, \
+    "P10 壁面润滑常量"
+assert _p10EM.DEFAULT_COALESCENCE_RATE == 0.0 and _p10EM.DEFAULT_BREAKUP_RATE == 0.0 \
+    and _p10EM.DEFAULT_NUCLEATION_RATE == 0.0, "P10 群体平衡默认关闭"
+# 拖曳：Schiller-Naumann（Stokes 低 Re 极限有限，无除零）+ Wen-Yu 空泡率修正
+_p10d = _p10EM.drag_exchange(1e-3, 998.0, 1e-3, _p10np.array([1.0, 0.1]),
+                             _p10np.array([0.1, 0.2]), _p10np.array([0.9, 0.8]))
+assert _p10np.all(_p10np.isfinite(_p10d)) and _p10np.all(_p10d > 0.0), "P10 拖曳有限正值"
+assert float(_p10d[0]) > float(_p10d[1]), "P10 拖曳随相对速度单调（高 Re 更高）"
+_p10slim = _p10EM.drag_exchange(1e-3, 998.0, 1e-3, _p10np.array([0.0, 0.0]),
+                                _p10np.array([0.2, 0.2]), _p10np.array([0.8, 0.8]))
+assert _p10np.all(_p10np.isfinite(_p10slim)) and _p10np.all(_p10slim > 0.0), "P10 Stokes 极限有限"
+_p10K, _p10F = _p10EM.interphase_drag(1e-3, 998.0, 1e-3, _p10np.array([[1.0, 0.0, 0.0],
+                                                                          [0.5, 0.0, 0.0]]),
+                                      _p10np.array([0.1, 0.1]), _p10np.array([0.9, 0.9]))
+assert _p10F.shape == (2, 3) and _p10np.all(_p10np.isfinite(_p10F)), "P10 拖曳力密度"
+# 升力/虚拟质量/壁面润滑：系数为 0 或粒径 0 时返回零
+_p10zero = _p10EM.lift_force(_p10np.full(3, 0.1), 998.0,
+                             _p10np.zeros((3, 3)), _p10np.zeros((3, 3)), coef=0.0)
+assert _p10np.allclose(_p10zero, 0.0), "P10 升力 coef=0 归零"
+_p10vmz = _p10EM.virtual_mass_force(_p10np.full(3, 0.1), 998.0,
+                                    _p10np.zeros((3, 3)), coef=0.0)
+assert _p10np.allclose(_p10vmz, 0.0), "P10 虚拟质量 coef=0 归零"
+_p10wlz = _p10EM.wall_lubrication_force(_p10np.full(3, 0.1), 998.0,
+                                        _p10np.zeros((3, 3)), _p10np.full(3, 0.05),
+                                        _p10np.zeros((3, 3)), d=0.0)
+assert _p10np.allclose(_p10wlz, 0.0), "P10 壁面润滑 d=0 归零"
+# 群体平衡：Σ_k S_k = 0 守恒；全核为 0 返回全零
+_p10pb = _p10EM.population_balance_source(_p10np.array([[0.6, 0.3, 0.1],
+                                                         [0.5, 0.4, 0.1]], float),
+                                          _p10np.array([0.0, 5e-4, 1e-3]),
+                                          0.1, 0.05, 0.02)
+assert _p10pb.shape == (2, 3), "P10 群体平衡源形状"
+assert _p10np.allclose(_p10pb.sum(axis=1), 0.0, atol=1e-12), "P10 群体平衡守恒"
+_p10pb0 = _p10EM.population_balance_source(_p10np.array([[0.6, 0.3, 0.1]], float),
+                                           _p10np.array([0.0, 5e-4, 1e-3]), 0.0, 0.0, 0.0)
+assert _p10np.allclose(_p10pb0, 0.0), "P10 群体平衡全关归零"
+# EulerianMultiphaseSolver：初始 Σα=1、混合密度/粘度、update() 注入弥散相增长
+_p10V, _p10C = _p10cube(nx=2)
+_p10fv = _p10FVM(_p10V, _p10C)
+_p10n = _p10fv.n_cells
+_p10ems = _p10EM.EulerianMultiphaseSolver(_p10fv, alpha0=[0.1, 0.05])
+assert _p10ems.n_phases == 3, "P10 相数"
+assert _p10np.allclose(_p10ems.alphas[:, 0], 0.85) and _p10np.allclose(
+    _p10ems.alphas.sum(axis=1), 1.0), "P10 初始 α 求和 1"
+assert _p10np.allclose(_p10ems.rho, 0.85 * 998.0 + 0.1 * 1.18 + 0.05 * 800.0), "P10 混合密度"
+assert _p10ems.slip.shape == (_p10n, 3, 3) and _p10ems.drift.shape == (_p10n, 3, 3), "P10 相速度形状"
+_p10u = _p10np.full(_p10n, 1.0); _p10v = _p10np.zeros(_p10n); _p10w = _p10np.zeros(_p10n)
+_p10ur = float(_p10ems.update(_p10u, _p10v, _p10w))
+assert _p10np.isfinite(_p10ur) and _p10ems.iteration == 1, "P10 update 残差有限"
+assert _p10np.allclose(_p10ems.alphas.sum(axis=1), 1.0, atol=1e-9), "P10 update α 守恒"
+assert _p10ems.alphas.min() >= 0.0 and _p10ems.alphas.max() <= 1.0, "P10 α 有界"
+assert _p10ems.phase_volume(1) > 0.0 and _p10ems.phase_volume(2) > 0.0, "P10 注入增长"
+# P10 后端门面：initialize/step/residual/monitor_payload 可用
+_p10info = _p10ems._initialize_field()
+assert {"n_phases", "alpha_min", "alpha_max", "rho_min", "rho_max"} <= set(_p10info), \
+    "P10 initialize 键"
+assert abs(_p10ems.residual() - 0.0) <= 1e-12, "P10 初始残差"
+_p10ems.set_velocities(_p10u, _p10v, _p10w)
+_p10p = _p10ems.step()
+assert {"residual", "n_phases", "alpha_min", "alpha_max"} <= set(_p10p), "P10 step 键"
+_p10m = _p10ems.monitor_payload()
+assert {"n_phases", "phase_volumes", "momentum_src", "residual"} <= set(_p10m), "P10 monitor 键"
+# 工厂：别名 + 大小写解析，未知模型报 ValueError
+assert isinstance(_p10EM.make_eulerian_multiphase(_p10fv, "eulerian"),
+                  _p10EM.EulerianMultiphaseSolver), "P10 工厂 eulerian"
+assert isinstance(_p10EM.make_eulerian_multiphase(_p10fv, "ee"),
+                  _p10EM.EulerianMultiphaseSolver), "P10 工厂 ee"
+assert isinstance(_p10EM.make_eulerian_multiphase(_p10fv, "EULER_EULER"),
+                  _p10EM.EulerianMultiphaseSolver), "P10 工厂大小写"
+try:
+    _p10EM.make_eulerian_multiphase(_p10fv, "nope")
+    raise AssertionError("P10 应拒绝未知欧拉-欧拉模型")
+except ValueError:
+    pass
+# 相间作用力开启后动量源非零（非均匀流场才会产生升力/虚拟质量贡献）
+_p10ems2 = _p10EM.EulerianMultiphaseSolver(
+    _p10fv, alpha0=[0.2, 0.1], enable_lift=True, enable_virtual_mass=True)
+_p10ems2.update(_p10u + _p10np.linspace(0.0, 0.2, _p10n), _p10v, _p10w)
+assert _p10np.isfinite(_p10ems2.momentum_source).all(), "P10 相间动量源有限"
+# 集成：PressureSolver 字符串注入 eulerian + step() 稳定、αΣ=1、monitor 含 ee 键
+_p10s0 = _p10Solver(_p10V, _p10C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3)
+assert _p10s0.eulerian_model is None, "P10 基线无模型"
+assert _p10np.isfinite(_p10s0.step()["residual"]), "P10 基线 step() 无报错"
+_p10se = _p10Solver(_p10V, _p10C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0), max_outer=3,
+                    eulerian_model="eulerian", eulerian_inlet_alphas=[0.2, 0.1],
+                    eulerian_enable_lift=True, eulerian_population_balance=True,
+                    eulerian_coalescence_rate=0.1)
+for _p10i in range(6):
+    _p10ps = _p10se.step()
+assert _p10np.isfinite(_p10se.velocity()).all() and _p10np.isfinite(_p10ps["residual"]), \
+    "P10 耦合流场/残差有限"
+assert _p10se.eulerian_model is not None and not isinstance(_p10se.eulerian_model, str), \
+    "P10 应构建欧拉-欧拉模型"
+assert _p10np.allclose(_p10se.eulerian_model.alphas.sum(axis=1), 1.0, atol=1e-8), \
+    "P10 耦合 α 守恒"
+assert _p10np.isfinite(_p10se.rho).all(), "P10 耦合混合密度有限"
+_p10m10 = _p10se.monitor_payload()
+assert {"ee_n_phases", "ee_alpha_min", "ee_alpha_max", "ee_alpha_sum",
+        "ee_mom_src"} <= set(_p10m10), "P10 monitor 含 ee 键"
+print("P10 多相欧拉-欧拉：相体积分数守恒输运/相间拖曳升力虚拟质量壁面润滑/"
+      "群体平衡（聚并破碎成核）/P10 后端门面/PressureSolver 耦合 全通过")
+
 print("ALL CHECKS PASSED")

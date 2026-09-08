@@ -167,6 +167,13 @@ class PressureSolver:
                  vof_model=None, inlet_alpha=1.0,
                  mixture_model=None, mixture_inlet_alphas=None,
                  mixture_alpha0=None,
+                 eulerian_model=None, eulerian_inlet_alphas=None,
+                 eulerian_alpha0=None, eulerian_enable_lift=False,
+                 eulerian_enable_virtual_mass=False,
+                 eulerian_enable_wall_lubrication=False,
+                 eulerian_population_balance=False,
+                 eulerian_coalescence_rate=None, eulerian_breakup_rate=None,
+                 eulerian_nucleation_rate=None,
                  dpm_model=None, dpm_rho_p=None, dpm_dia_p=None,
                  dpm_mass_flow=None, dpm_parcels_per_step=None,
                  species_model=None, combustion_model=None,
@@ -179,6 +186,16 @@ class PressureSolver:
         self.mixture_model = mixture_model
         self.mixture_inlet_alphas = mixture_inlet_alphas
         self.mixture_alpha0 = mixture_alpha0
+        self.eulerian_model = eulerian_model
+        self.eulerian_inlet_alphas = eulerian_inlet_alphas
+        self.eulerian_alpha0 = eulerian_alpha0
+        self.eulerian_enable_lift = bool(eulerian_enable_lift)
+        self.eulerian_enable_virtual_mass = bool(eulerian_enable_virtual_mass)
+        self.eulerian_enable_wall_lubrication = bool(eulerian_enable_wall_lubrication)
+        self.eulerian_population_balance = bool(eulerian_population_balance)
+        self.eulerian_coalescence_rate = eulerian_coalescence_rate
+        self.eulerian_breakup_rate = eulerian_breakup_rate
+        self.eulerian_nucleation_rate = eulerian_nucleation_rate
         self.dpm_model = dpm_model
         self.dpm_rho_p = dpm_rho_p
         self.dpm_dia_p = dpm_dia_p
@@ -240,6 +257,7 @@ class PressureSolver:
         self._ensure_energy_model()
         self._ensure_vof_model()
         self._ensure_mixture_model()
+        self._ensure_eulerian_model()
         self._ensure_dpm_model()
         self._ensure_species_model()
         self._ensure_combustion_model()
@@ -416,6 +434,8 @@ class PressureSolver:
             return self.vof_model.rho
         if self.mixture_model is not None and not isinstance(self.mixture_model, str):
             return self.mixture_model.rho
+        if self.eulerian_model is not None and not isinstance(self.eulerian_model, str):
+            return self.eulerian_model.rho
         return self._rho0
 
     @property
@@ -425,6 +445,8 @@ class PressureSolver:
             return self.vof_model.mu
         if self.mixture_model is not None and not isinstance(self.mixture_model, str):
             return self.mixture_model.mu
+        if self.eulerian_model is not None and not isinstance(self.eulerian_model, str):
+            return self.eulerian_model.mu
         return self._mu0
 
     @property
@@ -493,6 +515,45 @@ class PressureSolver:
             return
         try:
             self.mixture_model.update(self._u, self._v, self._w, mdot=self._mdot)
+        except Exception:
+            pass
+
+    def _ensure_eulerian_model(self):
+        """惰性构建欧拉-欧拉多相模型：eulerian_model 为字符串名时按当前网格/边界实例化。"""
+        if self.eulerian_model is None or not isinstance(self.eulerian_model, str):
+            return
+        import eulerian_multiphase as _em
+        fv = self._fv
+        kwargs = dict(
+            flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+            outlet_side=self.outlet_side,
+            inlet_alphas=self.eulerian_inlet_alphas,
+            alpha0=self.eulerian_alpha0)
+        if self.eulerian_enable_lift:
+            kwargs["enable_lift"] = True
+        if self.eulerian_enable_virtual_mass:
+            kwargs["enable_virtual_mass"] = True
+        if self.eulerian_enable_wall_lubrication:
+            kwargs["enable_wall_lubrication"] = True
+        if self.eulerian_population_balance:
+            kwargs["population_balance"] = True
+        if self.eulerian_coalescence_rate is not None:
+            kwargs["coalescence_rate"] = float(self.eulerian_coalescence_rate)
+        if self.eulerian_breakup_rate is not None:
+            kwargs["breakup_rate"] = float(self.eulerian_breakup_rate)
+        if self.eulerian_nucleation_rate is not None:
+            kwargs["nucleation_rate"] = float(self.eulerian_nucleation_rate)
+        self.eulerian_model = _em.make_eulerian_multiphase(
+            fv, model=self.eulerian_model, **kwargs)
+
+    def _update_eulerian(self):
+        """在 SIMPLE 环尾部用当前速度场推进欧拉-欧拉各相体积分数，更新相间作用力。"""
+        if self._u is None:
+            return
+        if self.eulerian_model is None or isinstance(self.eulerian_model, str):
+            return
+        try:
+            self.eulerian_model.update(self._u, self._v, self._w, mdot=self._mdot)
         except Exception:
             pass
 
@@ -850,6 +911,7 @@ class PressureSolver:
         self._update_energy()
         self._update_vof()
         self._update_mixture()
+        self._update_eulerian()
         self._update_dpm()
         self._update_species()
         self._update_combustion()
@@ -912,6 +974,12 @@ class PressureSolver:
             payload["mix_rho_min"] = float(self.mixture_model.rho.min())
             payload["mix_rho_max"] = float(self.mixture_model.rho.max())
             payload["mix_alpha_sum"] = float(self.mixture_model.alphas.sum(axis=1).max())
+        if self.eulerian_model is not None and not isinstance(self.eulerian_model, str):
+            payload["ee_n_phases"] = self.eulerian_model.n_phases
+            payload["ee_alpha_min"] = float(self.eulerian_model.alphas.min())
+            payload["ee_alpha_max"] = float(self.eulerian_model.alphas.max())
+            payload["ee_alpha_sum"] = float(self.eulerian_model.alphas.sum(axis=1).max())
+            payload["ee_mom_src"] = float(_safe_norm(self.eulerian_model.momentum_source))
         if self.dpm_model is not None and not isinstance(self.dpm_model, str):
             payload["n_particles"] = self.dpm_model.n_particles
             payload["n_active"] = self.dpm_model.n_active
