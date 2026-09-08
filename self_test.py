@@ -1449,4 +1449,104 @@ _p8m = _p8sv.monitor_payload()
 assert {"alpha_min", "alpha_max", "phase1_volume"} <= set(_p8m), "P8 monitor 含 α 键"
 print("P8 多相 VOF：α 守恒输运/PLIC 几何重构/两相物性混合/CSF 表面张力/单流体耦合 全通过")
 
+# ---------------- P8b 多相 Mixture：N 相体积分数输运 + 代数滑移（drift-flux）----------------
+# 验收核心（P8 行）Mixture：多相体积分数守恒输运 + 代数滑移封闭 + 混合物性。纯 numpy 可用。
+import mixture as _p8M
+# 常量 / 物性混合：三相水-气-油，混合场逐单元加权落在相之间
+assert _p8np.isclose(_p8M.DEFAULT_RHOS[2], 800.0), "P8 Mixture 相 3 密度"
+assert _p8np.isclose(_p8M.DEFAULT_MUS[1], 1.8e-5), "P8 Mixture 相 2 粘度"
+assert _p8np.isclose(
+    _p8M.mixture_rho(_p8np.array([[0.5, 0.25, 0.25]])),
+    0.5 * 998.0 + 0.25 * 1.18 + 0.25 * 800.0), "P8 Mixture 混合密度"
+# 漂移速度封闭：Σ_k α_k u_dr,k = 0 保证总体积守恒
+_p8malpha = _p8np.zeros((_p8n, 3), float)
+_p8malpha[:, 1] = 0.3; _p8malpha[:, 2] = 0.2; _p8malpha[:, 0] = 0.5
+_p8mslip = _p8np.zeros((_p8n, 3, 3), float)
+_p8mslip[:, 1, 2] = -0.02; _p8mslip[:, 2, 2] = -0.01
+_p8mdrift = _p8M.drift_velocities(_p8malpha, _p8mslip)
+assert _p8np.allclose(_p8np.sum(_p8malpha[:, :, None] * _p8mdrift, axis=1), 0.0,
+                      atol=1e-12), "P8 Mixture 漂移体积守恒"
+# 守恒输运：advance_mixture 有界且 α0 = 1 - Σ 弥散相
+_p8m_u = _p8np.full(_p8n, 1.0); _p8m_v = _p8np.zeros(_p8n); _p8m_w = _p8np.zeros(_p8n)
+_p8m_mdot = _p8M.volume_flux(_p8fv, _p8m_u, _p8m_v, _p8m_w)
+_p8m_a0 = _p8np.zeros((_p8n, 3), float); _p8m_a0[:, 0] = 1.0
+_p8m_dr0 = _p8np.zeros((_p8n, 3, 3), float)
+_p8m_a_new, _p8m_dt = _p8M.advance_mixture(_p8fv, _p8m_mdot, _p8m_a0, _p8m_dr0, 1e-3)
+assert _p8np.isfinite(_p8m_a_new).all(), "P8 Mixture 输运有限"
+assert _p8m_a_new.min() >= 0.0 and _p8m_a_new.max() <= 1.0, "P8 Mixture α 有界"
+assert _p8np.allclose(_p8m_a_new[:, 0], 1.0 - _p8m_a_new[:, 1:].sum(axis=1),
+                      atol=1e-12), "P8 Mixture α0 补足"
+# MixtureSolver：初始 N 相 α、混合密度/粘度、update() 注入弥散相增长
+_p8ms = _p8M.MixtureSolver(_p8fv, alpha0=[0.1, 0.05])
+assert _p8ms.n_phases == 3, "P8 Mixture 相数"
+assert _p8np.allclose(_p8ms.alphas[:, 0], 0.85), "P8 Mixture 初始连续相 α"
+assert _p8np.allclose(_p8ms.alphas.sum(axis=1), 1.0), "P8 Mixture α 求和 1"
+assert _p8np.isfinite(_p8ms.rho).all() and _p8np.isfinite(_p8ms.mu).all(), \
+    "P8 Mixture 物性有限"
+_p8mr = float(_p8ms.update(_p8m_u, _p8m_v, _p8m_w))
+assert _p8np.isfinite(_p8mr), "P8 Mixture update 残差有限"
+assert _p8ms.iteration == 1 and _p8ms.phase_volume(1) > 0.0, "P8 Mixture 注入增长"
+# 工厂
+assert isinstance(_p8M.make_mixture(_p8fv, "mixture"), _p8M.MixtureSolver), \
+    "P8 Mixture 工厂"
+try:
+    _p8M.make_mixture(_p8fv, "nope")
+    raise AssertionError("P8 应拒绝未知 Mixture 模型")
+except ValueError:
+    pass
+# 集成：PressureSolver 字符串注入 Mixture + step() 稳定、rho/mu 逐单元变化、monitor 含 mix 键
+_p8sm = _p8Solver(_p8Vc, _p8Cc, mu=1e-3, rho=998.0, inlet_velocity=(1.0, 0.0, 0.0),
+                  max_outer=3, mixture_model="mixture",
+                  mixture_inlet_alphas=[0.2, 0.1])
+assert _p8sm.mixture_model is not None and not isinstance(_p8sm.mixture_model, str), \
+    "P8 应构建 Mixture 模型"
+for _p8i in range(5):
+    _p8pm = _p8sm.step()
+assert _p8np.isfinite(_p8sm.velocity()).all() and _p8np.isfinite(_p8pm["residual"]), \
+    "P8 Mixture 耦合流场/残差有限"
+assert _p8np.allclose(_p8sm.mixture_model.alphas.sum(axis=1), 1.0, atol=1e-8), \
+    "P8 Mixture 耦合 α 求和 1"
+_p8mm = _p8sm.monitor_payload()
+assert {"mix_rho_min", "mix_rho_max", "mix_alpha_sum"} <= set(_p8mm), \
+    "P8 Mixture monitor 含 mix 键"
+print("P8 Mixture：N 相体积分数守恒输运/漂移封闭/混合密度粘度/单流体耦合 全通过")
+
+# ---------------- P8c DPM 离散相：拉格朗日粒子注入 + 运动积分 + 连续相耦合 ----------------
+# 验收核心（P8 行）DPM：拉格朗日粒子轨（注入/运动/耦合源）。纯 numpy 可用。
+import dpm as _p8D
+# 常量 / 四面体点定位：域内质心命中所在单元，域外 -1
+assert _p8np.isclose(_p8D.DEFAULT_RHO_P, 2500.0), "P8 DPM 粒子密度"
+assert _p8D.locate_cells(_p8fv, _p8fv.centroids).min() >= 0, "P8 DPM 域内定位"
+assert _p8D.locate_cells(_p8fv, _p8fv.centroids[:1] + 1e3)[0] == -1, "P8 DPM 域外定位"
+# DpmSolver：初始无人、inject() 注入、update() 推进、耦合源有限、轨迹快照
+_p8d = _p8D.DpmSolver(_p8fv, parcels_per_step=5)
+assert _p8d.n_particles == 0 and _p8d.n_active == 0, "P8 DPM 初始无粒子"
+assert _p8d.inject() == 5 and _p8d.n_particles == 5, "P8 DPM 注入"
+_p8dr = float(_p8d.update(_p8m_u, _p8m_v, _p8m_w))
+assert _p8np.isfinite(_p8dr), "P8 DPM update 残差有限"
+assert _p8d.iteration == 1 and _p8d.n_particles >= 5, "P8 DPM 推进粒子增长"
+_p8dcs = _p8d.coupling_source()
+assert _p8dcs.shape == (_p8n, 3) and _p8np.isfinite(_p8dcs).all(), "P8 DPM 耦合源有限"
+assert len(_p8d.trajectories()) == 1, "P8 DPM 轨迹快照"
+# 工厂
+assert isinstance(_p8D.make_dpm(_p8fv, "dpm"), _p8D.DpmSolver), "P8 DPM 工厂"
+try:
+    _p8D.make_dpm(_p8fv, "nope")
+    raise AssertionError("P8 应拒绝未知 DPM 模型")
+except ValueError:
+    pass
+# 集成：PressureSolver 字符串注入 DPM + step() 稳定、粒子增长、monitor 含 n_particles 键
+_p8sd = _p8Solver(_p8Vc, _p8Cc, mu=1e-3, rho=998.0, inlet_velocity=(1.0, 0.0, 0.0),
+                  max_outer=3, dpm_model="dpm", dpm_rho_p=2500.0, dpm_dia_p=1e-4)
+assert _p8sd.dpm_model is not None and not isinstance(_p8sd.dpm_model, str), \
+    "P8 应构建 DPM 模型"
+for _p8i in range(5):
+    _p8pd = _p8sd.step()
+assert _p8np.isfinite(_p8sd.velocity()).all() and _p8np.isfinite(_p8pd["residual"]), \
+    "P8 DPM 耦合流场/残差有限"
+assert _p8sd.dpm_model.n_particles > 0, "P8 DPM 耦合粒子增长"
+_p8md = _p8sd.monitor_payload()
+assert {"n_particles", "n_active", "n_escaped"} <= set(_p8md), "P8 DPM monitor 含粒子键"
+print("P8 DPM：拉格朗日粒子注入/运动积分/连续相耦合源/单流体耦合 全通过")
+
 print("ALL CHECKS PASSED")

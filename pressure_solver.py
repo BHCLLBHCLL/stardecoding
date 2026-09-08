@@ -164,12 +164,24 @@ class PressureSolver:
                  max_outer=50, name="Pressure", initializer=None,
                  turb_model=None, energy_model=None, inlet_temp=None,
                  beta=0.0, gravity=(0.0, 0.0, -9.81), buoy_ref_temp=300.0,
-                 vof_model=None, inlet_alpha=1.0):
+                 vof_model=None, inlet_alpha=1.0,
+                 mixture_model=None, mixture_inlet_alphas=None,
+                 mixture_alpha0=None,
+                 dpm_model=None, dpm_rho_p=None, dpm_dia_p=None,
+                 dpm_mass_flow=None, dpm_parcels_per_step=None):
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
         self.vof_model = vof_model
         self.inlet_alpha = float(np.clip(inlet_alpha, 0.0, 1.0))
+        self.mixture_model = mixture_model
+        self.mixture_inlet_alphas = mixture_inlet_alphas
+        self.mixture_alpha0 = mixture_alpha0
+        self.dpm_model = dpm_model
+        self.dpm_rho_p = dpm_rho_p
+        self.dpm_dia_p = dpm_dia_p
+        self.dpm_mass_flow = dpm_mass_flow
+        self.dpm_parcels_per_step = dpm_parcels_per_step
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -221,6 +233,8 @@ class PressureSolver:
         self._ensure_turb_model()
         self._ensure_energy_model()
         self._ensure_vof_model()
+        self._ensure_mixture_model()
+        self._ensure_dpm_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -389,16 +403,20 @@ class PressureSolver:
     # -- 物性：单相标量 / VOF 可变密度 ----------------------------
     @property
     def rho(self):
-        """密度：无 VOF 时为标量 _rho0；有 VOF 时为逐单元混合密度场。"""
+        """密度：无多相时为标量 _rho0；有 VOF/Mixture 时为逐单元混合密度场。"""
         if self.vof_model is not None and not isinstance(self.vof_model, str):
             return self.vof_model.rho
+        if self.mixture_model is not None and not isinstance(self.mixture_model, str):
+            return self.mixture_model.rho
         return self._rho0
 
     @property
     def mu(self):
-        """动力粘度：无 VOF 时为标量 _mu0；有 VOF 时为逐单元混合粘度场。"""
+        """动力粘度：无多相时为标量 _mu0；有 VOF/Mixture 时为逐单元混合粘度场。"""
         if self.vof_model is not None and not isinstance(self.vof_model, str):
             return self.vof_model.mu
+        if self.mixture_model is not None and not isinstance(self.mixture_model, str):
+            return self.mixture_model.mu
         return self._mu0
 
     @property
@@ -441,6 +459,64 @@ class PressureSolver:
             return
         try:
             self.vof_model.update(self._u, self._v, self._w)
+        except Exception:
+            pass
+
+    # -- 多相 Mixture / DPM 耦合 -----------------------------------
+    def _ensure_mixture_model(self):
+        """惰性构建 Mixture 模型：mixture_model 为字符串名时按当前网格/边界实例化。"""
+        if self.mixture_model is None or not isinstance(self.mixture_model, str):
+            return
+        import mixture as _mix
+        fv = self._fv
+        kwargs = dict(
+            flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+            outlet_side=self.outlet_side,
+            inlet_alphas=self.mixture_inlet_alphas,
+            alpha0=self.mixture_alpha0)
+        self.mixture_model = _mix.make_mixture(
+            fv, model=self.mixture_model, **kwargs)
+
+    def _update_mixture(self):
+        """在 SIMPLE 环尾部用当前速度场推进各弥散相体积分数，更新混合物性。"""
+        if self._u is None:
+            return
+        if self.mixture_model is None or isinstance(self.mixture_model, str):
+            return
+        try:
+            self.mixture_model.update(self._u, self._v, self._w, mdot=self._mdot)
+        except Exception:
+            pass
+
+    def _ensure_dpm_model(self):
+        """惰性构建 DPM 模型：dpm_model 为字符串名时按当前网格/边界实例化。"""
+        if self.dpm_model is None or not isinstance(self.dpm_model, str):
+            return
+        import dpm as _dpm
+        fv = self._fv
+        kwargs = dict(
+            flow_axis=self.inlet_axis, inlet_side=self.inlet_side,
+            outlet_side=self.outlet_side,
+            inlet_velocity=self.inlet_velocity)
+        if self.dpm_rho_p is not None:
+            kwargs["rho_p"] = float(self.dpm_rho_p)
+        if self.dpm_dia_p is not None:
+            kwargs["d_p"] = float(self.dpm_dia_p)
+        if self.dpm_mass_flow is not None:
+            kwargs["mass_flow"] = float(self.dpm_mass_flow)
+        if self.dpm_parcels_per_step is not None:
+            kwargs["parcels_per_step"] = int(self.dpm_parcels_per_step)
+        self.dpm_model = _dpm.make_dpm(fv, model=self.dpm_model, **kwargs)
+
+    def _update_dpm(self):
+        """在 SIMPLE 环尾部用当前流体场推进拉格朗日粒子，更新连续相耦合源。"""
+        if self._u is None:
+            return
+        if self.dpm_model is None or isinstance(self.dpm_model, str):
+            return
+        try:
+            self.dpm_model.set_fluid(self.rho, self.mu)
+            self.dpm_model.update(self._u, self._v, self._w)
         except Exception:
             pass
 
@@ -583,6 +659,14 @@ class PressureSolver:
                 rhs += (-self.rho * self.beta
                         * (T - self.buoy_ref_temp) * self.gravity[comp]
                         * fv.volumes)
+        # DPM 连续相耦合源：粒子拖曳反作用力密度逐单元体源（S 已含 /V 归一）。
+        if self.dpm_model is not None and not isinstance(self.dpm_model, str):
+            try:
+                dpm_src = self.dpm_model.coupling_source()
+                if dpm_src.shape == (fv.n_cells, 3):
+                    rhs += dpm_src[:, comp] * fv.volumes
+            except Exception:
+                pass
         # VOF 重力耦合暂不启用显式密度差体源：水/气密度比 (~850×) 下该源项过大，
         # 且未在压力方程中以 p_rgh（剔除静水压）同步处理，导致 SIMPLE 发散。
         # 单流体界面捕捉保持稳定即可；浮力/静水耦合留给自由面算例用 p_rgh 形式完善。
@@ -701,6 +785,8 @@ class PressureSolver:
             self._update_turbulence()
         self._update_energy()
         self._update_vof()
+        self._update_mixture()
+        self._update_dpm()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),
@@ -756,4 +842,12 @@ class PressureSolver:
             payload["alpha_min"] = float(self.vof_model.alpha.min())
             payload["alpha_max"] = float(self.vof_model.alpha.max())
             payload["phase1_volume"] = self.vof_model.phase1_volume
+        if self.mixture_model is not None and not isinstance(self.mixture_model, str):
+            payload["mix_rho_min"] = float(self.mixture_model.rho.min())
+            payload["mix_rho_max"] = float(self.mixture_model.rho.max())
+            payload["mix_alpha_sum"] = float(self.mixture_model.alphas.sum(axis=1).max())
+        if self.dpm_model is not None and not isinstance(self.dpm_model, str):
+            payload["n_particles"] = self.dpm_model.n_particles
+            payload["n_active"] = self.dpm_model.n_active
+            payload["n_escaped"] = self.dpm_model.n_escaped
         return payload
