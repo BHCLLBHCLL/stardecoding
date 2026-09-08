@@ -1804,4 +1804,127 @@ assert {"ee_n_phases", "ee_alpha_min", "ee_alpha_max", "ee_alpha_sum",
 print("P10 多相欧拉-欧拉：相体积分数守恒输运/相间拖曳升力虚拟质量壁面润滑/"
       "群体平衡（聚并破碎成核）/P10 后端门面/PressureSolver 耦合 全通过")
 
+# ---------------- P11 运动谱系：刚体运动 + 滑移 interface、morphing、DFBI 6DOF、
+# ------------------- overset 重叠插值、MRF 旋转参考系源 ----------------
+# 验收核心（P11 行）：star.motion（Rigid Body / Sliding / Morphing / DFBI 6DOF /
+# Overset Mesh / Rotating Reference Frame）——原 P9 因燃烧顺延的运动谱系。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p11cube, FVM as _p11FVM
+from pressure_solver import PressureSolver as _p11Solver
+from motion import (
+    DfbiBody, MotionSolver, make_motion, morph_mesh, mrf_source,
+    overset_donor_weights, overset_interpolate, quat_to_dcm, rigid_transform,
+    rotate_points, sliding_interface, DEFAULT_ROTATION_SPEED, MAX_MORPH_ITER,
+    DEFAULT_MORPH_RELAX, DEFAULT_ROTATION_DT,
+)
+import numpy as _p11np
+# 常量
+assert _p11np.isclose(DEFAULT_ROTATION_SPEED, 0.0), "P11 默认转速"
+assert MAX_MORPH_ITER > 0 and 0.0 < DEFAULT_MORPH_RELAX <= 1.0, "P11 morph 常量"
+assert DEFAULT_ROTATION_DT > 0.0, "P11 时间步常量"
+# 刚体运动：Rodrigues 旋转（z 轴 90° x→y、轴上点不动、距离保持）
+assert _p11np.allclose(rotate_points(_p11np.array([[1.0, 0.0, 0.0]]),
+                                     (0, 0, 1), _p11np.pi / 2.0)[0],
+                       [0.0, 1.0, 0.0], atol=1e-12), "P11 旋转 x→y"
+assert _p11np.allclose(rotate_points(_p11np.array([[0.0, 0.0, 5.0]]),
+                                     (0, 0, 1), 0.7)[0],
+                       [0.0, 0.0, 5.0], atol=1e-12), "P11 轴上点不动"
+_p11v = _p11np.array([[1.0, 2.0, 3.0]])
+assert abs(_p11np.linalg.norm(rotate_points(_p11v, (1, 1, 0), 0.5))
+           - _p11np.linalg.norm(_p11v)) < 1e-12, "P11 正交距离保持"
+# rigid_transform：转速 0 纯平移、转速旋转无平移距离保持
+_p11V = _p11np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+assert _p11np.allclose(rigid_transform(_p11V, rotation_speed=0.0,
+                                       translation_velocity=(1.0, 2.0, 3.0), t=2.0),
+                       _p11V + _p11np.array([2.0, 4.0, 6.0]), atol=1e-12), "P11 纯平移"
+assert _p11np.allclose(rigid_transform(_p11np.array([[1.0, 0.0, 0.0]]),
+                                       rotation_axis=(0, 0, 1), rotation_speed=1.0,
+                                       translation_velocity=(0, 0, 0), t=_p11np.pi / 2.0)[0],
+                       [0.0, 1.0, 0.0], atol=1e-12), "P11 旋转位移"
+# 滑移接口
+_p11Vc, _p11Cc = _p11cube(nx=3)
+_p11fv = _p11FVM(_p11Vc, _p11Cc)
+_p11sl = sliding_interface(_p11fv, motion_axis=(0, 0, 1), sign=0.0, tol=1e-9)
+assert _p11sl.dtype == _p11np.int64 and _p11sl.size > 0, "P11 滑移面标识"
+# MRF 旋转源：omega=0 归零、离心径向外、科氏反速度
+_p11n = _p11fv.n_cells
+assert _p11np.allclose(mrf_source(_p11np.zeros((2, 3)), _p11np.zeros(2),
+                                  _p11np.zeros(2), _p11np.zeros(2), 0.0,
+                                  (0, 0, 1), 1.0), 0.0), "P11 MRF omega=0 归零"
+assert _p11np.allclose(mrf_source(_p11np.array([[1.0, 0.0, 0.0]]),
+                                  _p11np.zeros(1), _p11np.zeros(1), _p11np.zeros(1),
+                                  2.0, (0, 0, 1), 1.0)[0],
+                       [4.0, 0.0, 0.0], atol=1e-12), "P11 MRF 离心径向外"
+assert _p11np.allclose(mrf_source(_p11np.array([[0.0, 0.0, 0.0]]),
+                                  _p11np.array([1.0]), _p11np.zeros(1),
+                                  _p11np.zeros(1), 2.0, (0, 0, 1), 1.0)[0],
+                       [0.0, -4.0, 0.0], atol=1e-12), "P11 MRF 科氏反速度"
+# morphing：零位移恒等、边界夹持、内部有限
+assert _p11np.allclose(morph_mesh(_p11fv, _p11np.zeros((_p11fv.n_vertices, 3))),
+                       _p11fv.vertices, atol=1e-12), "P11 morph 零位移恒等"
+_p11disp = _p11np.zeros((_p11fv.n_vertices, 3), float)
+_p11disp[0, 0] = 0.1
+_p11morph = morph_mesh(_p11fv, _p11disp, max_iter=200, relax=0.6)
+assert _p11np.all(_p11np.isfinite(_p11morph)), "P11 morph 内部有限"
+assert abs(_p11morph[0, 0] - (_p11fv.vertices[0, 0] + 0.1)) < 1e-9, "P11 morph 边界夹持"
+# DFBI 6DOF：advance 受力 → 线加速度/位置；四元数/DCM 旋转映射 x→y
+_p11b = DfbiBody(mass=2.0, inertia=(1.0, 1.0, 1.0))
+_p11b.advance(_p11np.array([4.0, 0.0, 0.0]), _p11np.zeros(3), dt=1.0)
+assert _p11np.allclose(_p11b.linear_velocity, [2.0, 0.0, 0.0], atol=1e-12), "P11 DFBI 线速度"
+assert _p11np.allclose(_p11b.position, [2.0, 0.0, 0.0], atol=1e-12), "P11 DFBI 位置"
+_p11q = _p11np.array([_p11np.cos(_p11np.pi / 4), 0.0, 0.0, _p11np.sin(_p11np.pi / 4)])
+assert _p11np.allclose(quat_to_dcm(_p11q) @ _p11np.array([1.0, 0.0, 0.0]),
+                       [0.0, 1.0, 0.0], atol=1e-12), "P11 DFBI DCM 旋转"
+# overset：硬切换 + 常量场保形
+_p11W = overset_donor_weights(_p11np.array([[0.0, 0.0, 0.0]]),
+                              _p11np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), k=3)
+assert _p11W.shape == (1, 2) and _p11np.allclose(_p11W.sum(axis=1), 1.0), "P11 overset 权重"
+assert _p11np.allclose(_p11W[0], [1.0, 0.0], atol=1e-12), "P11 overset 硬切换"
+assert _p11np.allclose(overset_interpolate(
+    _p11np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+    _p11np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+    _p11np.array([2.0, 2.0, 2.0]), k=3), [2.0, 2.0], atol=1e-12), "P11 overset 常量场"
+# MotionSolver：工厂别名 + P10 后端门面
+_p11mo = make_motion(_p11fv, "motion", rotation_speed=2.0)
+assert isinstance(_p11mo, MotionSolver), "P11 工厂 motion"
+assert isinstance(make_motion(_p11fv, "MRF"), MotionSolver), "P11 工厂 MRF 大小写"
+assert isinstance(make_motion(_p11fv, "6dof"), MotionSolver), "P11 工厂 6dof"
+assert isinstance(make_motion(_p11fv, "morphing"), MotionSolver), "P11 工厂 morphing"
+assert isinstance(make_motion(_p11fv, "overset"), MotionSolver), "P11 工厂 overset"
+try:
+    make_motion(_p11fv, "nope")
+    raise AssertionError("P11 应拒绝未知运动模型")
+except ValueError:
+    pass
+_p11src = _p11mo.mrf_source(rho=_p11np.full(_p11n, 1.0))
+assert _p11src.shape == (_p11n, 3) and float(_p11np.linalg.norm(_p11src)) > 0.0, \
+    "P11 MRF 旋转源非零"
+_p11ini = _p11mo._initialize_field()
+assert "mode" in _p11ini, "P11 initialize 键"
+_p11mo.update(_p11np.zeros(_p11n), _p11np.zeros(_p11n), _p11np.zeros(_p11n), mdot=None)
+assert _p11np.isfinite(_p11mo.residual()), "P11 update 残差有限"
+_p11p = _p11mo.step()
+assert "residual" in _p11p and _p11np.isfinite(_p11p["residual"]), "P11 step 键"
+_p11m = _p11mo.monitor_payload()
+assert {"mode", "n_bodies", "rotation_speed", "t", "iteration"} <= set(_p11m), \
+    "P11 monitor 键"
+# 集成：PressureSolver 字符串注入 motion + step() 稳定、monitor 含 motion 键；基线无
+_p11s0 = _p11Solver(_p11Vc, _p11Cc, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0))
+assert _p11s0.motion_model is None, "P11 基线无模型"
+assert _p11np.isfinite(_p11s0.step()["residual"]), "P11 基线 step() 无报错"
+_p11sm = _p11Solver(_p11Vc, _p11Cc, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                    motion_model="motion", motion_rotation_speed=0.5,
+                    motion_rotation_axis=(0.0, 0.0, 1.0))
+for _p11k in range(6):
+    _p11ps = _p11sm.step()
+assert _p11np.isfinite(_p11sm.velocity()).all() and _p11np.isfinite(_p11ps["residual"]), \
+    "P11 耦合流场/残差有限"
+assert _p11sm.motion_model is not None and not isinstance(_p11sm.motion_model, str), \
+    "P11 应构建运动模型"
+_p11m11 = _p11sm.monitor_payload()
+assert {"motion_mode", "motion_rotation_speed", "motion_disp_max"} <= set(_p11m11), \
+    "P11 monitor 含 motion 键"
+print("P11 运动谱系：刚体运动+滑移 interface/Rodrigues 旋转/morphing 拉普拉斯变形/"
+      "DFBI 6DOF 刚体动力学/overset 重叠插值/MRF 离心科氏源/P10 后端门面/"
+      "PressureSolver 耦合 全通过")
+
 print("ALL CHECKS PASSED")

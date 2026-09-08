@@ -177,7 +177,14 @@ class PressureSolver:
                  dpm_model=None, dpm_rho_p=None, dpm_dia_p=None,
                  dpm_mass_flow=None, dpm_parcels_per_step=None,
                  species_model=None, combustion_model=None,
-                 combustion_inlet_fractions=None, combustion_ref_temp=300.0):
+                 combustion_inlet_fractions=None, combustion_ref_temp=300.0,
+                 motion_model=None, motion_mode=None,
+                 motion_rotation_speed=0.0,
+                 motion_rotation_axis=(0.0, 0.0, 1.0),
+                 motion_translation_velocity=(0.0, 0.0, 0.0),
+                 motion_reference_point=(0.0, 0.0, 0.0),
+                 motion_morph_max_iter=300, motion_morph_relax=0.6,
+                 motion_dfbi_dt=1.0e-3):
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
@@ -205,6 +212,16 @@ class PressureSolver:
         self.combustion_model = combustion_model
         self.combustion_inlet_fractions = combustion_inlet_fractions
         self.combustion_ref_temp = float(combustion_ref_temp)
+        self.motion_model = motion_model
+        self.motion_mode = motion_mode
+        self.motion_rotation_speed = float(motion_rotation_speed)
+        self.motion_rotation_axis = motion_rotation_axis
+        self.motion_translation_velocity = tuple(float(v)
+                                                 for v in motion_translation_velocity)
+        self.motion_reference_point = motion_reference_point
+        self.motion_morph_max_iter = int(motion_morph_max_iter)
+        self.motion_morph_relax = float(motion_morph_relax)
+        self.motion_dfbi_dt = float(motion_dfbi_dt)
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -261,6 +278,7 @@ class PressureSolver:
         self._ensure_dpm_model()
         self._ensure_species_model()
         self._ensure_combustion_model()
+        self._ensure_motion_model()
 
     def _build_boundary(self):
         fv = self._fv
@@ -645,6 +663,40 @@ class PressureSolver:
         except Exception:
             pass
 
+    # -- 运动谱系耦合 ---------------------------------------------
+    def _ensure_motion_model(self):
+        """惰性构建运动谱系模型：motion_model 为字符串名时按当前网格/边界实例化。
+
+        仅旋转参考系（MRF 离心/科氏源）会注入动量方程；morphing/DFBI 6DOF/overset
+        为动网格/刚体回馈原语，默认不影响单相压力基场（None = 零回归）。
+        """
+        if self.motion_model is None or not isinstance(self.motion_model, str):
+            return
+        import motion as _mo
+        fv = self._fv
+        kwargs = dict(
+            rotation_speed=self.motion_rotation_speed,
+            rotation_axis=self.motion_rotation_axis,
+            translation_velocity=self.motion_translation_velocity,
+            reference_point=self.motion_reference_point,
+            morph_max_iter=self.motion_morph_max_iter,
+            morph_relax=self.motion_morph_relax,
+            dfbi_dt=self.motion_dfbi_dt)
+        if self.motion_mode is not None:
+            kwargs["mode"] = self.motion_mode
+        self.motion_model = _mo.make_motion(fv, model=self.motion_model, **kwargs)
+
+    def _update_motion(self):
+        """在 SIMPLE 环尾部推进一次运动谱系状态（刚体姿态/网格位移/DFBI 平衡）。"""
+        if self._u is None:
+            return
+        if self.motion_model is None or isinstance(self.motion_model, str):
+            return
+        try:
+            self.motion_model.update(self._u, self._v, self._w, mdot=self._mdot)
+        except Exception:
+            pass
+
     # -- 湍流 nu_t 耦合 -------------------------------------------
     @property
     def nu_t(self):
@@ -792,6 +844,14 @@ class PressureSolver:
                     rhs += dpm_src[:, comp] * fv.volumes
             except Exception:
                 pass
+        # MRF 运动源：旋转参考系离心 + 科氏体源，按逐单元力密度注入（S × V）。
+        if self.motion_model is not None and not isinstance(self.motion_model, str):
+            try:
+                mrf_src = self.motion_model.mrf_source(rho=self.rho)
+                if mrf_src.shape == (fv.n_cells, 3):
+                    rhs += mrf_src[:, comp] * fv.volumes
+            except Exception:
+                pass
         # VOF 重力耦合暂不启用显式密度差体源：水/气密度比 (~850×) 下该源项过大，
         # 且未在压力方程中以 p_rgh（剔除静水压）同步处理，导致 SIMPLE 发散。
         # 单流体界面捕捉保持稳定即可；浮力/静水耦合留给自由面算例用 p_rgh 形式完善。
@@ -915,6 +975,7 @@ class PressureSolver:
         self._update_dpm()
         self._update_species()
         self._update_combustion()
+        self._update_motion()
         return {"residual": self._last_residual,
                 "cont_residual": float(cont_ratio),
                 "u_min": float(self._u.min()),
@@ -994,4 +1055,9 @@ class PressureSolver:
             payload["combo_T_max"] = float(self.combustion_model.T.max())
             payload["combo_n_ignited"] = int(np.count_nonzero(
                 self.combustion_model.ignited))
+        if self.motion_model is not None and not isinstance(self.motion_model, str):
+            payload["motion_mode"] = self.motion_model.mode
+            payload["motion_rotation_speed"] = self.motion_model.rotation_speed
+            payload["motion_disp_max"] = float(_safe_norm(
+                self.motion_model.mesh_displacement()))
         return payload
