@@ -2055,4 +2055,297 @@ print("P12 可压缩/密度基流：理想气体 EOS/等温压缩率与声速/�
       "压力基可压缩 SIMPLE 密度耦合（压缩性对角+密度质量源）/P10 后端门面/"
       "PressureSolver 耦合（逐单元密度场）全通过")
 
+# ---------------- V 波 后处理深化：V1 color-by 色彩映射 / V2 显示器全家福
+# ---- (streamline/pathline/particle/isosurface/section/clip/threshold/mirror/glyph)
+# ---- V3 派生零件(probe/line/plane/iso-volume/threshold/cache) / V4 绘图数据
+# ---- (XY/histogram/cumulative/monitor) / V5 注记/图例/色标尺/动画帧 / V6 数据写出
+# ---- (CSV/EnSight/CGNS) 全通过 -------------------------------------------------
+from postprocess import (
+    parse_colormap as _vparse, sample_colormap as _vsample,
+    scalar_range as _vrange, map_scalars as _vmap,
+    vector_magnitude as _vvmag, color_by as _vcolor,
+    locate_cell as _vlocate, sample_scalar as _vsamp,
+    sample_vector as _vsampv, cell_to_vertex as _vc2v,
+    marching_tets as _vmarch, section_plane as _vsection,
+    clip_plane as _vclip, extract_surface as _vexsurf,
+    threshold_cells as _vthrc, threshold_surface as _vthrs,
+    mirror_geometry as _vmirror, vector_glyphs as _vglyph,
+    streamline as _vstream, streamlines as _vstreams,
+    pathline as _vpath, particle_trace as _vpart,
+    probe as _vprobe, line_sample as _vline, plane_sample as _vplane,
+    iso_volume as _visov, threshold_part as _vthrpart,
+    plane_box_polygon as _vboxpoly, DerivedCache as _vCache,
+    xy_series as _vxy, histogram as _vhist,
+    cumulative_distribution as _vcdf, decimate_series as _vdec,
+    MonitorBuffer as _vMonitor,
+    colorbar_ticks as _vcticks, colorbar_strip as _vstrip,
+    legend_items as _vlegend, annotation as _vannot,
+    frame_times as _vftimes, frame_indices as _vfidx,
+    frame_name as _vfname, export_animation as _vanim,
+    write_csv as _vwcsv, export_csv as _vexpcsv,
+    write_ensight as _vwens, write_cgns as _vwcgns,
+    fields_from_solver as _vffs, _solver_fv as _vsfv,
+    PostProcessor as _vPP, make_postprocessor as _vmake,
+    _POSTPROCESS_MODELS as _vMODELS,
+)
+import tempfile as _vtmp, shutil as _vshutil
+import numpy as _vnp
+
+
+def _varea(surf):
+    Vt = _vnp.asarray(surf["vertices"], float)
+    T = _vnp.asarray(surf["triangles"], _vnp.int64)
+    if len(T) == 0:
+        return 0.0
+    cr = _vnp.cross(Vt[T[:, 1]] - Vt[T[:, 0]], Vt[T[:, 2]] - Vt[T[:, 0]])
+    return float(0.5 * _vnp.sum(_vnp.sqrt(_vnp.sum(cr * cr, axis=1))))
+
+
+# ---- V1 色彩映射：断点解析/降序翻转/重采样/范围/映射/矢量幅值/color-by ----
+_vp, _vrgb, _val = _vparse([0.0, 0, 0, 1, 0.5, 1, 1, 0, 1.0, 1, 0, 0])
+assert _vnp.allclose(_vp, [0.0, 0.5, 1.0]) and _vrgb.shape == (3, 3), "V1 parse_colormap"
+assert _vnp.allclose(_val, 1.0), "V1 缺省 alpha 全不透明"
+_vp2, _vrgb2, _ = _vparse([1.0, 1, 0, 0, 0.5, 1, 1, 0, 0.0, 0, 0, 1])
+assert _vnp.allclose(_vp2, [0.0, 0.5, 1.0]) and _vnp.allclose(_vrgb2[0], [0, 0, 1]), \
+    "V1 降序位置自动翻转"
+assert _vparse([0.0, 0, 0, 1]) == (None, None, None), "V1 断点不足返回 None"
+_vcm = _vsample(n=16)
+assert _vcm.shape == (16, 4) and float(_vcm.min()) >= 0.0 and float(_vcm.max()) <= 1.0, \
+    "V1 sample_colormap (n,4)"
+assert _vnp.allclose(_vcm[0, :3], [0.0, 0.0, 1.0]) and \
+    _vnp.allclose(_vcm[-1, :3], [1.0, 0.0, 0.0]), "V1 默认色表蓝→红端点"
+assert _vrange([3.0, 1.0, 2.0]) == (1.0, 3.0), "V1 scalar_range"
+assert _vrange([_vnp.nan]) == (0.0, 1.0), "V1 空/NaN 范围退化"
+_vma = _vmap([0.0, 0.5, 1.0], cmap=_vcm, lo=0.0, hi=1.0)
+assert _vma.shape == (3, 4) and _vnp.allclose(_vma[0], _vcm[0]) and \
+    _vnp.allclose(_vma[-1], _vcm[-1]), "V1 map_scalars 端点对齐"
+assert _vnp.allclose(_vvmag(_vnp.array([[3.0, 4.0, 0.0]])), [5.0]), "V1 矢量幅值"
+assert _vnp.allclose(_vvmag(_vnp.array([1.0, 2.0])), [1.0, 2.0]), "V1 幅值 1D 直通"
+_vcb = _vcolor(_vnp.array([[3.0, 4.0, 0.0], [0.0, 0.0, 2.0]]), kind="magnitude")
+assert _vcb["rgba"].shape == (2, 4) and _vnp.allclose(_vcb["scalars"], [5.0, 2.0]), \
+    "V1 color_by magnitude"
+_vcc = _vcolor(_vnp.array([[3.0, 4.0, 0.0]]), kind="component", comp="y")
+assert _vnp.allclose(_vcc["scalars"], [4.0]), "V1 color_by component"
+try:
+    _vcolor(_vnp.array([1.0, 2.0]), kind="component", comp=0)
+    raise AssertionError("V1 component 需 (N,3) 矢量场")
+except ValueError:
+    pass
+
+# ---- V2 显示器几何：等值面/切片/裁剪/外表面/阈值/镜像/符号/流线 ----
+_vV, _vC = _p12Vc, _p12Cc
+_vfv = _p12fv
+_vnc, _vnv = _vfv.n_cells, _vfv.n_vertices
+assert _vnc == 162 and _vnv == 64, "V2 单位立方体 3³ 网格规模"
+_vcx = _vfv.centroids[:, 0]
+assert int(_vlocate(_vfv, (0.5, 0.5, 0.5))[0]) >= 0 and \
+    int(_vlocate(_vfv, (2.0, 2.0, 2.0))[0]) == -1, "V2 locate_cell 域内/外"
+_vnodal = _vV[:, 0]
+_vm = _vmarch(_vfv, _vnodal, 0.5)
+assert _vm["triangles"].shape[1] == 3 and abs(_varea(_vm) - 1.0) < 1e-6 and \
+    "scalar" in _vm["scalars"], "V2 marching_tets 等值面 x=0.5 面积 1.0"
+assert abs(_varea(_vsection(_vfv, (0.5, 0, 0), (1.0, 0, 0))) - 1.0) < 1e-6, \
+    "V2 section_plane 面积 1.0"
+assert abs(_varea(_vclip(_vfv, (0.5, 0, 0), (1.0, 0, 0))) - 4.0) < 1e-6, \
+    "V2 clip_plane 半盒外表面 4.0"
+assert abs(_varea(_vexsurf(_vfv, _vnp.arange(_vnc))) - 6.0) < 1e-6, \
+    "V2 extract_surface 全盒 6.0"
+_vsel = _vthrc(_vfv, _vcx, lo=0.5)
+assert 0 < len(_vsel) < _vnc, "V2 threshold_cells 子集"
+_vts = _vthrs(_vfv, _vcx, lo=0.5)
+assert _vts["count"] == len(_vsel) and _varea(_vts) > 0.0, "V2 threshold_surface"
+try:
+    _vthrc(_vfv, _vV[:, 0])
+    raise AssertionError("V2 threshold 需单元中心场")
+except ValueError:
+    pass
+_vmsurf = {"vertices": _vnp.array([[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0]]),
+           "triangles": _vnp.array([[0, 1, 2]], _vnp.int64),
+           "scalars": {"s": _vnp.array([1.0, 2.0, 3.0])}}
+_vmg = _vmirror(_vmsurf, point=(0, 0, 0), normal=(1.0, 0, 0))
+assert _vnp.allclose(_vmg["vertices"][:, 0], [0.0, -1.0, 0.0]) and \
+    _vnp.array_equal(_vmg["triangles"], [[2, 1, 0]]), "V2 mirror 反射+绕序翻转"
+_vmg2 = _vmirror(_vmsurf, point=(0, 0, 0), normal=(1.0, 0, 0), merge=True)
+assert len(_vmg2["vertices"]) == 6 and len(_vmg2["triangles"]) == 2 and \
+    _vnp.allclose(_vmg2["scalars"]["s"], [1, 2, 3, 1, 2, 3]), "V2 mirror 合并"
+_vvel = _vnp.tile(_vnp.array([[1.0, 0.0, 0.0]]), (_vnc, 1))
+_vg = _vglyph(_vfv, _vvel, stride=16)
+assert _vg["points"].shape[1] == 3 and _vg["tips"].shape == _vg["points"].shape and \
+    _vg["count"] == len(_vg["points"]), "V2 vector_glyphs 结构"
+assert _vnp.allclose(_vg["tips"] - _vg["points"],
+                     _vnp.tile([_vg["scale"], 0, 0], (_vg["count"], 1))), "V2 glyph 终点"
+_vs = _vstream(_vfv, _vvel, (0.1, 0.5, 0.5), max_steps=6)
+assert _vs["vertices"].shape[1] == 3 and len(_vs["vertices"]) > 1, "V2 streamline RK4"
+_vss = _vstreams(_vfv, _vvel, [[0.5, 0.5, 0.5]], max_steps=4)
+assert len(_vss["lines"]) == 1 and len(_vss["lines"][0]["vertices"]) > 1, "V2 streamlines"
+_vpl = _vpath(_vfv, [_vvel, _vvel], (0.1, 0.5, 0.5), max_steps=4)
+assert _vpl["vertices"].shape[1] == 3 and len(_vpl["vertices"]) > 1, "V2 pathline 快照插值"
+_vpt = _vpart(_vfv, _vvel, [[0.1, 0.5, 0.5]], n_steps=4)
+assert _vpt["vertices"].shape[1] == 3 and \
+    _vpt["ids"].shape[0] == len(_vpt["vertices"]), "V2 particle_trace"
+
+# ---- V3 派生零件：探针/直线/平面/等值体/阈值零件/盒交多边形/缓存 ----
+_vpr = _vprobe(_vfv, {"x": _vcx}, [[0.5, 0.5, 0.5], [2.0, 2.0, 2.0]])
+assert bool(_vpr["inside"][0]) and not bool(_vpr["inside"][1]) and \
+    int(_vpr["cells"][1]) == -1, "V3 probe 域内/外与单元索引"
+assert _vnp.isfinite(_vpr["values"]["x"][0]) and _vnp.isnan(_vpr["values"]["x"][1]), \
+    "V3 probe 域外 NaN"
+_vls = _vline(_vfv, {"x": _vcx}, (0.1, 0.5, 0.5), (0.9, 0.5, 0.5), n=7)
+assert _vls["t"].shape == (7,) and _vnp.isclose(_vls["length"], 0.8), "V3 line_sample"
+_vps = _vplane(_vfv, {"x": _vcx}, (0.5, 0.5, 0.5), (1.0, 0, 0), n=3)
+assert _vps["grid_shape"] == (3, 3) and _vps["u"].shape == (9,), "V3 plane_sample"
+_viv_all = _visov(_vfv, _vcx, 2.0, above=False)
+assert _viv_all["count"] == _vnc and _vnp.isclose(_viv_all["fraction"], 1.0), \
+    "V3 iso_volume 全域 fraction=1"
+assert _visov(_vfv, _vcx, 2.0, above=True)["count"] == 0, "V3 iso_volume 空域"
+assert 0 < _visov(_vfv, _vV[:, 0], 0.5, above=True)["count"] < _vnc, \
+    "V3 iso_volume 接受逐顶点场"
+_vtp = _vthrpart(_vfv, _vcx, lo=0.5)
+assert _vtp["count"] > 0 and _vtp["volume"] > 0.0 and _vnp.isfinite(_vtp["volume"]), \
+    "V3 threshold_part 子域体积"
+_vbp = _vboxpoly((0, 0, 0), (1, 1, 1), (0.5, 0.5, 0.5), (1.0, 0, 0))
+assert _vbp.shape == (4, 3), "V3 plane_box_polygon 顶点数"
+_va1 = 0.5 * _vnp.sqrt(_vnp.sum(_vnp.cross(_vbp[1] - _vbp[0], _vbp[2] - _vbp[0]) ** 2))
+_va2 = 0.5 * _vnp.sqrt(_vnp.sum(_vnp.cross(_vbp[2] - _vbp[0], _vbp[3] - _vbp[0]) ** 2))
+assert abs(float(_va1 + _va2) - 1.0) < 1e-6, "V3 plane_box_polygon 面积 1.0"
+_vcache = _vCache(_vfv)
+_vcounter = {"n": 0}
+
+
+def _vfactory():
+    _vcounter["n"] += 1
+    return {"part": 42}
+
+
+_vr1 = _vcache.get_or_compute("p", {"a": 1}, _vfactory)
+_vr2 = _vcache.get_or_compute("p", {"a": 1}, _vfactory)
+assert _vr1 is _vr2 and _vcounter["n"] == 1 and len(_vcache) == 1, "V3 DerivedCache 命中"
+_vcache.get_or_compute("p", {"a": 2}, _vfactory)
+assert _vcounter["n"] == 2 and len(_vcache) == 2, "V3 DerivedCache 参数区分"
+
+# ---- V4 绘图数据：XY/直方图/累积分布/抽稀/监视器缓冲 ----
+_vxys = _vxy([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+assert _vxys["n"] == 3 and _vxys["valid"] == 3 and _vxys["x_range"] == (1.0, 3.0) and \
+    _vxys["y_range"] == (4.0, 6.0), "V4 xy_series 范围统计"
+assert _vxy([1.0, 2.0], [1.0, _vnp.nan])["valid"] == 1, "V4 xy_series NaN 有效计数"
+_vh = _vhist([0.0, 0.0, 1.0, 1.0, 1.0], bins=2)
+assert int(_vh["counts"].sum()) == 5 and len(_vh["edges"]) == 3 and _vh["n"] == 5, \
+    "V4 histogram 计数"
+assert _vnp.isfinite(_vhist([0.0, 0.0, 1.0, 1.0, 1.0], bins=2, density=True)["pdf"]).all(), \
+    "V4 histogram pdf"
+_vcdfr = _vcdf([0.0, 0.0, 1.0, 1.0, 1.0], bins=2)
+assert _vnp.isclose(_vcdfr["cdf"][-1], 1.0) and len(_vcdfr["x"]) == 2, \
+    "V4 cumulative_distribution"
+_vdec = _vdec(_vnp.arange(1000.0), _vnp.sin(_vnp.arange(1000.0)), max_points=50)
+assert _vdec["original"] == 1000 and 2 <= _vdec["n"] < 1000, "V4 decimate_series 抽稀"
+_vmon = _vMonitor(["res", "mach"], capacity=4)
+for _vi in range(6):
+    _vmon.append(_vi, {"res": float(_vi), "mach": 2.0 * _vi})
+assert len(_vmon) == 4, "V4 MonitorBuffer 容量滚动"
+_mit, _md = _vmon.arrays()
+assert _mit[-1] == 5.0 and _md["res"][-1] == 5.0 and _md["mach"][-1] == 10.0, \
+    "V4 MonitorBuffer 末值"
+assert _vmon.series("res")["n"] == 4, "V4 MonitorBuffer series"
+try:
+    _vmon.series("nope")
+    raise AssertionError("V4 MonitorBuffer 未知名称应报错")
+except KeyError:
+    pass
+_vmon.clear()
+assert len(_vmon) == 0, "V4 MonitorBuffer clear"
+
+# ---- V5 注记/图例/色标尺/动画帧 ----
+_vct = _vcticks(0.0, 1.0, n=5)
+assert _vct["n"] == 5 and len(_vct["labels"]) == 5 and \
+    _vnp.allclose(_vct["values"], [0.0, 0.25, 0.5, 0.75, 1.0]) and \
+    _vct["labels"][0] != _vct["labels"][-1], "V5 colorbar_ticks 刻度"
+_vcstrip = _vstrip(samples=8)
+assert _vcstrip["rgba"].shape == (8, 4) and _vcstrip["samples"] == 8, "V5 colorbar_strip"
+_vleg = _vlegend(["a", "b", "c"])
+assert len(_vleg) == 3 and _vleg[0]["label"] == "a" and len(_vleg[0]["rgba"]) == 4, \
+    "V5 legend_items"
+_van = _vannot("hello")
+assert _van["text"] == "hello" and _van["align"] == "left", "V5 annotation"
+assert _vnp.allclose(_vftimes(4, 0.5, start=1.0), [1.0, 1.5, 2.0, 2.5]), "V5 frame_times"
+assert _vnp.array_equal(_vfidx(3, start=2, step=2), [2, 4, 6]), "V5 frame_indices"
+assert _vfname("frame", 7) == "frame_0007.png", "V5 frame_name 补零命名"
+
+# ---- V6 数据写出 CSV/EnSight/CGNS + V5 动画序列（仓库约定 tempfile.mkdtemp）----
+try:
+    import h5py as _vh5
+    _vh5ok = True
+except Exception:
+    _vh5ok = False
+_vtmpdir = _vtmp.mkdtemp(prefix="v_wave_")
+try:
+    _vcsv = os.path.join(_vtmpdir, "c.csv")
+    _vwcsv(_vcsv, {"a": _vnp.array([1.0, 2.0]), "b": _vnp.array([3.0, 4.0])})
+    _vtxt = open(_vcsv, encoding="utf-8").read().splitlines()
+    assert _vtxt[0] == "a,b" and len(_vtxt) == 3 and _vtxt[1].startswith("1,"), \
+        "V6 write_csv 表头/行"
+    _vecsv = os.path.join(_vtmpdir, "cells.csv")
+    _vexpcsv(_vecsv, _vfv, {"speed": _vnp.ones(_vnc)})
+    _vhead = open(_vecsv, encoding="utf-8").read().splitlines()[0]
+    assert "cell" in _vhead and "speed" in _vhead, "V6 export_csv 含几何列"
+    _vens = _vwens(os.path.join(_vtmpdir, "ens"), _vfv,
+                   fields={"speed": _vnp.ones(_vnc)})
+    assert os.path.exists(_vens["case"]) and os.path.exists(_vens["geo"]) and \
+        len(_vens["dat"]) >= 1, "V6 write_ensight case/geo/dat"
+    _vanimres = _vanim(_vnp.zeros((2, 4, 4, 3), float),
+                       os.path.join(_vtmpdir, "anim"), prefix="z", fps=5, fmt="png")
+    assert _vanimres["count"] == 2 and \
+        os.path.exists(os.path.join(_vtmpdir, "anim", _vfname("z", 0))), \
+        "V5 export_animation PNG 序列"
+    if _vh5ok:
+        _vcgns = os.path.join(_vtmpdir, "m.cgns")
+        _vwcgns(_vcgns, _vfv, fields={"speed": _vnp.ones(_vnc)})
+        with _vh5.File(_vcgns, "r") as _vf:
+            _vzone = _vf["Base"]["Zone"]
+            _vconn = _vzone["Elements"]["ElementConnectivity"]
+            assert bytes(_vnp.asarray(_vzone["ZoneType"][()])) == b"Unstructured", \
+                "V6 write_cgns ZoneType"
+            assert tuple(_vconn.shape) == (_vnc, 4) and int(_vconn[()].min()) == 1, \
+                "V6 write_cgns 1-based 四面体连接"
+            assert "speed" in _vzone["FlowSolution"], "V6 write_cgns 解场"
+finally:
+    _vshutil.rmtree(_vtmpdir, ignore_errors=True)
+
+# ---- 门面 / 工厂：fields_from_solver + PostProcessor V1–V6 + make_postprocessor ----
+_vsol = _p12Solver(_vV, _vC, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0))
+_vsol.step()
+_vff = _vffs(_vsol)
+assert _vff["velocity"].shape == (_vnc, 3) and _vff["speed"].shape == (_vnc,), \
+    "V 门面 fields_from_solver velocity/speed"
+assert _vsfv(_vsol).n_cells == _vnc, "V 门面 _solver_fv 解析"
+_vpp = _vPP(_vfv, fields={"speed": _vnp.ones(_vnc), "velocity": _vvel, "x": _vcx})
+assert _vpp.color("speed")["rgba"].shape == (_vnc, 4), "V 门面 color"
+assert abs(_varea(_vpp.section((0.5, 0, 0), (1.0, 0, 0))) - 1.0) < 1e-6, "V 门面 section"
+assert abs(_varea(_vpp.clip((0.5, 0, 0), (1.0, 0, 0))) - 4.0) < 1e-6, "V 门面 clip"
+assert len(_vpp.streamline((0.1, 0.5, 0.5), max_steps=4)["vertices"]) > 1, "V 门面 streamline"
+assert int(_vpp.histogram("speed", bins=3)["counts"].sum()) == _vnc, "V 门面 histogram"
+assert _vpp.colorbar("speed", n=4)["n"] == 4, "V 门面 colorbar"
+assert _vpp.iso_volume("x", 2.0, above=False)["fraction"] == 1.0, "V 门面 iso_volume"
+_vpp.set_field("xn", _vV[:, 0])
+assert len(_vpp.isosurface("xn", 0.5)["vertices"]) > 0 and \
+    len(_vpp.isosurface("x", 0.5)["vertices"]) > 0, "V 门面 isosurface 顶点/单元场"
+_vpp2 = _vPP.from_solver(_vsol)
+assert _vpp2.fv.n_cells == _vnc and "velocity" in _vpp2.fields, "V 门面 from_solver"
+assert isinstance(_vmake(_vfv, fields={"speed": _vnp.ones(_vnc)},
+                         model="postprocess"), _vPP), "V 工厂 postprocess"
+assert isinstance(_vmake(_vfv, model="Post-Processing"), _vPP), "V 工厂 别名/大小写"
+assert isinstance(_vmake(solver=_vsol, model="visualization"), _vPP), "V 工厂 solver 注入"
+assert {"postprocess", "post", "display", "visualization"} <= set(_vMODELS), \
+    "V 工厂 别名表"
+try:
+    _vmake(_vfv, model="nope")
+    raise AssertionError("V 工厂 应拒绝未知模型")
+except ValueError:
+    pass
+print("V 波 后处理深化：V1 色彩映射(LUT/降序翻转/标量矢量 color-by)/"
+      "V2 显示器(streamline/pathline/particle/isosurface/section/clip/threshold/"
+      "mirror/vector glyph)/V3 派生零件(probe/line/plane/iso-volume/threshold/cache)/"
+      "V4 绘图数据(XY/histogram/cumulative/decimate/monitor)/"
+      "V5 注记/图例/色标尺/动画帧/PNG 序列/V6 数据写出(CSV/EnSight/CGNS)/"
+      "门面 fields_from_solver+PostProcessor+make_postprocessor 全通过")
+
 print("ALL CHECKS PASSED")

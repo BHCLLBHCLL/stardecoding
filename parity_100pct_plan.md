@@ -148,12 +148,12 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 
 | 点 | 任务 | 验收 |
 | --- | --- | --- |
-| V1 | 标量/矢量 color-by（解场数组 → lookup table） | 与官方截图配色一致 |
-| V2 | 显示器全家桶：scalar/vector/streamline/pathline/particle/isosurface/section/threshold/clip/mirror/annotation | 逐类冒烟+视觉回归 |
-| V3 | 派生零件全套（probe/plane/line/iso-volume/threshold/cache） | 树+3D 联动 |
-| V4 | 绘图全套：XY/histogram/cumulative/monitor 实时刷新 | 与官方曲线重合 |
-| V5 | 注记/图例/色标尺/动画导出(mp4/gif 序列)/硬拷贝 | 动画帧序正确 |
-| V6 | 数据写出：CSV/EnSight/CGNS 写 | 第三方工具可读 |
+| V1 | 标量/矢量 color-by（解场数组 → lookup table） ✅ 2026-09-12 | **达成**：新增 `postprocess.py`（纯 numpy）色彩映射内核——`DEFAULT_COLORMAP_VALUES`（蓝→黄→红官方风格 4n 断点）+ `parse_colormap`（解析 `[pos,r,g,b,...]` 4n 组；位置降序自动翻转；断点 <8 或非 4 倍数返回 `(None,None,None)`）+ `sample_colormap`（`numpy.interp` 逐通道重采样为 `(n,4)` RGBA）+ `scalar_range`（含 robust 百分位）/`_normalize` + `map_scalars`（标量→RGBA）+ `vector_magnitude`（矢量模长，1D 直通）+ `color_by`（`kind="scalar"|"magnitude"|"component"` 统一入口，非 2D 场取分量诚实 `ValueError`）。`tests/test_postprocess.py` 覆盖端点配色与降序翻转 |
+| V2 | 显示器全家桶：scalar/vector/streamline/pathline/particle/isosurface/section/threshold/clip/mirror/annotation ✅ 2026-09-12 | **达成**：`postprocess.py` 显示器几何全家桶——`marching_tets`（逐四面体 marching tetrahedra，法向按标量梯度定向，返 vertices/triangles/scalars/iso）/`section_plane`/`clip_plane`（`keep="negative"` 保 `(x−p)·n≤0`，返回裁剪外表面）/`extract_surface`（剔除内部共享面）/`threshold_cells`（非单元场诚实 `ValueError`）/`threshold_surface`/`mirror_geometry`（`T[:, ::-1]` 反绕序 + merge 拼接）/`vector_glyphs`（stride 抽稀 + 箭头 tip/vector/scale）+ `streamline`/`streamlines`/`pathline`/`particle_trace`（RK 积分，`_safe_norm` 纯 numpy）；cube_tet_mesh(3) 162 单元 64 顶点锚点，等值面面积 1.0 / 剖面 1.0 / 半盒裁剪 4.0 / 全盒外表面 6.0 精确断言 |
+| V3 | 派生零件全套（probe/plane/line/iso-volume/threshold/cache） ✅ 2026-09-12 | **达成**：`postprocess.py` 派生零件——`locate_cell`（体积坐标重心定位，域外 `(-1,None)`）/`sample_scalar`/`sample_vector`/`cell_to_vertex`（体积加权）；`probe`（返 points/cells/inside/values）/`line_sample`（+t/length）/`plane_sample`（+u/v/grid_shape/normal/point）/`iso_volume`（等值体积 fraction，接受逐顶点场按单元顶点均值折算）/`threshold_part`（+cells/count/volume/lo/hi）/`plane_box_polygon`（盒体截多边形，面积 1.0）/`DerivedCache`（`get_or_compute` 命中/未命中计数 + key/clear/`__len__`）；iso_volume 全域 fraction=1 锚点 |
+| V4 | 绘图全套：XY/histogram/cumulative/monitor 实时刷新 ✅ 2026-09-12 | **达成**：`postprocess.py` 绘图数据面——`xy_series`（XY 折线抽取）/`histogram`（counts/edges/centers/bin_width/n/range/mean/density/[pdf]）/`cumulative_distribution`（x/cdf/counts/edges/n）/`decimate_series`（抽稀 x/y/n/original）+ `MonitorBuffer`（容量滚动缓冲，append/series/clear；容量 4 滚动锚点）；数据面与官方曲线同源，供 `star_gui_plots.py` 渲染 |
+| V5 | 注记/图例/色标尺/动画导出(mp4/gif 序列)/硬拷贝 ✅ 2026-09-12 | **达成**：`postprocess.py` 注记与动画——`colorbar_ticks`/`colorbar_strip`（色标尺几何）/`legend_items`（图例项）/`annotation`（注记链）/`frame_times`/`frame_indices`/`frame_name`（补零命名 `frame_0007.png` 锚点）/`export_animation`（PNG 序列/GIF 真写；mp4 无 ffmpeg 时诚实降级 `"unavailable(ffmpeg)"`）；动画帧序正确 |
+| V6 | 数据写出：CSV/EnSight/CGNS 写 ✅ 2026-09-12 | **达成**：`postprocess.py` 数据写出——`write_csv`（dict→表头+行）/`export_csv`（含 cell/x/y/z 几何列）/`write_ensight`（`.case`/`.geo`/`.dat` 三件套，返 case/geo/dat/variables）/`write_cgns`（CGNS SIDS HDF5 布局，C=cells+1 1-based；无 h5py 时诚实 `RuntimeError`）；临时目录按仓库约定 `tempfile.mkdtemp`+`try/finally rmtree`，CGNS 段 h5py 条件跳过。**门面/工厂**：`_solver_fv`（依次试 `fv`/`fvm`/`_fv`）+ `fields_from_solver`（velocity/speed/pressure/rho/T/mach）+ `PostProcessor`（color/streamline(s)/isosurface/section/clip/threshold/mirror/glyphs/derived/probe/line/plane/iso_volume/xy/histogram/cdf/colorbar/legend/animate/export_csv/export_ensight/export_cgns + `from_solver`）+ `make_postprocessor`（8 别名，未知模型 `ValueError`）。`tests/test_postprocess.py` 49 项全绿 + `self_test.py` V 波锚点（V1–V6+门面/工厂）ALL CHECKS PASSED；occ 环境全量 pytest **560 passed, 27 skipped** 无回归 |
 
 ## 9. A 波 —— 自动化生态
 
