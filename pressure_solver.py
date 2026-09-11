@@ -184,7 +184,11 @@ class PressureSolver:
                  motion_translation_velocity=(0.0, 0.0, 0.0),
                  motion_reference_point=(0.0, 0.0, 0.0),
                  motion_morph_max_iter=300, motion_morph_relax=0.6,
-                 motion_dfbi_dt=1.0e-3):
+                 motion_dfbi_dt=1.0e-3,
+                 compressible_model=None, compressible_gamma=1.4,
+                 compressible_mw=28.96, compressible_p_ref=101325.0,
+                 compressible_t_ref=300.0, compressible_dt=1.0e-3,
+                 compressible_relax=0.5):
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
@@ -222,6 +226,13 @@ class PressureSolver:
         self.motion_morph_max_iter = int(motion_morph_max_iter)
         self.motion_morph_relax = float(motion_morph_relax)
         self.motion_dfbi_dt = float(motion_dfbi_dt)
+        self.compressible_model = compressible_model
+        self.compressible_gamma = float(compressible_gamma)
+        self.compressible_mw = float(compressible_mw)
+        self.compressible_p_ref = float(compressible_p_ref)
+        self.compressible_t_ref = float(compressible_t_ref)
+        self.compressible_dt = float(compressible_dt)
+        self.compressible_relax = float(compressible_relax)
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -272,6 +283,7 @@ class PressureSolver:
         self._initialize_field()
         self._ensure_turb_model()
         self._ensure_energy_model()
+        self._ensure_compressible_model()
         self._ensure_vof_model()
         self._ensure_mixture_model()
         self._ensure_eulerian_model()
@@ -454,6 +466,8 @@ class PressureSolver:
             return self.mixture_model.rho
         if self.eulerian_model is not None and not isinstance(self.eulerian_model, str):
             return self.eulerian_model.rho
+        if self.compressible_model is not None and not isinstance(self.compressible_model, str):
+            return self.compressible_model.rho
         return self._rho0
 
     @property
@@ -480,7 +494,11 @@ class PressureSolver:
 
         单流体 VOF：压力/动量矩阵采用单相参考密度以保持 SIMPLE 稳定，密度差通过
         动量 RHS 的显式重力体源进入（见 `_assemble_momentum`），故此处不做可变密度。
+        可压缩模型启用后面密度改为逐单元密度插值（理想气体 EOS），使动量/Rhie-Chow/
+        压力修正矩阵体现密度变化。
         """
+        if self.compressible_model is not None and not isinstance(self.compressible_model, str):
+            return self.compressible_model.face_density()
         return np.full(self._fv.n_faces, float(self._rho0), float)
 
     def _face_mu(self):
@@ -694,6 +712,42 @@ class PressureSolver:
             return
         try:
             self.motion_model.update(self._u, self._v, self._w, mdot=self._mdot)
+        except Exception:
+            pass
+
+    # -- 可压缩 / 密度基流耦合 -------------------------------------
+    def _ensure_compressible_model(self):
+        """惰性构建可压缩模型：compressible_model 为字符串名时按当前网格实例化。
+
+        理想气体 EOS 密度状态 + 声速/马赫数诊断；启用后 `rho`/`_face_rho` 返回逐单元
+        密度场，压力修正方程叠加压缩性对角项与非稳态密度质量源（None = 零回归）。
+        """
+        if self.compressible_model is None or not isinstance(self.compressible_model, str):
+            return
+        import compressible as _cmp
+        fv = self._fv
+        kwargs = dict(
+            gamma=self.compressible_gamma, W=self.compressible_mw,
+            p_ref=self.compressible_p_ref, T_ref=self.compressible_t_ref,
+            dt=self.compressible_dt, relax=self.compressible_relax)
+        self.compressible_model = _cmp.make_compressible(
+            fv, model=self.compressible_model, **kwargs)
+
+    def _update_compressible(self):
+        """在 SIMPLE 环尾部由（表压 + 温度）经理想气体 EOS 推进密度状态。
+
+        温度取自能量模型（若启用），压力取当前压力修正后的表压场 `self._p`。
+        """
+        if self._u is None:
+            return
+        if self.compressible_model is None or isinstance(self.compressible_model, str):
+            return
+        try:
+            T = None
+            if self.energy_model is not None and not isinstance(self.energy_model, str):
+                T = getattr(self.energy_model, "T", None)
+            self.compressible_model.update(
+                self._u, self._v, self._w, mdot=self._mdot, T=T, p=self._p)
         except Exception:
             pass
 
@@ -913,6 +967,18 @@ class PressureSolver:
         rows = np.concatenate([o, nb, o, nb])
         cols = np.concatenate([o, nb, nb, o])
         vals = np.concatenate([gamma, gamma, -gamma, -gamma])
+        # 可压缩性附加对角项 V/(c² Δt)：由非稳态连续性 ∂ρ/∂t=(∂ρ/∂p)p'/Δt 得到，
+        # 增强压力-密度耦合（不可压/未启用时为 0 → 零回归）。
+        if self.compressible_model is not None and not isinstance(self.compressible_model, str):
+            try:
+                cmp_diag = np.asarray(
+                    self.compressible_model.compressibility_diagonal(), float)
+                if cmp_diag.shape == (n,):
+                    rows = np.concatenate([rows, np.arange(n, dtype=np.int64)])
+                    cols = np.concatenate([cols, np.arange(n, dtype=np.int64)])
+                    vals = np.concatenate([vals, cmp_diag])
+            except Exception:
+                pass
         ref = self._dirichlet_cell
         keep = rows != ref
         rows = rows[keep]
@@ -923,6 +989,15 @@ class PressureSolver:
         vals = np.concatenate([vals, [1.0]])
         imbalance = self._continuity_imbalance()
         rhs = -imbalance
+        # 非稳态密度质量源 (ρ − ρ_prev) V/Δt 进入连续性 RHS（稳态收敛 → 0）。
+        if self.compressible_model is not None and not isinstance(self.compressible_model, str):
+            try:
+                dsrc = np.asarray(
+                    self.compressible_model.density_change_source(), float)
+                if dsrc.shape == (n,):
+                    rhs = rhs - dsrc
+            except Exception:
+                pass
         rhs[ref] = 0.0
         return rows, cols, vals, rhs, o, nb, gamma, is_int
 
@@ -969,6 +1044,7 @@ class PressureSolver:
         if self.turb_model is not None:
             self._update_turbulence()
         self._update_energy()
+        self._update_compressible()
         self._update_vof()
         self._update_mixture()
         self._update_eulerian()
@@ -1060,4 +1136,14 @@ class PressureSolver:
             payload["motion_rotation_speed"] = self.motion_model.rotation_speed
             payload["motion_disp_max"] = float(_safe_norm(
                 self.motion_model.mesh_displacement()))
+        if self.compressible_model is not None and not isinstance(self.compressible_model, str):
+            cmp = self.compressible_model
+            payload["cmp_rho_min"] = float(cmp.rho.min())
+            payload["cmp_rho_max"] = float(cmp.rho.max())
+            payload["cmp_p_min"] = float(cmp.pressure.min())
+            payload["cmp_p_max"] = float(cmp.pressure.max())
+            payload["cmp_T_max"] = float(cmp.temperature.max())
+            payload["cmp_c_min"] = float(cmp.sound_speed.min())
+            payload["cmp_c_max"] = float(cmp.sound_speed.max())
+            payload["cmp_mach_max"] = float(cmp.max_mach)
         return payload

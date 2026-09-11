@@ -1927,4 +1927,132 @@ print("P11 运动谱系：刚体运动+滑移 interface/Rodrigues 旋转/morphin
       "DFBI 6DOF 刚体动力学/overset 重叠插值/MRF 离心科氏源/P10 后端门面/"
       "PressureSolver 耦合 全通过")
 
+# ---------------- P12 可压缩 / 密度基流：理想气体 EOS + 压力基可压缩 SIMPLE 密度耦合
+# ------------------- + 声速/马赫数/膨胀率诊断 + 能量-密度耦合 ----------------
+# 验收核心（P12 行）：star.flow（Compressible / Coupled Flow + Ideal Gas EOS）——
+# 密度由状态方程求得、声速/马赫数诊断、压力修正体现压缩性。纯 numpy 可用。
+from fvm_core import cube_tet_mesh as _p12cube, FVM as _p12FVM
+from pressure_solver import PressureSolver as _p12Solver
+from compressible import (
+    CompressibleSolver as _p12CS, make_compressible as _p12mk,
+    ideal_gas_rho as _p12rho, sound_speed as _p12c,
+    sound_speed_pr as _p12cpr, velocity_magnitude as _p12vmag,
+    mach_number as _p12mach, dilatation as _p12dil,
+    compression_work as _p12cwork, density_derivative as _p12drdp,
+    density_correction as _p12dcorr,
+    compressibility_diagonal as _p12cdiag,
+    density_change_source as _p12dsrc,
+    DEFAULT_GAMMA as _p12G, DEFAULT_MW as _p12W, DEFAULT_DT as _p12DT,
+    DEFAULT_RELAX as _p12RLX, MACH_EPS as _p12MEPS,
+)
+from species import R_UNIV as _p12R
+import numpy as _p12np
+# 常量
+assert _p12G > 1.0 and _p12W > 0.0, "P12 比热比/摩尔质量常量"
+assert _p12DT > 0.0 and 0.0 < _p12RLX <= 1.0 and _p12MEPS > 0.0, "P12 时间步/松弛常量"
+# 理想气体 EOS：标量/数组广播、正比压力、反比温度、T→0 保护
+assert _p12np.isclose(_p12rho(101325.0, 300.0),
+                      101325.0 * _p12W / (_p12R * 300.0)), "P12 EOS 标量"
+_p12arr = _p12rho(_p12np.array([101325.0, 202650.0]), 300.0)
+assert _p12arr.shape == (2,) and _p12np.isclose(_p12arr[1] / _p12arr[0], 2.0), \
+    "P12 EOS 正比压力"
+assert _p12rho(101325.0, 600.0) < _p12rho(101325.0, 300.0), "P12 EOS 反比温度"
+assert _p12np.isfinite(_p12rho(101325.0, 0.0)) and _p12rho(101325.0, 0.0) > 0.0, \
+    "P12 EOS T→0 保护"
+# 等温压缩率 (∂ρ/∂p)_T = W/(R T) = γ/c²
+_p12d = _p12drdp(300.0)
+assert _p12np.isclose(_p12d, _p12W / (_p12R * 300.0)), "P12 等温压缩率"
+assert _p12np.isclose(_p12d * _p12c(300.0) ** 2, _p12G, rtol=1e-9), \
+    "P12 等温压缩率 = γ/c²"
+# 声速：c=√(γRT/W) 与 c=√(γp/ρ) 一致
+_p12c1 = _p12c(300.0)
+_p12c2 = _p12cpr(101325.0, _p12rho(101325.0, 300.0))
+assert _p12np.isclose(_p12c1, _p12c2, rtol=1e-9) and _p12c1 > 0.0, "P12 声速等价形式"
+assert _p12np.allclose(_p12vmag(_p12np.array([3.0, 0.0]), _p12np.array([4.0, 0.0]),
+                                _p12np.zeros(2)), [5.0, 0.0]), "P12 速度幅值"
+assert _p12np.isclose(_p12mach(_p12np.array([340.0]), _p12np.zeros(1),
+                               _p12np.zeros(1), 340.0)[0], 1.0), "P12 马赫数"
+# 压缩性诊断：均匀场散度归零、拉伸流散度为正且线性缩放
+_p12Vc, _p12Cc = _p12cube(nx=3)
+_p12fv = _p12FVM(_p12Vc, _p12Cc)
+_p12n = _p12fv.n_cells
+assert _p12np.allclose(_p12dil(_p12fv, _p12np.full(_p12n, 1.0),
+                               _p12np.zeros(_p12n), _p12np.zeros(_p12n)),
+                       0.0, atol=1e-10), "P12 均匀场散度归零"
+_p12u = 2.0 * _p12fv.centroids[:, 0]
+_p12dl = _p12dil(_p12fv, _p12u, _p12np.zeros(_p12n), _p12np.zeros(_p12n))
+assert _p12np.all(_p12dl > 0.0), "P12 拉伸流散度为正"
+assert _p12np.allclose(_p12dil(_p12fv, 2.0 * _p12u, _p12np.zeros(_p12n),
+                               _p12np.zeros(_p12n)), 2.0 * _p12dl, rtol=1e-9), \
+    "P12 散度线性缩放"
+assert _p12np.allclose(_p12cwork(_p12np.array([1.0, -2.0]), _p12np.array([100.0, 100.0])),
+                       [100.0, -200.0]), "P12 压缩功"
+# 密度-压力耦合：ρ'=ρp'/(γp) 正比 p'、零修正归零；对角项反比 c²；稳态密度源归零
+assert _p12np.isclose(_p12dcorr(_p12np.array([20.0]), _p12np.array([1.2]),
+                                _p12np.array([101325.0]))[0]
+                      / _p12dcorr(_p12np.array([10.0]), _p12np.array([1.2]),
+                                  _p12np.array([101325.0]))[0], 2.0), "P12 密度修正正比"
+assert _p12np.allclose(_p12dcorr(_p12np.zeros(2), _p12np.array([1.2, 1.0]),
+                                 _p12np.full(2, 101325.0)), 0.0), "P12 零压力修正"
+_p12k1 = _p12cdiag(_p12np.ones(2), _p12np.array([100.0, 100.0]), dt=1e-3)
+_p12k2 = _p12cdiag(_p12np.ones(2), _p12np.array([200.0, 200.0]), dt=1e-3)
+assert _p12np.all(_p12k1 > 0.0) and _p12np.allclose(_p12k1 / _p12k2, 4.0), \
+    "P12 压缩性对角反比 c²"
+assert _p12np.allclose(_p12dsrc(_p12np.array([1.2, 1.0]), _p12np.array([1.2, 1.0]),
+                                _p12np.ones(2), dt=1e-3), 0.0), "P12 稳态密度源归零"
+# CompressibleSolver：初始密度 = 参考密度、温度/压力敏感、面密度、P10 后端门面
+_p12s = _p12CS(_p12fv)
+assert _p12np.allclose(_p12s.rho, _p12s.rho_ref), "P12 初始密度"
+assert _p12s.sound_speed.shape == (_p12n,) and _p12np.isfinite(_p12s.max_mach), \
+    "P12 声速/马赫数场"
+_p12st = _p12CS(_p12fv, relax=1.0)
+_p12st.update(_p12np.zeros(_p12n), _p12np.zeros(_p12n), _p12np.zeros(_p12n),
+              T=_p12np.full(_p12n, 600.0), p=_p12np.zeros(_p12n))
+assert _p12np.allclose(_p12st.rho, _p12st.rho_ref * 0.5, rtol=1e-9), "P12 温度→密度减半"
+_p12sp = _p12CS(_p12fv, relax=1.0)
+_p12sp.update(_p12np.zeros(_p12n), _p12np.zeros(_p12n), _p12np.zeros(_p12n),
+              p=_p12np.full(_p12n, 101325.0))
+assert _p12np.allclose(_p12sp.rho, _p12sp.rho_ref * 2.0, rtol=1e-9), "P12 压力→密度加倍"
+assert _p12s.face_density().shape == (_p12fv.n_faces,) and \
+    _p12np.allclose(_p12s.face_density(), _p12s.rho_ref), "P12 面密度"
+_p12ini = _p12s._initialize_field()
+assert {"rho_min", "rho_max", "c_min", "c_max", "mach_max"} <= set(_p12ini), \
+    "P12 initialize 键"
+assert "residual" in _p12s.step() and _p12np.isfinite(_p12s.residual()), "P12 step 残差"
+assert {"rho_min", "rho_max", "p_min", "p_max", "T_min", "T_max", "c_min",
+        "c_max", "mach_max", "dil_max", "iteration", "residual"} <= \
+    set(_p12s.monitor_payload()), "P12 monitor 键"
+# 工厂：别名/大小写解析 + 未知模型拒绝
+assert isinstance(_p12mk(_p12fv, "compressible"), _p12CS), "P12 工厂 compressible"
+assert isinstance(_p12mk(_p12fv, "Compressible-Flow"), _p12CS), "P12 工厂 别名/大小写"
+assert isinstance(_p12mk(_p12fv, "Ideal Gas"), _p12CS), "P12 工厂 Ideal Gas"
+try:
+    _p12mk(_p12fv, "nope")
+    raise AssertionError("P12 应拒绝未知可压缩模型")
+except ValueError:
+    pass
+# 集成：基线无 cmp 键（零回归）；字符串注入 compressible → rho 为逐单元场、monitor 含 cmp 键
+_p12s0 = _p12Solver(_p12Vc, _p12Cc, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0))
+assert _p12s0.compressible_model is None and _p12np.isscalar(_p12s0.rho), "P12 基线无模型"
+assert _p12np.isfinite(_p12s0.step()["residual"]), "P12 基线 step() 无报错"
+assert not any(k.startswith("cmp_") for k in _p12s0.monitor_payload()), "P12 基线无 cmp 键"
+_p12sc = _p12Solver(_p12Vc, _p12Cc, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                    compressible_model="compressible", compressible_p_ref=101325.0,
+                    compressible_t_ref=300.0)
+assert _p12sc.compressible_model is not None and \
+    not isinstance(_p12sc.compressible_model, str), "P12 应构建可压缩模型"
+assert not _p12np.isscalar(_p12sc.rho) and \
+    _p12np.asarray(_p12sc.rho).shape == (_p12sc._fv.n_cells,), "P12 耦合 rho 为场"
+for _p12k in range(4):
+    _p12p = _p12sc.step()
+assert _p12np.isfinite(_p12sc.velocity()).all() and _p12np.isfinite(_p12p["residual"]), \
+    "P12 耦合流场/残差有限"
+_p12m12 = _p12sc.monitor_payload()
+assert {"cmp_rho_min", "cmp_rho_max", "cmp_p_min", "cmp_p_max", "cmp_T_max",
+        "cmp_c_min", "cmp_c_max", "cmp_mach_max"} <= set(_p12m12), "P12 monitor 含 cmp 键"
+assert _p12m12["cmp_rho_min"] > 0.0 and _p12m12["cmp_c_max"] > 0.0, "P12 cmp 物理值"
+print("P12 可压缩/密度基流：理想气体 EOS/等温压缩率与声速/马赫数/膨胀率诊断/"
+      "压力基可压缩 SIMPLE 密度耦合（压缩性对角+密度质量源）/P10 后端门面/"
+      "PressureSolver 耦合（逐单元密度场）全通过")
+
 print("ALL CHECKS PASSED")
