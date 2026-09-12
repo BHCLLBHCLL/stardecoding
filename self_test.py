@@ -2510,4 +2510,84 @@ finally:
 print("X 波 客户端体验收尾：X1 会话生命周期（Save All/备份~/AutoSave@N 快照+轮转/"
       "CHECKPOINT 触发文件一次性消费/模板 .simt 扩展名/策略持久化）全通过")
 
+# ---------------- X 波 客户端体验收尾：X2 多仿真文档工作区 + 跨仿真复制粘贴 -----
+# ---- 对象图 id 冲突重映射（remap_value）+ 类比父挂靠 + 工作区登记/注销 -----------
+from sim_parser import SimObject as _X2Obj
+from star_gui_document import SimDocument as _X2Doc
+from star_gui_documents import (Clipboard as _X2CB, DocumentWorkspace as _X2WS,
+                                analogous_parent_id as _X2analog,
+                                child_ids as _X2child, collect_subtree as _X2sub,
+                                copy_subtree as _X2copy, paste_clip as _X2paste,
+                                plan_id_mapping as _X2plan)
+
+
+def _x2sim(root_id):
+    """root → RegionManager → Region → Boundary 的最小四层对象图。"""
+    root = _X2Obj(root_id, {"ClassName": "star.common.Simulation",
+                            "PresentationName": "Sim", "Keys": [root_id + 1]}, 0)
+    mgr = _X2Obj(root_id + 1, {"ClassName": "star.common.RegionManager",
+                               "PresentationName": "Regions",
+                               "Parent": root_id, "Keys": [root_id + 2]}, 1)
+    reg = _X2Obj(root_id + 2, {"ClassName": "star.common.Region",
+                               "PresentationName": "Fluid",
+                               "Parent": root_id + 1, "Keys": [root_id + 3]}, 2)
+    bnd = _X2Obj(root_id + 3, {"ClassName": "star.common.Boundary",
+                               "PresentationName": "Inlet", "Parent": root_id + 2}, 3)
+    sim = SimFile.__new__(SimFile)
+    sim.path = None
+    sim.objects = [root, mgr, reg, bnd]
+    sim.objmap = {o.id: o for o in sim.objects}
+    sim.sections = []
+    sim.arrays = []
+    return sim
+
+
+# 工作区登记 / 归属 / 注销
+_x2ws = _X2WS()
+_x2da, _x2db = _X2Doc(_x2sim(1)), _X2Doc(_x2sim(100))
+_x2ws.add(_x2da, owner="A")
+_x2ws.add(_x2db, owner="B")
+assert len(_x2ws) == 2 and _x2ws.owner_of(_x2da) == "A" and \
+    _x2ws.active is _x2db and list(_x2ws.documents) == [_x2da, _x2db], "X2 工作区登记/归属"
+assert _x2ws.remove(_x2da) is True and _x2ws.owner_of(_x2da) is None and \
+    _x2ws.remove(_x2da) is False, "X2 工作区注销"
+
+# 子树收集 / 剪贴快照 / 源父类名（供跨仿真挂靠）
+assert _X2sub(_x2da, 1) == [1, 2, 3, 4] and _X2child(_x2da, 1) == [2], "X2 子树收集"
+_x2clip = _X2copy(_x2da, 3)
+assert _x2clip.ids() == [3, 4] and \
+    _x2clip.parent_class == "star.common.RegionManager" and \
+    _x2clip.objects[3]["PresentationName"] == "Fluid Copy", "X2 剪贴快照/父类名"
+assert _x2da.created == {} and _x2da.dirty is False, "X2 复制不改源文档"
+
+# 类比父定位 + 跨文档粘贴（id 重映射、图内引用自洽、挂到目标 RegionManager）
+assert _X2analog(_x2db, "star.common.RegionManager") == 101 and \
+    _X2analog(_x2db, "star.common.Nonexistent") is None and \
+    _X2analog(None, "x") is None, "X2 类比父定位"
+assert _X2plan(_x2clip, _x2db) == {3: 104, 4: 105}, "X2 id 映射分配"
+_x2before = set(_x2db.sim.objmap)
+_x2new = _X2paste(_x2db, _x2clip, parent=_X2analog(_x2db, _x2clip.parent_class))
+assert _x2new == 104 and _x2new not in _x2before, "X2 粘贴分配非冲突 id"
+_x2no = _x2db.object(_x2new)
+assert _x2no.dict["PresentationName"] == "Fluid Copy" and \
+    _x2no.dict["Parent"] == 101 and _x2new in _x2db.sim.objmap[101].dict["Keys"] and \
+    _x2no.dict["Keys"] == [105] and _x2db.object(105).dict["Parent"] == 104, \
+    "X2 粘贴挂靠目标同类父 + 图内引用重映射"
+assert _x2db.dirty is True and _x2da.created == {}, "X2 跨文档粘贴只脏目标"
+
+# 剪贴板跨文档判定
+_x2cb = _X2CB()
+_x2cb.set(_x2da, _x2clip)
+assert _x2cb.has_content() and _x2cb.is_cross(_x2db) and \
+    not _x2cb.is_cross(_x2da), "X2 剪贴板跨文档判定"
+_x2cb.clear()
+assert not _x2cb.has_content(), "X2 剪贴板清空"
+
+# 工作区整体关闭
+_x2closed = _x2ws.close_all()
+assert len(_x2ws) == 0 and _x2ws.active is None and _x2closed == [_x2db], "X2 工作区整体关闭"
+print("X 波 客户端体验收尾：X2 多仿真文档工作区（登记/归属/注销/整体关闭）"
+      "+ 跨仿真复制粘贴（子树快照/源父类名/类比父挂靠/id 冲突重映射/图内引用自洽）"
+      "全通过")
+
 print("ALL CHECKS PASSED")

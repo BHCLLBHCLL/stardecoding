@@ -50,6 +50,7 @@ _T = {
     ("zh", "Display Toolbar"): "显示工具栏",
     ("zh", "Connect to Server"): "连接到服务器",
     ("zh", "New"): "新建",
+    ("zh", "New Window"): "新建窗口",
     ("zh", "Reload"): "重新加载",
     ("zh", "Save All"): "全部保存",
     ("zh", "Save As Template..."): "另存为模板...",

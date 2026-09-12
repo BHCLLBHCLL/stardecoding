@@ -15,12 +15,12 @@
 | 文件>新建/打开/关闭/最近/退出 | view |
 | 文件>重新加载 | session（`confirm_discard_dirty` 脏提示，与关闭/新建对齐） |
 | 文件>保存/另存为 | persist（`save_sim`：对象行 patches + 新对象 created 插入 + 数组覆盖 array_patches + 删除 deleted 摘 Keys） |
-| 文件>全部保存/自动保存/模板 | persist/session（`cmd_save_all` 走 `_open_documents()` 接缝，为多文档预留；`AutoSave` 可勾选 + `QTimer` 环 + `QSettings` 持久化；`AutoSave Now`/`Checkpoint` 出 `base@N.sim` 快照并按 keep 轮转；`make_backup` 覆盖写前存 `path~`；`Save As Template...`/`New from Template...` 支持 `.simt`） |
+| 文件>全部保存/自动保存/模板 | persist/session（`cmd_save_all` 覆盖工作区全部已打开仿真文档、跨窗口逐一落盘（X2，`_open_documents()`/`WORKSPACE`）；`AutoSave` 可勾选 + `QTimer` 环 + `QSettings` 持久化；`AutoSave Now`/`Checkpoint` 出 `base@N.sim` 快照并按 keep 轮转；`make_backup` 覆盖写前存 `path~`；`Save As Template...`/`New from Template...` 支持 `.simt`） |
 | 文件>导入 CAD/表面 | persist（`mesh_io.read_surface` 真读 STL/OBJ → MeshPart `ImportedVertices/ImportedFaces`；CAD 无 Parasolid 时同路径三角化） |
 | 文件>导入体网格 | persist（CCM 经 `ccm_io` 读**边界三角化**入 MeshPart，记 `CcmCellCount`；不重建体单元——见 G3） |
 | 文件>导出 STL/摘要/报告 | view（STL 三粒度：选中 Scene 按场景、选中 Part 按分块、否则全局；摘要/报告 JSON） |
 | 编辑>撤销/重做 | session（CommandBus） |
-| 编辑>复制/粘贴/删除/重命名 | persist（复制→created 插入对象图行；删除→Keys 摘除；重命名→对象行补丁） |
+| 编辑>复制/粘贴/删除/重命名 | persist（复制→`Clip` 子树快照并登记全局 `CLIPBOARD`（记录来源文档）；粘贴→同文档走 `CopyObjectCommand`（created 插入对象图行）/跨文档走 `paste_clip`（全新会话 id + `remap_value` 整型引用重映射 + `analogous_parent_id` 挂到目标同类父），X2；删除→Keys 摘除；重命名→对象行补丁） |
 | 编辑>上一选择/下一选择/按名称搜索 | session |
 | 网格>生成表面网格 | macro（找到 starccmw 则写宏 → 工作副本 `-batch` → 加载 out.sim；注意宏体实为 `generateVolumeMesh()`，语义错位待 G/W 波宏模板细分） |
 | 网格>生成体网格 | kernel（`cmd_generate_volume_mesh` 本地 N 波流水线：表面细分→tet（scipy/Gmsh 双路由）→质量→重编号，N1+N3；水密守门+HEADLESS 安全；N6 统一质量 histogram/repair 接入 `mesh_quality.py`） |
@@ -52,6 +52,8 @@
 | 能力 | 实现 |
 | --- | --- |
 | 会话生命周期（X1） | persist/session（`star_gui_session.py`：覆盖写前 `path~` 备份；`AutoSave` 策略 enabled/interval/keep/trigger + `base@N.sim` 快照命名与保留最近 N 份轮转；CHECKPOINT 触发文件一次性消费；`.simt` 模板扩展名。GUI：`cmd_save_all`/`cmd_save_template`/`cmd_new_from_template`/`cmd_toggle_autosave`/`cmd_autosave_now`/`cmd_checkpoint` + `QTimer` 自动保存环 + `QSettings` 持久化，详见「文件>全部保存/自动保存/模板」） |
+| 多仿真文档窗口（X2） | session（`star_gui_documents.py`：`DocumentWorkspace` 多文档登记 —— `add(doc, owner=)`/`remove`/`owner_of`/`activate`/`active`/`documents`/`paths`/`find_by_path`/`close_all`；`star_gui.py`：模块级 `OPEN_WINDOWS` 窗口登记 + `File>New Window`（Ctrl+Shift+N）→ `cmd_new_window` 开独立 `SimDocument` 窗口并 `WORKSPACE.add(owner=win)`；`on_file_loaded`/`close_sim`/`closeEvent` 同步工作区登记/注销） |
+| 跨仿真复制粘贴（X2） | persist（`star_gui_documents.py`：源子树快照 `Clip`（`copy_subtree` 记录根源 `ClassName` 到 `parent_class`）→ 目标文档 `plan_id_mapping` 从 `_next_id` 起分配非冲突会话 id → `sim_writer.remap_value` 递归重写 Keys/Parent 等整型引用 → 登记 `created`/`objmap`/`objects` → `analogous_parent_id(doc, class_name)` 按类名挂到目标同类父（显式 parent 优先）；落盘由 `sim_writer.created_id_mapping` 把会话 id 映射到图序号 id，保证写出对象图引用自洽） |
 
 ## 工具栏
 
@@ -120,5 +122,5 @@
 3. **遗留不精确点**（转入 G/W 波）：
    - 「生成表面网格」宏体实为 `generateVolumeMesh()`，表面/体网格宏模板未细分（W/A 波宏映射表）；
    - 体网格导入只取边界三角化，体单元表未重建（G3）；
-   - `Save All`/AutoSave/.simt 模板未实现（X1）；
+   - ~~`Save All`/AutoSave/.simt 模板未实现（X1）~~ → 已随 X1 落地（`star_gui_session.py` + `cmd_save_all` 等）；多仿真文档窗口 + 跨仿真复制粘贴已随 X2 落地（见「客户端体验收尾（X 波）」）；
    - Server/连接保持诚实禁用；求解 Run/Pause/Step/Stop 已随 P10 闭环启用（`solver_run.py` + 残差实时曲线，见菜单栏「求解/连接」）。

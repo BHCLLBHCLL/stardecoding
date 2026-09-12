@@ -29,6 +29,9 @@ from star_gui_panes import (
     MessageWindow, PaneFrame, ProgressPanel, StatusBarHelper, SummaryPane,
 )
 
+OPEN_WINDOWS = []
+"""X2：所有已打开的主窗口（保存引用避免被 GC；File>New Window 追加）。"""
+
 
 class LoadWorker(QObject):
     """后台加载 .sim（大文件避免卡 UI）。"""
@@ -288,6 +291,8 @@ class StarMainWindow(QMainWindow):
         from star_gui_i18n import tr
         self.actions = {}
         self._add("File>New", tr("New"), self.cmd_new, "file")
+        self._add("File>New Window", tr("New Window"), self.cmd_new_window, "file",
+                  "Ctrl+Shift+N")
         self._add("File>Open", tr("Open..."), self.open_file, "open", QKeySequence.Open)
         self._add("File>Close", tr("Close"), self.close_sim, "close")
         self._add("File>Reload", tr("Reload"), self.cmd_reload, "open")
@@ -412,7 +417,7 @@ class StarMainWindow(QMainWindow):
             return m
 
         file_menu = menu(tr("File") + "(&F)", [
-            "File>New", "File>Open", "File>Reload", "File>Close", None,
+            "File>New", "File>New Window", "File>Open", "File>Reload", "File>Close", None,
             "File>Save", "File>Save As", "File>Save All", None,
             "File>Save As Template", "File>New from Template", None,
             "File>AutoSave", "File>AutoSave Now", "File>Checkpoint", None,
@@ -722,6 +727,8 @@ class StarMainWindow(QMainWindow):
         from star_gui_model import StarSceneModel
         self.model = StarSceneModel(self.sim)
         self.document.bind(self.sim, self.sim_path)
+        from star_gui_documents import WORKSPACE
+        WORKSPACE.add(self.document, owner=self)
         self.tree_widget.set_model(self.model)
         self.props_widget.set_model(self.model)
         if getattr(self, "plot_pane", None) is not None:
@@ -846,6 +853,10 @@ class StarMainWindow(QMainWindow):
             self._clear_extra_graphics_tabs()
         except Exception:
             pass
+        from star_gui_documents import WORKSPACE
+        WORKSPACE.remove(self.document)
+        if self in OPEN_WINDOWS:
+            OPEN_WINDOWS.remove(self)
         super().closeEvent(event)
 
     def on_object_selected(self, obj):
@@ -1048,6 +1059,8 @@ class StarMainWindow(QMainWindow):
         QMessageBox.critical(self, "加载失败", "%s\n%s" % (path, err.splitlines()[-1]))
 
     def close_sim(self):
+        from star_gui_documents import WORKSPACE
+        WORKSPACE.remove(self.document)
         self.sim = None
         self.sim_path = None
         self.from_template = False
@@ -1073,6 +1086,16 @@ class StarMainWindow(QMainWindow):
         self.close_sim()
         self.msg("新建空会话（尚未写入 .sim）")
 
+    def cmd_new_window(self):
+        """X2：打开一个新的仿真文档窗口（含独立 SimDocument 与工作区登记）。"""
+        from star_gui_documents import WORKSPACE
+        win = StarMainWindow()
+        win.show()
+        OPEN_WINDOWS.append(win)
+        WORKSPACE.add(win.document, owner=win)
+        self.msg("已新建窗口（共 %d 个）" % (len(OPEN_WINDOWS) + 1))
+        return win
+
     def cmd_reload(self):
         if not self.sim_path:
             return self.msg("没有可重新加载的路径", "warn")
@@ -1096,20 +1119,34 @@ class StarMainWindow(QMainWindow):
         return self._write_sim(path)
 
     def _open_documents(self):
-        """当前已打开的仿真文档（X2 多文档前的单一文档接缝）。"""
+        """当前工作区中属于本窗口（或未登记归属）的仿真文档（X2 多文档）。"""
+        from star_gui_documents import WORKSPACE
+        docs = [d for d in WORKSPACE.documents
+                if WORKSPACE.owner_of(d) in (self, None)]
+        if docs:
+            return docs
         return [self.document] if self.sim is not None else []
 
     def cmd_save_all(self):
-        docs = self._open_documents()
+        """X2：保存工作区内全部打开的仿真文档（跨窗口逐一落盘）。"""
+        from star_gui_documents import WORKSPACE
+        docs = list(WORKSPACE.documents) or self._open_documents()
         if not docs:
             self.msg("没有可保存的仿真文档", "warn")
             return False
         saved = 0
-        for _doc in docs:
-            if self.cmd_save():
-                saved += 1
+        for doc in docs:
+            owner = WORKSPACE.owner_of(doc) or self
+            saver = getattr(owner, "cmd_save", None)
+            if not callable(saver):
+                continue
+            try:
+                if saver():
+                    saved += 1
+            except Exception:
+                pass
         self.msg("全部保存完成：%d/%d 个文档" % (saved, len(docs)))
-        return saved == len(docs)
+        return saved == len(docs) and saved > 0
 
     def cmd_save_template(self):
         """把当前会话另存为模板 .simt（不改当前文档路径）。"""
@@ -1264,10 +1301,26 @@ class StarMainWindow(QMainWindow):
         obj = self._selected_obj()
         if obj is None:
             return
+        from star_gui_documents import CLIPBOARD, copy_subtree
+        clip = copy_subtree(self.document, obj.id)
+        if clip is None:
+            return
+        CLIPBOARD.set(self.document, clip)
         self.document.clipboard = obj.id
         self.msg("已复制 %s" % (obj.name or obj.id))
 
     def cmd_paste(self):
+        from star_gui_documents import (CLIPBOARD, analogous_parent_id,
+                                        paste_clip)
+        if CLIPBOARD.has_content() and CLIPBOARD.is_cross(self.document):
+            parent = analogous_parent_id(self.document, CLIPBOARD.clip.parent_class)
+            new_root = paste_clip(self.document, CLIPBOARD.clip, parent)
+            if new_root is None:
+                return self.msg("粘贴失败（目标会话未就绪）", "warn")
+            self.tree_widget.select_object(new_root)
+            self._sync_edit_actions()
+            self.msg("已跨仿真粘贴对象树（新根 id %d）" % new_root)
+            return new_root
         oid = self.document.clipboard
         if oid is None:
             return self.msg("剪贴板为空", "warn")
