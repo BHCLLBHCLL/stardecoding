@@ -153,9 +153,13 @@ class StarMainWindow(QMainWindow):
         self.resize(1280, 820)
         self.sim = None
         self.sim_path = None
+        self.from_template = False
         self._thread = None
         self._worker = None
         self.solver_controller = None
+        self._autosave_timer = None
+        from star_gui_session import AutoSavePolicy
+        self.autosave_policy = AutoSavePolicy()
         from star_gui_document import SimDocument
         self.document = SimDocument()
         self.document.bus.on_change = self._sync_edit_actions
@@ -166,6 +170,8 @@ class StarMainWindow(QMainWindow):
         self._build_toolbar()
         self._wire_editor_ui()
         self._setup_solver_controller()
+        self._load_session_settings()
+        self._setup_autosave()
         self._sync_edit_actions()
         self.msg("STAR-CCM+ .sim Viewer / Editor 就绪 — 文件>打开 加载项目")
 
@@ -291,7 +297,16 @@ class StarMainWindow(QMainWindow):
         self._add("File>Export>Report", tr("Export Report (JSON)..."), self.cmd_export_report, "report")
         self._add("File>Save", tr("Save"), self.cmd_save, "save", QKeySequence.Save)
         self._add("File>Save As", tr("Save As..."), self.cmd_save_as, "save")
-        self._add("File>Save All", tr("Save All"), lambda: self._nyi("File>Save All"), "save")
+        self._add("File>Save All", tr("Save All"), self.cmd_save_all, "save",
+                  "Ctrl+Shift+S")
+        self._add("File>Save As Template", tr("Save As Template..."),
+                  self.cmd_save_template, "save")
+        self._add("File>New from Template", tr("New from Template..."),
+                  self.cmd_new_from_template, "file")
+        self._add("File>AutoSave", tr("AutoSave"), self.cmd_toggle_autosave, "save")
+        self.actions["File>AutoSave"].setCheckable(True)
+        self._add("File>AutoSave Now", tr("AutoSave Now"), self.cmd_autosave_now, "save")
+        self._add("File>Checkpoint", tr("Checkpoint"), self.cmd_checkpoint, "save")
         self._add("File>Import>Surface", tr("Import Surface..."), self.cmd_import_surface, "mesh")
         self._add("File>Import>CAD", tr("Import CAD..."), self.cmd_import_cad, "mesh")
         self._add("File>Import>Volume", tr("Import Volume Mesh..."),
@@ -399,6 +414,8 @@ class StarMainWindow(QMainWindow):
         file_menu = menu(tr("File") + "(&F)", [
             "File>New", "File>Open", "File>Reload", "File>Close", None,
             "File>Save", "File>Save As", "File>Save All", None,
+            "File>Save As Template", "File>New from Template", None,
+            "File>AutoSave", "File>AutoSave Now", "File>Checkpoint", None,
             "File>Import>Surface", "File>Import>CAD", "File>Import>Volume", None,
             "File>Export>STL", "File>Export>Summary", "File>Export>Report"])
         self._recent_menu = file_menu.addMenu(tr("Recent Files"))
@@ -522,6 +539,8 @@ class StarMainWindow(QMainWindow):
             title += " — %s" % self.sim_path
             if self.document.dirty:
                 title += " *"
+        elif getattr(self, "from_template", False) and self.sim is not None:
+            title += " — 新文档（模板 %s）" % os.path.basename(self.sim.path)
         self.setWindowTitle(title)
 
     def _on_document_event(self, kind, **kw):
@@ -648,8 +667,10 @@ class StarMainWindow(QMainWindow):
         self.messages.nyi(key)
 
     def open_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "打开 STAR-CCM+ 项目", "",
-                                              "STAR-CCM+ (*.sim);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开 STAR-CCM+ 项目", "",
+            "STAR-CCM+ 项目 (*.sim *.simt);;STAR-CCM+ (*.sim);;"
+            "STAR-CCM+ 模板 (*.simt);;All files (*)")
         if path:
             self.load_file(path)
 
@@ -676,17 +697,24 @@ class StarMainWindow(QMainWindow):
     def _on_loaded(self, sim, summary_text):
         self._finish_thread()
         self.sim = sim
-        self.sim_path = sim.path
+        from star_gui_session import is_template
+        tpl = is_template(sim.path)
+        self.from_template = tpl
+        self.sim_path = None if tpl else sim.path
         self.summary_pane.show_summary(summary_text)
         self.progress.done("已加载 %s" % os.path.basename(sim.path))
         self.set_status("对象 %d · 分区 %d · 数组 %d" % (
             len(sim.objects), len(sim.sections), len(sim.arrays)))
-        self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor — %s" % sim.path)
+        if tpl:
+            self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor — 新文档（模板 %s）"
+                                % os.path.basename(sim.path))
+        else:
+            self.setWindowTitle("STAR-CCM+ .sim Viewer / Editor — %s" % sim.path)
+            self._remember_recent(sim.path)
         base = os.path.splitext(os.path.basename(sim.path))[0]
         self.bottom_tabs.setTabText(0, base)
         self.msg("starccm+ viewer  %s" % os.path.basename(sim.path))
         self.msg("已加载 %s" % sim.path)
-        self._remember_recent(sim.path)
         self.on_file_loaded()   # M1+ 钩子
 
     def on_file_loaded(self):
@@ -1022,6 +1050,7 @@ class StarMainWindow(QMainWindow):
     def close_sim(self):
         self.sim = None
         self.sim_path = None
+        self.from_template = False
         self.summary_pane.show_summary("")
         self.set_status("已关闭")
         self.document.bind(None, None)
@@ -1059,13 +1088,61 @@ class StarMainWindow(QMainWindow):
         return self._write_sim(self.sim_path)
 
     def cmd_save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "另存为", self.sim_path or "untitled.sim",
-                                              "STAR-CCM+ (*.sim)")
+        initial = self.sim_path or "untitled.sim"
+        path, _ = QFileDialog.getSaveFileName(self, "另存为", initial,
+                                              "STAR-CCM+ (*.sim);;All files (*)")
         if not path:
             return False
         return self._write_sim(path)
 
-    def _write_sim(self, path):
+    def _open_documents(self):
+        """当前已打开的仿真文档（X2 多文档前的单一文档接缝）。"""
+        return [self.document] if self.sim is not None else []
+
+    def cmd_save_all(self):
+        docs = self._open_documents()
+        if not docs:
+            self.msg("没有可保存的仿真文档", "warn")
+            return False
+        saved = 0
+        for _doc in docs:
+            if self.cmd_save():
+                saved += 1
+        self.msg("全部保存完成：%d/%d 个文档" % (saved, len(docs)))
+        return saved == len(docs)
+
+    def cmd_save_template(self):
+        """把当前会话另存为模板 .simt（不改当前文档路径）。"""
+        if self.sim is None:
+            return self.msg("请先打开文件", "warn")
+        from star_gui_session import is_template, template_path
+        default = template_path(self.sim_path or "untitled.sim")
+        path, _ = QFileDialog.getSaveFileName(self, "另存为模板", default,
+                                              "STAR-CCM+ 模板 (*.simt);;All files (*)")
+        if not path:
+            return False
+        if not is_template(path):
+            path = template_path(path)
+        ok = self._write_sim(path, update_state=False, backup=False)
+        if ok:
+            self.msg("已保存模板 %s（保存时会另存为 .sim）" % path)
+        return ok
+
+    def cmd_new_from_template(self):
+        """从 .simt 模板新建会话：加载后路径置空，首次保存走另存为 .sim。"""
+        if not self.confirm_discard_dirty("从模板新建", "文档已修改，是否保存？"):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择模板", "", "STAR-CCM+ 模板 (*.simt);;All files (*)")
+        if not path:
+            return
+        self.document.mark_clean()
+        self.close_sim()
+        self.from_template = True
+        self.load_file(path)
+        self.msg("已从模板 %s 新建，保存时请另存为 .sim" % os.path.basename(path))
+
+    def _write_sim(self, path, update_state=True, backup=True):
         if self.sim is None:
             self.msg("请先打开文件", "warn")
             return False
@@ -1074,21 +1151,104 @@ class StarMainWindow(QMainWindow):
             scene = self._active_scene_object()
             if cam is not None and scene is not None:
                 self.document.persist_view(scene.id, cam)
+            if backup:
+                from star_gui_session import make_backup
+                bp = make_backup(path)
+                if bp:
+                    self.msg("已备份 %s" % os.path.basename(bp))
             from sim_writer import save_sim
             save_sim(self.sim, path, patches=self.document.patches,
                      created=self.document.created, src_path=self.sim_path,
                      array_patches=getattr(self.document, "array_patches", None),
                      deleted=getattr(self.document, "deleted", None))
-            self.sim_path = path
-            self.document.mark_clean()
-            self.document.path = path
-            self.msg("已保存 %s" % path)
-            self._sync_edit_actions()
+            if update_state:
+                self.sim_path = path
+                self.from_template = False
+                self.document.mark_clean()
+                self.document.path = path
+                self.msg("已保存 %s" % path)
+                self._sync_edit_actions()
+            else:
+                self.msg("快照已写出 %s" % path)
             return True
         except Exception as exc:
             self.msg("保存失败: %s" % exc, "error")
             QMessageBox.warning(self, "保存失败", str(exc))
             return False
+
+    # ---------------- X1：AutoSave / CHECKPOINT / 模板 ----------------
+    def _load_session_settings(self):
+        from star_gui_session import AutoSavePolicy
+        s = QSettings("stardecoding", "star_gui")
+        data = {
+            "enabled": s.value("autosave/enabled", False, type=bool),
+            "interval_sec": s.value("autosave/interval", 300, type=int),
+            "keep": s.value("autosave/keep", 3, type=int),
+            "trigger": s.value("autosave/trigger", "", type=str),
+        }
+        self.autosave_policy = AutoSavePolicy.from_dict(data)
+        self._sync_autosave_action()
+
+    def _save_session_settings(self):
+        s = QSettings("stardecoding", "star_gui")
+        p = self.autosave_policy
+        s.setValue("autosave/enabled", p.enabled)
+        s.setValue("autosave/interval", p.interval_sec)
+        s.setValue("autosave/keep", p.keep)
+        s.setValue("autosave/trigger", p.trigger)
+
+    def _sync_autosave_action(self):
+        act = self.actions.get("File>AutoSave")
+        if act is None:
+            return
+        act.blockSignals(True)
+        act.setChecked(self.autosave_policy.enabled)
+        act.blockSignals(False)
+
+    def _setup_autosave(self):
+        from PyQt5.QtCore import QTimer
+        if self._autosave_timer is None:
+            self._autosave_timer = QTimer(self)
+            self._autosave_timer.timeout.connect(self._on_autosave_tick)
+        self._autosave_timer.stop()
+        self._autosave_timer.start(self.autosave_policy.interval_sec * 1000)
+
+    def _on_autosave_tick(self):
+        from star_gui_session import consume_checkpoint
+        if consume_checkpoint(self.autosave_policy.trigger):
+            self.msg("检测到 CHECKPOINT 触发文件，执行断点保存")
+            self._do_snapshot("断点")
+            return
+        if not self.autosave_policy.enabled:
+            return
+        if self.sim is None or not self.sim_path or not self.document.dirty:
+            return
+        self._do_snapshot("自动")
+
+    def _do_snapshot(self, tag="自动"):
+        if self.sim is None or not self.sim_path:
+            self.msg("无会话路径，跳过%s保存" % tag, "warn")
+            return None
+        dest = self.autosave_policy.snapshot(
+            self.sim_path, lambda p: self._write_sim(p, update_state=False, backup=False))
+        if dest:
+            self.msg("%s保存快照 %s" % (tag, os.path.basename(dest)))
+        return dest
+
+    def cmd_toggle_autosave(self, checked=None):
+        act = self.actions.get("File>AutoSave")
+        if checked is None:
+            checked = act.isChecked() if act is not None else not self.autosave_policy.enabled
+        self.autosave_policy.enabled = bool(checked)
+        self._sync_autosave_action()
+        self._save_session_settings()
+        self.msg("自动保存 %s" % ("已启用" if checked else "已停用"))
+
+    def cmd_autosave_now(self):
+        return self._do_snapshot("手动")
+
+    def cmd_checkpoint(self):
+        return self._do_snapshot("断点")
 
     def cmd_undo(self):
         if self.document.undo():

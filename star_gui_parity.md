@@ -15,7 +15,7 @@
 | 文件>新建/打开/关闭/最近/退出 | view |
 | 文件>重新加载 | session（`confirm_discard_dirty` 脏提示，与关闭/新建对齐） |
 | 文件>保存/另存为 | persist（`save_sim`：对象行 patches + 新对象 created 插入 + 数组覆盖 array_patches + 删除 deleted 摘 Keys） |
-| 文件>全部保存/自动保存/模板 | disabled（Save All = `_nyi`；自动保存/模板无菜单项） |
+| 文件>全部保存/自动保存/模板 | persist/session（`cmd_save_all` 走 `_open_documents()` 接缝，为多文档预留；`AutoSave` 可勾选 + `QTimer` 环 + `QSettings` 持久化；`AutoSave Now`/`Checkpoint` 出 `base@N.sim` 快照并按 keep 轮转；`make_backup` 覆盖写前存 `path~`；`Save As Template...`/`New from Template...` 支持 `.simt`） |
 | 文件>导入 CAD/表面 | persist（`mesh_io.read_surface` 真读 STL/OBJ → MeshPart `ImportedVertices/ImportedFaces`；CAD 无 Parasolid 时同路径三角化） |
 | 文件>导入体网格 | persist（CCM 经 `ccm_io` 读**边界三角化**入 MeshPart，记 `CcmCellCount`；不重建体单元——见 G3） |
 | 文件>导出 STL/摘要/报告 | view（STL 三粒度：选中 Scene 按场景、选中 Part 按分块、否则全局；摘要/报告 JSON） |
@@ -46,6 +46,12 @@
 | 宏回放（A1） | macro（`MacroRecorder.replay` → `star_macro.run_star_macro_stream`：`starccmw -batch` 工作副本周转 + 逐行日志回流） |
 | Python 脚本 API（A2） | session（`star_api.py`：镜像 `star.*` ClientServerObject 对象模型——`ClientServerObjectKey` 惰性定位 + `ClientServerObject` 及 14 语义子类（含 `Boundary.region`/`Displayer.scene`/`Model.continuum` 反查）+ `Simulation` 集合/`get`/`get_by_name`；写操作经 CommandBus 可撤销；`run_python_script` 注入 `star`/`sim`/`objects` 命名空间） |
 | 参数研究 / DOE（A3） | session（`design_study.py`：`DesignParameter` + 4 类 DOE（full_factorial/ofat/latin_hypercube/random_sampling）+ `DesignTable`/`ResponseTable`（统计/最优/CSV）+ `DesignStudy.run(workers)` 并行批次 + 逐算例错误隔离；`bind_object` 对接 A2 对象属性） |
+
+## 客户端体验收尾（X 波）
+
+| 能力 | 实现 |
+| --- | --- |
+| 会话生命周期（X1） | persist/session（`star_gui_session.py`：覆盖写前 `path~` 备份；`AutoSave` 策略 enabled/interval/keep/trigger + `base@N.sim` 快照命名与保留最近 N 份轮转；CHECKPOINT 触发文件一次性消费；`.simt` 模板扩展名。GUI：`cmd_save_all`/`cmd_save_template`/`cmd_new_from_template`/`cmd_toggle_autosave`/`cmd_autosave_now`/`cmd_checkpoint` + `QTimer` 自动保存环 + `QSettings` 持久化，详见「文件>全部保存/自动保存/模板」） |
 
 ## 工具栏
 

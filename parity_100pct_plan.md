@@ -168,12 +168,12 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 
 ## 10. X 波 —— 客户端体验收尾
 
-| 点 | 任务 |
-| --- | --- |
-| X1 | Save All / AutoSave(intake@N.sim) / 备份(~) / CHECKPOINT 触发文件 / 模板 .simt |
-| X2 | 多仿真文档窗口 + 跨仿真复制粘贴（对象图 id 冲突重映射复用 `created_id_mapping`） |
-| X3 | 帮助系统（doc_javadoc_catalog 联动）/ 关于/licensing UI |
-| X4 | PyInstaller 打包 + 安装器 + 版本发布流程 |
+| 点 | 任务 | 路线 | 验收 |
+| --- | --- | --- | --- |
+| X1 | Save All / AutoSave(intake@N.sim) / 备份(~) / CHECKPOINT 触发文件 / 模板 .simt ✅ 2026-09-12 | A | **达成**：新增纯逻辑模块 `star_gui_session.py`——`backup_path`/`make_backup`（覆盖写前 `intake.sim`→`intake.sim~`，目标不存在返回 None）+ `autosave_path`/`list_autosaves`/`next_autosave_index`/`rotate_autosaves`（`base@N.sim` 快照命名 + 保留最近 keep 份）+ `template_path`/`is_template`（`.simt`）+ `checkpoint_triggered`/`consume_checkpoint`（触发文件一次性消费）+ `AutoSavePolicy`（enabled/interval_sec/keep/trigger，`to_dict`/`from_dict`（None 安全）/边界钳制/`snapshot(sim_path, write_fn)`）。GUI 侧 `star_gui.py` 接线：`File>Save All` 由 `_nyi` 假实现改为真实 `cmd_save_all`（走 `_open_documents()` 接缝，为 X2 多文档预留），新增 `Save As Template...`/`New from Template...`/`AutoSave`（可勾选）/`AutoSave Now`/`Checkpoint` 5 项 + File 菜单两组条目 + `QTimer` 自动保存环（`_on_autosave_tick` 先消费 CHECKPOINT 触发文件再按脏/开关判定）+ `QSettings` 持久化（`autosave/*`）+ `_write_sim(path, update_state, backup)`（写出前 `make_backup`）+ 模板感知加载（`.simt`→`from_template`、`sim_path=None`、标题"新文档（模板 …）"）+ `open_file` 过滤器纳入 `.simt`。`tests/test_gui_session.py` 5 项 + `tests/test_gui_x1.py` 9 项全绿 + `self_test.py` X1 锚点 ALL CHECKS PASSED |
+| X2 | 多仿真文档窗口 + 跨仿真复制粘贴（对象图 id 冲突重映射复用 `created_id_mapping`） | A | —（待推进；`_open_documents()` 接缝已预留） |
+| X3 | 帮助系统（doc_javadoc_catalog 联动）/ 关于/licensing UI | A | —（待推进） |
+| X4 | PyInstaller 打包 + 安装器 + 版本发布流程 | A（PyInstaller 缺失，需诚实降级） | —（待推进） |
 
 ## 11. 语料与资源需求（硬依赖，需用户/环境提供）
 

@@ -2453,4 +2453,61 @@ print("A 波 自动化生态：A1 Java 宏录制(7 命令映射/参数化渲染/
       "A2 star.* 脚本 API(对象模型/管理器 Keys/反向访问器/脚本注入)/"
       "A3 Design Manager 式参数研究(4 类 DOE/响应表统计最优/并行批次错误隔离) 全通过")
 
+# ---------------- X 波 客户端体验收尾：X1 会话生命周期 --------------------------
+# ---- Save All / AutoSave(@N 快照+轮转) / 备份(~) / CHECKPOINT 触发 / 模板 .simt --
+import star_gui_session as _X1
+_x1tmp = _atmp.mkdtemp(prefix="star_x1_")
+try:
+    _x1src = os.path.join(_x1tmp, "intake.sim")
+    assert _X1.make_backup(_x1src) is None and \
+        _X1.backup_path(_x1src) == _x1src + "~", "X1 备份路径/无目标安全"
+    with open(_x1src, "wb") as _f:
+        _f.write(b"payload")
+    _x1bp = _X1.make_backup(_x1src)
+    assert _x1bp == _x1src + "~" and open(_x1bp, "rb").read() == b"payload", \
+        "X1 备份保留覆盖前内容"
+    assert _X1.autosave_path(_x1src, 1) == os.path.join(_x1tmp, "intake@1.sim") and \
+        _X1.list_autosaves(_x1src) == [] and _X1.next_autosave_index(_x1src) == 1, \
+        "X1 AutoSave 命名/空列表"
+    for _n in (1, 2, 3):
+        with open(_X1.autosave_path(_x1src, _n), "wb") as _f:
+            _f.write(b"x")
+    assert _X1.next_autosave_index(_x1src) == 4 and \
+        [os.path.basename(p) for p in _X1.rotate_autosaves(_x1src, keep=2)] == \
+        ["intake@1.sim"] and [n for n, _p in _X1.list_autosaves(_x1src)] == [2, 3], \
+        "X1 AutoSave 轮转保留最近"
+    assert _X1.template_path("intake.sim") == "intake.simt" and \
+        _X1.is_template("x.SIMT") and not _X1.is_template("x.sim"), "X1 模板扩展名"
+    _x1trig = os.path.join(_x1tmp, "stop.trigger")
+    assert not _X1.checkpoint_triggered(_x1trig) and \
+        not _X1.consume_checkpoint(_x1trig), "X1 CHECKPOINT 未触发"
+    with open(_x1trig, "w") as _f:
+        _f.write("1")
+    assert _X1.consume_checkpoint(_x1trig) is True and \
+        not os.path.exists(_x1trig), "X1 CHECKPOINT 一次性消费"
+    _x1wrote = []
+    _x1p = _X1.AutoSavePolicy(enabled=True, interval_sec=60, keep=1)
+    _x1base = os.path.join(_x1tmp, "run.sim")
+
+    def _x1write(dest):
+        _x1wrote.append(dest)
+        with open(dest, "wb") as _f:
+            _f.write(b"1")
+
+    _x1p.snapshot(_x1base, _x1write)
+    _x1p.snapshot(_x1base, _x1write)
+    assert [os.path.basename(x) for x in _x1wrote] == ["run@1.sim", "run@2.sim"] and \
+        [n for n, _x in _X1.list_autosaves(_x1base)] == [2], "X1 策略快照/保留"
+    assert _x1p.snapshot("", _x1write) is None and \
+        _X1.AutoSavePolicy(interval_sec=0, keep=-5).interval_sec == 1 and \
+        _X1.AutoSavePolicy(interval_sec=0, keep=-5).keep == 0, "X1 策略边界钳制"
+    _x1d = _X1.AutoSavePolicy.from_dict(None)
+    assert _x1d.enabled is False and _x1d.trigger == "" and \
+        _X1.AutoSavePolicy.from_dict(_x1p.to_dict()).to_dict() == _x1p.to_dict(), \
+        "X1 策略持久化往返"
+finally:
+    _ashutil.rmtree(_x1tmp, ignore_errors=True)
+print("X 波 客户端体验收尾：X1 会话生命周期（Save All/备份~/AutoSave@N 快照+轮转/"
+      "CHECKPOINT 触发文件一次性消费/模板 .simt 扩展名/策略持久化）全通过")
+
 print("ALL CHECKS PASSED")
