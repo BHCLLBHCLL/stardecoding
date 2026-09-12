@@ -2645,4 +2645,45 @@ print("X 波 客户端体验收尾：X4 打包/版本发布（打包器探测 %s
       "版本清单、PyInstaller spec+命令、Inno Setup 安装器、发布说明、诚实降级）全通过"
       % (_x4p.available_packager() or "缺失"))
 
+# ---------------- V 波 遗留项：后处理 GUI 接线（纯逻辑桥） ---------------------
+import star_gui_postprocess as _vg
+from fvm_core import FVM as _vgFVM, cube_tet_mesh as _vgcube
+
+assert len(_vg.ACTION_SPECS) == 19, "Vg 19 个后处理动作"
+_vgmenu = [k for k in _vg.POST_MENU_KEYS if k is not None]
+assert set(_vgmenu) == set(_vg.ACTION_SPECS) and len(_vgmenu) == 19, \
+    "Vg 菜单键与动作一致"
+assert _vg.action_op("Post>ColorBy") == "color" and \
+    _vg.action_op("Post>ExportCGNS") == "export_cgns" and \
+    _vg.action_op("Post>Nope") is None, "Vg 动作→操作映射"
+_vgV, _vgC = _vgcube(2)
+_vgfv = _vgFVM(_vgV, _vgC)
+_vgsess = _vg.make_session(fv=_vgfv,
+                          fields={"x": _vgfv.centroids[:, 0],
+                                  "speed": _vgfv.centroids[:, 0] + 1.0})
+assert _vgsess.available() and "后处理" in _vgsess.summary(), "Vg 会话可用/摘要"
+_vgout = _vg.run_action(_vgsess, "Post>ColorBy", field="speed")
+assert _vgout["ok"] and _vgout["op"] == "color" and \
+    _vgout["payload"]["scalars"].size == _vgfv.n_cells, "Vg color 派发"
+_vgiso = _vg.run_action(_vgsess, "Post>IsoSurface", field="x", iso=0.5)
+assert _vgiso["ok"] and _vgiso["payload"]["triangles"].shape[1] == 3, \
+    "Vg isosurface 几何载荷"
+_vgthr = _vg.run_action(_vgsess, "Post>Threshold", field="x")
+assert _vgthr["ok"] and _vgthr["payload"]["count"] > 0, "Vg threshold 单元场"
+
+
+class _VgSolver(object):
+    def field(self):
+        return _vnp.arange(_vgfv.n_vertices, dtype=float)
+
+
+_vgsess2 = _vg.make_session(fv=_vgfv, solver=_VgSolver())
+assert _vgsess2.fields["field"].size == _vgfv.n_vertices, "Vg 求解器节点场补入"
+_vgthr2 = _vg.run_action(_vgsess2, "Post>Threshold", field="field")
+assert _vgthr2["ok"] and _vgthr2["payload"]["count"] > 0, "Vg 节点场阈值折算"
+assert _vg.run_action(_vg.make_session(fv=None), "Post>ColorBy")["ok"] is False, \
+    "Vg 无 FVM 诚实降级"
+print("V 波 遗留项：后处理 GUI 接线（19 动作注册/菜单键一致/会话可用/color-isosurface-"
+      "threshold 载荷/求解器节点场补入与阈值折算/无 FVM 诚实降级）全通过")
+
 print("ALL CHECKS PASSED")

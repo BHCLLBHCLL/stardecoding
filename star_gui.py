@@ -160,6 +160,7 @@ class StarMainWindow(QMainWindow):
         self._thread = None
         self._worker = None
         self.solver_controller = None
+        self._post_session = None
         self._autosave_timer = None
         from star_gui_session import AutoSavePolicy
         self.autosave_policy = AutoSavePolicy()
@@ -340,6 +341,11 @@ class StarMainWindow(QMainWindow):
                   lambda: self._kernel_nyi("转换为 2D"), "mesh")
         self._add("Mesh>Repair", tr("Surface Repair"), self.cmd_cad_repair, "mesh")
         self._add("Plot>NYI", tr("Plot"), self.cmd_show_plots, "plot")
+        from star_gui_postprocess import ACTION_SPECS
+        for _pkey, _pspec in ACTION_SPECS.items():
+            self._add(_pkey, tr(_pspec["label"]),
+                      lambda checked=False, k=_pkey: self.cmd_post_action(k),
+                      _pspec["icon"])
         self._add("Scene>New", tr("New Scene"), self.cmd_new_scene, "scene")
         self._add("Scene>AddDisplayer", tr("Add Displayer"), self.cmd_add_displayer, "displayer")
         self._add("Vis>SaveView", tr("Save View"), self.cmd_save_view, "reset")
@@ -453,6 +459,8 @@ class StarMainWindow(QMainWindow):
             "Tools>Fingerprint", "Tools>Check Length", "Tools>Validate"])
         menu(tr("Connection") + "(&C)", ["Connection>Server"])
         menu(tr("Plot") + "(&P)", ["Plot>NYI"])
+        from star_gui_postprocess import POST_MENU_KEYS
+        menu(tr("Post") + "(&O)", POST_MENU_KEYS)
         menu(tr("Window") + "(&W)", [
             "Window>Tree", "Window>Props", "Window>Output", "Window>Plots",
             "Window>Cad"])
@@ -2103,6 +2111,103 @@ class StarMainWindow(QMainWindow):
                     vp.render()
         self.msg("官方色表 %r（场 %r 范围 %.4g..%.4g）→ %d 个 actor（场景 %r）" % (
             cm.get("name"), fname, lo, hi, colored, scene["name"]))
+
+    # ---------------- V 波：后处理 GUI 接线 ----------------
+    def _post_session_obj(self):
+        """构造/复用后处理会话，绑定当前求解器（默认 DemoDiffusionSolver）。"""
+        from star_gui_postprocess import make_session
+        solver = None
+        ctrl = self.solver_controller
+        if ctrl is not None:
+            solver = getattr(getattr(ctrl, "backend", None), "solver", None)
+        sess = self._post_session
+        if sess is None:
+            sess = make_session(solver=solver)
+            self._post_session = sess
+        elif solver is not None and sess.solver is not solver:
+            sess.solver = solver
+            sess.refresh(solver)
+        return sess
+
+    def cmd_post_action(self, key):
+        """V1–V6：菜单动作 → `run_action` 派发，按载荷分派到视口/绘图/消息。"""
+        from star_gui_postprocess import run_action
+        try:
+            session = self._post_session_obj()
+        except Exception as exc:  # noqa: BLE001
+            return self.msg("后处理会话创建失败: %s" % exc, "error")
+        res = run_action(session, key)
+        if not res.get("ok"):
+            return self.msg(res.get("message") or ("后处理不可用：%s" % key), "nyi")
+        op = res.get("op")
+        payload = res.get("payload")
+        if op == "color":
+            self._render_post_color(payload)
+        elif op in ("isosurface", "section", "clip", "threshold", "mirror"):
+            self._render_post_geometry(key, payload)
+        elif op == "xy" and isinstance(payload, dict):
+            self._render_post_series("XY 曲线", payload.get("x"), payload.get("y"))
+        elif op == "histogram" and isinstance(payload, dict):
+            self._render_post_series("直方图", payload.get("centers"),
+                                     payload.get("counts"))
+        self.msg(res.get("message") or ("后处理 %s" % key))
+        self.set_status(res.get("message") or key)
+
+    def _render_post_color(self, payload):
+        """标量着色：官方色表按场全局范围映射到现有 actors。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        from star_gui_postprocess import official_colormap
+        from star_gui_vtk import color_actors_by_array, lut_from_colormap
+        rng = payload.get("range") or (0.0, 1.0)
+        lut = lut_from_colormap(official_colormap(), None, rng[0], rng[1])
+        on_pts = bool(payload.get("on_points"))
+        colored = 0
+        for vp in self._iter_viewports():
+            colored += color_actors_by_array(vp.actors, payload.get("scalars"),
+                                             on_points=on_pts, lut=lut)
+            if hasattr(vp, "render"):
+                vp.render()
+        return colored
+
+    def _render_post_geometry(self, key, payload):
+        """等值面/剖面/裁剪/阈值/镜像：三角面 → 视口新增 actor（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        import numpy as np
+        from star_gui_vtk import _actor, mesh_polydata
+        verts = payload.get("vertices")
+        tris = payload.get("triangles")
+        if verts is None or tris is None or len(tris) == 0:
+            return 0
+        gkey = "post:" + key
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                pd = mesh_polydata(np.asarray(verts, float),
+                                   np.asarray(tris, np.int64))
+            except Exception:
+                continue
+            act = _actor(pd, (0.85, 0.55, 0.18), opacity=0.9)
+            vp.remove_actors([gkey])
+            added += vp.add_actors([(gkey, "后处理", None, act)])
+            if hasattr(vp, "render"):
+                vp.render()
+        return added
+
+    def _render_post_series(self, name, xs, ys):
+        """XY 曲线 / 直方图 → 绘图窗格折线（xs 为 None 时用序数轴）。"""
+        if ys is None or getattr(self, "plot_pane", None) is None:
+            return
+        ys = list(ys)
+        if len(ys) < 2:
+            return
+        item = [name, "line", ys, None]
+        if xs is not None and len(xs) == len(ys):
+            item.append(list(xs))
+        self.plot_pane.canvas.set_series([item])
+        if getattr(self, "bottom_tabs", None):
+            self.bottom_tabs.setCurrentWidget(self.plot_pane)
 
     def on_property_edited(self, obj, key, value):
         if obj is None:

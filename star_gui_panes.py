@@ -315,6 +315,51 @@ class Star3DViewport(QWidget):
         if self._vtk_window_ready():
             self.fit_view()
 
+    def add_actors(self, actors, fit=False):
+        """增量追加 actors（后处理几何落点）：不改动既有 actor，默认不重置相机。"""
+        added = 0
+        for k, n, pid, actor in (actors or []):
+            self.actors.append((k, n, pid, actor))
+            self._by_actor[id(actor)] = (k, n, pid)
+            try:
+                self._base_opacity[id(actor)] = actor.GetProperty().GetOpacity()
+            except Exception:
+                self._base_opacity[id(actor)] = 1.0
+            try:
+                self.renderer.AddActor(actor)
+            except Exception:
+                continue
+            added += 1
+        self._apply_rep()
+        if fit and self._vtk_window_ready():
+            self.fit_view()
+        else:
+            self._safe_render()
+        return added
+
+    def remove_actors(self, keys):
+        """按 key 移除 actor（后处理重复执行时替换旧结果，避免堆叠）。"""
+        keys = set(keys or [])
+        if not keys:
+            return 0
+        removed = 0
+        keep = []
+        for entry in self.actors:
+            if entry[0] in keys:
+                try:
+                    self.renderer.RemoveActor(entry[3])
+                except Exception:
+                    pass
+                self._by_actor.pop(id(entry[3]), None)
+                self._base_opacity.pop(id(entry[3]), None)
+                removed += 1
+            else:
+                keep.append(entry)
+        self.actors = keep
+        if removed:
+            self._safe_render()
+        return removed
+
     def fit_view(self):
         try:
             self.renderer.ResetCamera()
