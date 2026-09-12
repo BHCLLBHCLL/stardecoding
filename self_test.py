@@ -2348,4 +2348,109 @@ print("V 波 后处理深化：V1 色彩映射(LUT/降序翻转/标量矢量 col
       "V5 注记/图例/色标尺/动画帧/PNG 序列/V6 数据写出(CSV/EnSight/CGNS)/"
       "门面 fields_from_solver+PostProcessor+make_postprocessor 全通过")
 
+# ---------------- A 波 自动化生态：A1 Java 宏录制 / A2 star.* 脚本 API
+# ---- / A3 Design Manager 式参数研究（DOE/响应表/并行批次）全通过 --------------
+import tempfile as _atmp, shutil as _ashutil
+import macro_record as _A1
+import star_api as _A2
+import design_study as _A3
+
+# ---- A1：命令→Java 映射表 / 参数化渲染 / 落盘 ----
+assert _A1.command_names() == sorted(_A1.COMMAND_JAVA_MAP) and \
+    len(_A1.command_names()) == 7, "A1 命令表 7 条"
+assert _A1.command_mode("RenameCommand") == "verified" and \
+    _A1.command_mode("ShowOnlyCommand") == "best-effort" and \
+    _A1.command_mode("Nope") is None, "A1 命令模式 verified/best-effort/未注册"
+_a1op = _A1.MacroOp("command", "set_visibility",
+                    **{"class": "star.vis.Scene",
+                       "target_name": "Mesh Scene 1", "visible": True})
+_a1imp, _a1lines = _A1.command_java(_a1op, 0)
+assert "import star.vis.Scene;" in _a1imp and \
+    'Scene obj0 = sim.getSceneManager().getScene("Mesh Scene 1");' in _a1lines and \
+    "obj0.setVisible(true);" in _a1lines, "A1 显隐命令→Java"
+_a1rec = _A1.MacroRecorder(class_name="selfcheck_macro", save_name="sc.sim")
+_a1rec.record_operation("generate_surface_mesh")
+_a1rec.record_operation("enable_model", continuum="Physics 1",
+                        model_class="star.flow.SegregatedFlowModel")
+_a1rec.record_operation("run")
+_a1java = _a1rec.to_java()
+for _a1needle in ("public class selfcheck_macro extends StarMacro",
+                  "Simulation sim = getActiveSimulation();",
+                  "mpc.generateSurfaceMesh();",
+                  "pc.enable(star.flow.SegregatedFlowModel.class);",
+                  "solver.run();",
+                  'sim.saveState(resolvePath("sc.sim"));'):
+    assert _a1needle in _a1java, "A1 渲染缺: " + _a1needle
+_a1tmp = _atmp.mkdtemp(prefix="star_a1_")
+try:
+    _a1path = _a1rec.save(_a1tmp)
+    assert os.path.basename(_a1path) == "selfcheck_macro.java" and \
+        "solver.run();" in open(_a1path, encoding="ascii").read(), \
+        "A1 落盘 ASCII java"
+finally:
+    _ashutil.rmtree(_a1tmp, ignore_errors=True)
+
+# ---- A2：star.* 对象模型 / 管理器 Keys / 反向访问器 / 脚本执行 ----
+_A2SIM = "D:/training/caedecoder/stardecoding/adjointWing_start.sim"
+_a2 = _A2.Simulation(sim=SimFile(_A2SIM))
+assert [r.name for r in _a2.regions] == ["Fluid Domain"] and \
+    isinstance(_a2.regions[0], _A2.Region), "A2 regions 集合/包装"
+assert [_a2.get_by_name("Mesh Scene 1").name, _a2.get_by_name("Physics 1").name] == \
+    ["Mesh Scene 1", "Physics 1"], "A2 场景/连续体定位"
+assert isinstance(_a2.get_by_name("Physics 1"), _A2.Continuum), \
+    "A2 PhysicsContinuum 后缀匹配 → Continuum"
+_a2reg = _a2.get_by_name("Fluid Domain")
+assert len(_a2reg.boundaries) == 7 and _a2reg.boundaries[3].name == "Inlet", \
+    "A2 边界管理器 Keys 7 条"
+assert _a2reg.boundaries[3].region.name == "Fluid Domain", "A2 Boundary→region 反查"
+_a2scn = _a2.get_by_name("Mesh Scene 1")
+assert _a2scn.displayers and _a2scn.displayers[0].scene.name == "Mesh Scene 1", \
+    "A2 Displayer→scene 反查"
+_a2g = _A2.run_python_script(
+    "first = sim.regions[0].name\n"
+    "back = sim.get(ClientServerObjectKey(name='Inlet')).region.name\n"
+    "Cls = star.Simulation\n",
+    sim=SimFile(_A2SIM))
+assert _a2g["first"] == "Fluid Domain" and _a2g["back"] == "Fluid Domain" and \
+    _a2g["Cls"] is _A2.Simulation, "A2 run_python_script 命名空间注入"
+
+# ---- A3：DOE 采样 / 响应表统计最优 / 并行批次错误隔离 ----
+_a3ps = [_A3.DesignParameter("a", values=[1, 2, 3]),
+         _A3.DesignParameter("b", values=["x", "y"])]
+assert len(_A3.full_factorial(_a3ps)) == 6 and \
+    {"a": 1, "b": "x"} in _A3.full_factorial(_a3ps), "A3 full_factorial 笛卡尔积"
+_a3lh1 = _A3.latin_hypercube(
+    [_A3.DesignParameter("t", lo=0.0, hi=1.0, levels=4),
+     _A3.DesignParameter("s", values=["a", "b"])], 4, seed=7)
+_a3lh2 = _A3.latin_hypercube(
+    [_A3.DesignParameter("t", lo=0.0, hi=1.0, levels=4),
+     _A3.DesignParameter("s", values=["a", "b"])], 4, seed=7)
+assert _a3lh1 == _a3lh2 and len(_a3lh1) == 4 and \
+    all(0.0 <= r["t"] < 1.0 and r["s"] in ["a", "b"] for r in _a3lh1), \
+    "A3 latin_hypercube 确定性/分层"
+_a3rt = _A3.ResponseTable(["a"], ["drag"])
+_a3rt.add_row({"case_id": 0, "a": 1}, {"drag": 2.0})
+_a3rt.add_row({"case_id": 1, "a": 2}, {"drag": 4.0})
+assert _a3rt.statistics("drag")["mean"] == 3.0 and \
+    abs(_a3rt.statistics("drag")["std"] - 1.0) < 1e-12, "A3 ResponseTable 统计"
+assert _a3rt.best("drag", maximize=True)["case_id"] == 1 and \
+    _a3rt.best("drag", maximize=False)["case_id"] == 0, "A3 ResponseTable 最优"
+_a3study = _A3.DesignStudy()
+_a3study.add_parameter("a", values=[1, 2, 3, 4])
+_a3study.add_response("y")
+
+
+def _a3eval(case):
+    if case["a"] == 2:
+        raise RuntimeError("boom")
+    return {"y": case["a"] * 2}
+
+
+_a3out = _a3study.run(_a3eval, workers=4)
+assert _a3out.response("y") == [2, None, 6, 8] and \
+    _a3out.errors == {1: "RuntimeError('boom')"}, "A3 并行批次/错误隔离"
+print("A 波 自动化生态：A1 Java 宏录制(7 命令映射/参数化渲染/ASCII 落盘)/"
+      "A2 star.* 脚本 API(对象模型/管理器 Keys/反向访问器/脚本注入)/"
+      "A3 Design Manager 式参数研究(4 类 DOE/响应表统计最优/并行批次错误隔离) 全通过")
+
 print("ALL CHECKS PASSED")

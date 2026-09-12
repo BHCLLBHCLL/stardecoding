@@ -157,14 +157,14 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 
 ## 9. A 波 —— 自动化生态
 
-| 点 | 任务 | 路线 |
-| --- | --- | --- |
-| A1 | Java 宏**录制**（客户端操作→.java）+ 回放桥命令映射全覆盖（网格/物理/求解/后处理） | A+B |
-| A2 | Python 脚本 API：镜像 star.* ClientServerObject 对象模型（semantic_dict 为骨架） | A |
-| A3 | Design Manager 式参数研究：DOE 扫描/响应表/并行批次 | A |
-| A4 | 伴随求解器 + 形状优化 | 仅 B 路线（自研不设时间表，诚实挂起） |
-| A5 | 协同仿真链接配置解析/建立（cosimulation 包对象已解析） | B |
-| A6 | 远程求解/HPC 作业提交桥 | B |
+| 点 | 任务 | 路线 | 验收 |
+| --- | --- | --- | --- |
+| A1 | Java 宏**录制**（客户端操作→.java）+ 回放桥命令映射全覆盖（网格/物理/求解/后处理） ✅ 2026-09-12 | A+B | **达成**：新增 `macro_record.py`——`COMMAND_JAVA_MAP`（7 命令全覆盖：`RenameCommand`/`SetPropertyCommand`/`VisibilityCommand` 产出可编译 ClientServerObject 调用=verified，`ShowOnly`/`TransformPart`/`Delete`/`Copy` 私有语义无公开等价 API→`// [best-effort]` 注释，诚实降级）+ `MANAGER_PATHS`（10 类 `sim.get<X>Manager().get<X>(name)` 检索惯例）+ `MacroOp`/`op_from_command`/`command_java` + `MacroRecorder`（`attach(bus)` 挂 `CommandBus.on_execute` 钩子录制、`record_operation` 登记仿真动作、`operations/categories`、`to_java`/`save` ASCII 落盘、`replay` 复用宏桥）+ `make_recorder` 工厂；`star_macro.py` 扩展 `DEFAULT_MACRO_IMPORTS`/`OPERATIONS`（meshing/physics/solver/post 4 类）/`OPERATION_DEFAULTS`/`render_operations`/`render_macro`（参数化类名/保存名/import 全量注入）/`write_operation_macro`。`tests/test_macro_record.py` 12 项全绿 |
+| A2 | Python 脚本 API：镜像 star.* ClientServerObject 对象模型（semantic_dict 为骨架） ✅ 2026-09-12 | A | **达成**：新增 `star_api.py`——`ClientServerObjectKey`（类名/语义层/名惰性定位，`matches`/`resolve`）+ `ClientServerObject`（`id/class_name/resolved_class/name/obj_layer/layer_cn`、`get/set/rename/delete/copy/set_visible/is_visible`，写操作经 CommandBus 可撤销/可录制、`parent/children/descendants/keys/ref/child`）+ 14 语义子类（`Region/Boundary/Part/Scene/Displayer/Report/Monitor/Plot/Table/FieldFunction/Continuum/Model/Solver/Material`，含 `Boundary→region`/`Displayer→scene`/`Model→continuum` 反向访问器）+ `wrap()`（类名后缀匹配 + 语义层兜底，修 `star.common.PhysicsContinuum`→`Continuum`）+ `Simulation`（regions/scenes/parts/reports/monitors/plots/continua/models 集合 + `get/get_by_name/find_all/get_object/__getitem__/__iter__/__len__/set_property/rename/delete/copy/set_visible/is_visible/save`）+ `StarNamespace`（`star.common/vis/meshing/base` 子包）+ `run_python_script`（注入 `star`/`sim`/`objects`/`ClientServerObjectKey`）。`tests/test_star_api.py` 10 项全绿 |
+| A3 | Design Manager 式参数研究：DOE 扫描/响应表/并行批次 ✅ 2026-09-12 | A | **达成**：新增 `design_study.py`——`DesignParameter`（显式取值/`lo-hi-levels` 连续/choice，kind 推断 + `sample`）+ 4 类 DOE（`full_factorial` 笛卡尔积 / `ofat` 中心±单因子 / `latin_hypercube` 分层确定性 / `random_sampling`）+ `generate_design` 派发 + `DesignTable`/`ResponseTable`（`statistics`(n/min/max/mean/std/总体标准差)/`summary`/`best`/`to_csv`/`errors`）+ `DesignStudy`（`add_parameter/add_response/bind/bind_object` 对接 A2 对象属性、`generate`/`apply_case`、`run(workers)` 线程池并行批次 + 逐算例错误隔离 `errors[case_id]`、`run_serial`）+ `make_design_study` 工厂。`tests/test_design_study.py` 13 项全绿 |
+| A4 | 伴随求解器 + 形状优化 | 仅 B 路线（自研不设时间表，诚实挂起） | —（挂起，待官方许可与伴随内核） |
+| A5 | 协同仿真链接配置解析/建立（cosimulation 包对象已解析） | B | —（挂起，待三方求解器接口） |
+| A6 | 远程求解/HPC 作业提交桥 | B | —（挂起，待 HPC 调度环境） |
 
 ## 10. X 波 —— 客户端体验收尾
 

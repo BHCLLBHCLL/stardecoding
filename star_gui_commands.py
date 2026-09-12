@@ -24,6 +24,7 @@ class CommandBus(object):
         self._redo = deque()
         self.maxlen = maxlen
         self.on_change = None
+        self.on_execute = None   # A1：录制器钩子，每次 execute 收 (cmd, doc)
 
     def execute(self, cmd, doc):
         result = cmd.do(doc)
@@ -31,6 +32,8 @@ class CommandBus(object):
         while len(self._undo) > self.maxlen:
             self._undo.popleft()
         self._redo.clear()
+        if self.on_execute is not None:
+            self.on_execute(cmd, doc)
         self._notify()
         return result
 

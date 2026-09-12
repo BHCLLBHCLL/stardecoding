@@ -36,7 +36,16 @@
 | 帮助>关于 | view |
 
 > 「文件>宏」菜单已移除（旧表标 disabled）。宏能力现挂接在 网格>生成表面网格 与
-> 树右键>执行网格操作（`_try_star_macro`）；无录制/回放（A1）。
+> 树右键>执行网格操作（`_try_star_macro`）；A1 已落地 Java 宏**录制/回放**——见下节「自动化生态（A 波）」。
+
+## 自动化生态（A 波）
+
+| 能力 | 实现 |
+| --- | --- |
+| Java 宏录制（A1） | session（`macro_record.py`：`MacroRecorder.attach(bus)` 挂 `CommandBus.on_execute` 钩子，把 GUI 命令 → `.java`；`COMMAND_JAVA_MAP` 7 命令全覆盖——`Rename/SetProperty/Visibility` 产可编译 ClientServerObject 调用，`ShowOnly/TransformPart/Delete/Copy` 私有语义无公开 API 则产 `// [best-effort]` 注释；`record_operation` 登记网格/物理/求解/后处理动作；`to_java`/`save` 落 ASCII `.java`） |
+| 宏回放（A1） | macro（`MacroRecorder.replay` → `star_macro.run_star_macro_stream`：`starccmw -batch` 工作副本周转 + 逐行日志回流） |
+| Python 脚本 API（A2） | session（`star_api.py`：镜像 `star.*` ClientServerObject 对象模型——`ClientServerObjectKey` 惰性定位 + `ClientServerObject` 及 14 语义子类（含 `Boundary.region`/`Displayer.scene`/`Model.continuum` 反查）+ `Simulation` 集合/`get`/`get_by_name`；写操作经 CommandBus 可撤销；`run_python_script` 注入 `star`/`sim`/`objects` 命名空间） |
+| 参数研究 / DOE（A3） | session（`design_study.py`：`DesignParameter` + 4 类 DOE（full_factorial/ofat/latin_hypercube/random_sampling）+ `DesignTable`/`ResponseTable`（统计/最优/CSV）+ `DesignStudy.run(workers)` 并行批次 + 逐算例错误隔离；`bind_object` 对接 A2 对象属性） |
 
 ## 工具栏
 
