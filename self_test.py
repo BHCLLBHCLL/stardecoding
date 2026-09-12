@@ -2590,4 +2590,27 @@ print("X 波 客户端体验收尾：X2 多仿真文档工作区（登记/归属
       "+ 跨仿真复制粘贴（子树快照/源父类名/类比父挂靠/id 冲突重映射/图内引用自洽）"
       "全通过")
 
+# ---------------- X 波 客户端体验收尾：X3 帮助系统（Javadoc 目录联动） --------
+import star_gui_help as _x3h
+
+_x3st = _x3h.stats()
+assert _x3st["packages"] >= 50 and _x3st["sections"] >= 15, "X3 目录规模"
+_x3pkgs = _x3h.packages()
+assert "star.common" in _x3pkgs and "star.vis" in _x3pkgs, "X3 包总览"
+assert "Simulation" in _x3h.package_description("star.common"), "X3 包作用"
+assert _x3h.package_of("star.common.Region") == "star.common", "X3 类->包"
+assert _x3h.semantic_layer("star.common.Region") == ("core", "仿真主干"), "X3 语义层"
+assert _x3h.semantic_layer("star.vis.Scene") == ("visualization", "场景可视化"), "X3 语义层2"
+assert _x3h.explain("star.vis.View")["resolved"] == "star.vis.VisView", "X3 旧类名解析"
+_x3txt = _x3h.class_help_text("star.common.Region")
+assert "仿真主干" in _x3txt and "star.common" in _x3txt, "X3 类帮助文本"
+assert _x3h.search("") == [], "X3 空检索"
+assert _x3h.search("turbulence"), "X3 检索命中"
+assert _x3h.CATALOG_PATH in _x3h.documentation_text(), "X3 文档目录"
+_x3lic = _x3h.licensing_text()
+assert _x3h.APP_NAME in _x3lic and "PyQt5" in _x3lic, "X3 许可信息"
+assert _x3h.APP_NAME in _x3h.about_text(), "X3 关于复用"
+print("X 波 客户端体验收尾：X3 帮助系统（Javadoc 目录 %d 包/类语义层联动/检索/"
+      "文档目录/许可信息/关于复用）全通过" % _x3st["packages"])
+
 print("ALL CHECKS PASSED")

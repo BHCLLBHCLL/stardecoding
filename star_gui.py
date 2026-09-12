@@ -382,6 +382,11 @@ class StarMainWindow(QMainWindow):
                             ("+z", "+Z"), ("-z", "-Z"), ("iso", tr("Isometric"))):
             self._add("Scene>View>%s" % name, label,
                       lambda checked=False, n=name: self.cmd_view(n), "view_%s" % name)
+        self._add("Help>Help Contents", tr("Help Contents"), self.cmd_help_contents,
+                  "info", "F1")
+        self._add("Help>Documentation", tr("Documentation"), self.cmd_help_documentation,
+                  "info")
+        self._add("Help>Licensing", tr("Licensing"), self.cmd_help_licensing, "info")
         self._add("Help>About", tr("About"), self.cmd_about, "info")
         self._add("Window>Tree", tr("Simulation Tree"), self._toggle_tree, "tree")
         self._add("Window>Props", tr("Properties"), self._toggle_props, "properties")
@@ -451,7 +456,9 @@ class StarMainWindow(QMainWindow):
         menu(tr("Window") + "(&W)", [
             "Window>Tree", "Window>Props", "Window>Output", "Window>Plots",
             "Window>Cad"])
-        menu(tr("Help") + "(&H)", ["Help>About"])
+        menu(tr("Help") + "(&H)", [
+            "Help>Help Contents", "Help>Documentation", None,
+            "Help>Licensing", None, "Help>About"])
 
     def _build_toolbar(self):
         from PyQt5.QtCore import Qt as _Qt
@@ -2337,12 +2344,36 @@ class StarMainWindow(QMainWindow):
         self.msg("classversions: %d classes, %d matched, %d/%d totals" % (
             v["expected_classes"], v["matched"], v["expected_total"], v["actual_total"]))
 
+    def _help_window(self, class_name=None):
+        from star_gui_helpwin import HelpWindow
+        win = HelpWindow(self, class_name=class_name)
+        self._help_window_ref = win
+        win.show()
+        return win
+
+    def _context_class_name(self):
+        try:
+            obj = self.tree_widget.current_object()
+        except Exception:
+            obj = None
+        return (obj.class_name if obj is not None else "") or ""
+
+    def cmd_help_contents(self):
+        return self._help_window(self._context_class_name())
+
+    def cmd_help_documentation(self):
+        win = self._help_window()
+        win.show_topic("文档目录")
+        return win
+
+    def cmd_help_licensing(self):
+        from star_gui_i18n import tr
+        from star_gui_help import licensing_text
+        QMessageBox.information(self, tr("Licensing"), licensing_text())
+
     def cmd_about(self):
-        QMessageBox.about(self, "About",
-                          "STAR-CCM+ .sim Viewer / Editor\nPyQt5 + VTK\n"
-                          "查看 + 编辑几何/网格操作/场景/属性；求解运算禁用。\n"
-                          "数据层: sim_parser.py · 回写: sim_writer.py\n"
-                          "对标: star_gui_parity.md")
+        from star_gui_help import about_text
+        QMessageBox.about(self, "About", about_text())
 
 
 def cli_main(argv=None):

@@ -33,7 +33,7 @@
 | 求解/连接 | disabled（Run/Pause/Step/Stop 与 Server 均 `setEnabled(False)`，测试锁定） |
 | 工具>诊断/选项 | view / session |
 | 窗口>树/属性/输出/绘图/CAD | view（checkable 开关） |
-| 帮助>关于 | view |
+| 帮助>帮助内容/文档目录/许可信息/关于 | view（X3：`star_gui_help.py` 解析 `doc_javadoc_catalog.md`（55 个 star.* 包总览 + 18 章节详解）并联动词义字典 `layer_of`/`LAYER_CN`/`resolve_class`；`HelpWindow`（`star_gui_helpwin.py`）检索框 + 主题列表 + 文本浏览。`cmd_help_contents`（F1）按仿真树选中对象 `ClassName` 给出**上下文语义帮助**（现名/包作用/语义层/相关条目），`cmd_help_documentation` 打开文档目录、`cmd_help_licensing` 弹诚实许可声明，`cmd_about` 复用 `about_text()`） |
 
 > 「文件>宏」菜单已移除（旧表标 disabled）。宏能力现挂接在 网格>生成表面网格 与
 > 树右键>执行网格操作（`_try_star_macro`）；A1 已落地 Java 宏**录制/回放**——见下节「自动化生态（A 波）」。
@@ -54,6 +54,7 @@
 | 会话生命周期（X1） | persist/session（`star_gui_session.py`：覆盖写前 `path~` 备份；`AutoSave` 策略 enabled/interval/keep/trigger + `base@N.sim` 快照命名与保留最近 N 份轮转；CHECKPOINT 触发文件一次性消费；`.simt` 模板扩展名。GUI：`cmd_save_all`/`cmd_save_template`/`cmd_new_from_template`/`cmd_toggle_autosave`/`cmd_autosave_now`/`cmd_checkpoint` + `QTimer` 自动保存环 + `QSettings` 持久化，详见「文件>全部保存/自动保存/模板」） |
 | 多仿真文档窗口（X2） | session（`star_gui_documents.py`：`DocumentWorkspace` 多文档登记 —— `add(doc, owner=)`/`remove`/`owner_of`/`activate`/`active`/`documents`/`paths`/`find_by_path`/`close_all`；`star_gui.py`：模块级 `OPEN_WINDOWS` 窗口登记 + `File>New Window`（Ctrl+Shift+N）→ `cmd_new_window` 开独立 `SimDocument` 窗口并 `WORKSPACE.add(owner=win)`；`on_file_loaded`/`close_sim`/`closeEvent` 同步工作区登记/注销） |
 | 跨仿真复制粘贴（X2） | persist（`star_gui_documents.py`：源子树快照 `Clip`（`copy_subtree` 记录根源 `ClassName` 到 `parent_class`）→ 目标文档 `plan_id_mapping` 从 `_next_id` 起分配非冲突会话 id → `sim_writer.remap_value` 递归重写 Keys/Parent 等整型引用 → 登记 `created`/`objmap`/`objects` → `analogous_parent_id(doc, class_name)` 按类名挂到目标同类父（显式 parent 优先）；落盘由 `sim_writer.created_id_mapping` 把会话 id 映射到图序号 id，保证写出对象图引用自洽） |
+| 帮助系统（X3） | view（`star_gui_help.py`：解析 `doc_javadoc_catalog.md` 包总览表（55 包）+ 18 章节详解 → `packages`/`package_of`/`package_description`/`package_section`/`class_bullets`；联动词义字典 `semantic_layer`（`layer_of`+`LAYER_CN`）/`resolve_class`（旧类名升级）→ `explain`/`class_help_text`/`search`/`help_contents_text`/`documentation_text`/`licensing_text`/`about_text`。`star_gui_helpwin.py`：`HelpWindow(QDialog)` 检索框 + 主题列表 + 文本浏览。GUI：`Help>Help Contents`（F1，按选中对象 `ClassName` 给上下文帮助）/`Documentation`/`Licensing`/`About`） |
 
 ## 工具栏
 
