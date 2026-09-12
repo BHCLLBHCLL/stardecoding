@@ -132,6 +132,18 @@ def test_run_action_threshold_on_vertex_field():
     assert out["payload"]["count"] > 0
 
 
+def test_run_action_glyphs_payload():
+    s = _session(2)
+    out = run_action(s, "Post>Glyphs", field="velocity")
+    assert out["ok"], out["message"]
+    assert out["op"] == "glyphs"
+    pl = out["payload"]
+    assert pl["count"] > 0
+    assert pl["points"].shape == (pl["count"], 3)
+    assert pl["tips"].shape == (pl["count"], 3)
+    assert pl["scalars"].size == pl["count"]
+
+
 def test_session_update_fields_and_refresh():
     s = _session(2)
     s.set_field("extra", np.arange(s.fv.n_cells, dtype=float))

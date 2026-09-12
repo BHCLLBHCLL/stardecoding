@@ -2683,7 +2683,16 @@ _vgthr2 = _vg.run_action(_vgsess2, "Post>Threshold", field="field")
 assert _vgthr2["ok"] and _vgthr2["payload"]["count"] > 0, "Vg 节点场阈值折算"
 assert _vg.run_action(_vg.make_session(fv=None), "Post>ColorBy")["ok"] is False, \
     "Vg 无 FVM 诚实降级"
+_vgsess.set_field("velocity", _vnp.tile(_vnp.array([[1.0, 0.0, 0.0]]),
+                                        (_vgfv.n_cells, 1)))
+_vggly = _vg.run_action(_vgsess, "Post>Glyphs", field="velocity")
+assert _vggly["ok"] and _vggly["payload"]["count"] > 0, "Vg 矢量箭头载荷"
+from star_gui_vtk import glyph_lines_polydata as _vggly_pd
+_vgglypd = _vggly_pd(_vggly["payload"]["points"], _vggly["payload"]["tips"])
+assert _vgglypd.GetNumberOfPoints() == 2 * _vggly["payload"]["count"] and \
+    _vgglypd.GetNumberOfLines() == _vggly["payload"]["count"], "Vg 矢量符号线元几何"
 print("V 波 遗留项：后处理 GUI 接线（19 动作注册/菜单键一致/会话可用/color-isosurface-"
-      "threshold 载荷/求解器节点场补入与阈值折算/无 FVM 诚实降级）全通过")
+      "threshold-glyphs 载荷/求解器节点场补入与阈值折算/矢量符号线元几何/无 FVM 诚实降级）"
+      "全通过")
 
 print("ALL CHECKS PASSED")

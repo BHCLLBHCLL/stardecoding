@@ -2145,6 +2145,8 @@ class StarMainWindow(QMainWindow):
             self._render_post_color(payload)
         elif op in ("isosurface", "section", "clip", "threshold", "mirror"):
             self._render_post_geometry(key, payload)
+        elif op == "glyphs" and isinstance(payload, dict):
+            self._render_post_glyphs(key, payload)
         elif op == "xy" and isinstance(payload, dict):
             self._render_post_series("XY 曲线", payload.get("x"), payload.get("y"))
         elif op == "histogram" and isinstance(payload, dict):
@@ -2191,6 +2193,31 @@ class StarMainWindow(QMainWindow):
             act = _actor(pd, (0.85, 0.55, 0.18), opacity=0.9)
             vp.remove_actors([gkey])
             added += vp.add_actors([(gkey, "后处理", None, act)])
+            if hasattr(vp, "render"):
+                vp.render()
+        return added
+
+    def _render_post_glyphs(self, key, payload):
+        """矢量符号：points→tips 线元 → 视口新增 actor（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        import numpy as np
+        from star_gui_vtk import glyph_actor
+        pts = payload.get("points")
+        tips = payload.get("tips")
+        if pts is None or tips is None or len(pts) == 0:
+            return 0
+        gkey = "post:" + key
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                act = glyph_actor(np.asarray(pts, float),
+                                  np.asarray(tips, float),
+                                  scalars=payload.get("scalars"))
+            except Exception:
+                continue
+            vp.remove_actors([gkey])
+            added += vp.add_actors([(gkey, "后处理矢量", None, act)])
             if hasattr(vp, "render"):
                 vp.render()
         return added

@@ -508,6 +508,55 @@ def outline_bounds_actor(pd, color=(0.12, 0.12, 0.14), line_width=1.0):
     return actor
 
 
+def glyph_lines_polydata(points, tips):
+    """矢量符号几何：points→tips 线段 → vtkPolyData（N 条 VTK_LINE）。
+
+    points/tips 均为 (N,3)，对应 `postprocess.vector_glyphs` 的载荷
+    （points 起点 / tips = points + scale·vector）。空输入或形状不一致
+    时抛 ValueError（调用方按诚实降级处理）。
+    """
+    import vtk
+    nps = _numpy_support()
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    t = np.asarray(tips, dtype=np.float64).reshape(-1, 3)
+    if p.shape != t.shape or p.shape[0] == 0:
+        raise ValueError("glyph 线段需非空且 points/tips 形状一致")
+    n = int(p.shape[0])
+    verts = np.vstack([p, t])
+    pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(verts), deep=True))
+    pd.SetPoints(pts)
+    cells = np.empty(n * 3, dtype=np.int64)
+    cells[0::3] = 2
+    cells[1::3] = np.arange(n, dtype=np.int64)
+    cells[2::3] = np.arange(n, dtype=np.int64) + n
+    ca = vtk.vtkCellArray()
+    try:
+        idarr = nps.numpy_to_vtkIdTypeArray(cells, deep=True)
+        if hasattr(ca, "ImportLegacyFormat"):
+            ca.ImportLegacyFormat(idarr)
+        else:
+            ca.SetCells(n, idarr)
+    except Exception:
+        for i in range(n):
+            ca.InsertNextCell(2, [i, i + n])
+    pd.SetLines(ca)
+    return pd
+
+
+def glyph_actor(points, tips, scalars=None, lut=None, color=(0.12, 0.12, 0.14),
+                line_width=2.0):
+    """矢量符号 actor：线元 + 可选按幅值着色（`color_actors_by_array`）。"""
+    pd = glyph_lines_polydata(points, tips)
+    act = _actor(pd, color, line_width=line_width)
+    if scalars is not None:
+        color_actors_by_array([("post-glyphs", "后处理矢量", None, act)],
+                              np.asarray(scalars, dtype=np.float64).reshape(-1),
+                              on_points=False, lut=lut)
+    return act
+
+
 def axes_actor(length=1.0):
     """全局坐标轴（RGB = XYZ）。"""
     import vtk

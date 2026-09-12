@@ -33,7 +33,7 @@
 | 11 | 参考系/运动 | rotating/DFBI/morphing/overset | L0 | 参数不解 |
 | 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **disabled**（正确禁用） | 求解框架全缺 |
 | 13 | 报告/监视器/绘图 | 报告族/XY/直方/残差 | L1（F6 文本+对象曲线） | 曲线数据重建不全；实时监视无 |
-| 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | L1–L2（面网格着色/框选/测距 ✅；G5 真解场 ✅；V 波 19 个 Post 动作 GUI 接线） | 派生零件谱系不全；`Post>Glyphs/Probe/Line/PlaneSample/IsoVolume/Colorbar/Legend` 仅载荷+消息、无场景内渲染；注记/图例无渲染、动画需帧序列（GUI 帧渲染待接） |
+| 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | L1–L2（面网格着色/框选/测距 ✅；G5 真解场 ✅；V 波 19 个 Post 动作 GUI 接线：着色/等值面·剖面·裁剪·阈值·镜像/矢量符号/XY·直方图） | 派生零件谱系不全；`Post>Probe/Line/PlaneSample/IsoVolume/Colorbar/Legend` 仅载荷+消息、无场景内渲染；注记/图例无渲染、动画需帧序列（GUI 帧渲染待接） |
 | 15 | 数据映射插值 | interpolator | L0 | 全缺 |
 | 16 | 自动化 | Java 宏录播/脚本 API/Design Manager/伴随优化 | L0（F7 宏桥=网格生成单项） | 录制、命令映射全覆盖、参数研究、伴随 |
 | 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | L0 | 协议私有，仅能配置解析+桥接 |
