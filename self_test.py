@@ -2613,4 +2613,36 @@ assert _x3h.APP_NAME in _x3h.about_text(), "X3 关于复用"
 print("X 波 客户端体验收尾：X3 帮助系统（Javadoc 目录 %d 包/类语义层联动/检索/"
       "文档目录/许可信息/关于复用）全通过" % _x3st["packages"])
 
+# ---------------- X 波 客户端体验收尾：X4 打包/安装器/版本发布 ------------------
+import star_gui_package as _x4p
+
+_x4tc = _x4p.toolchain()
+assert set(_x4tc) == set(_x4p.PACKAGERS), "X4 打包器探测"
+assert all(isinstance(v, bool) for v in _x4tc.values()), "X4 探测布尔"
+assert _x4p.is_available() == (_x4p.available_packager() is not None), "X4 可用性一致"
+_x4req = _x4p.read_requirements()
+assert "PyQt5>=5.15" in _x4req and "vtk>=9.3" in _x4req, "X4 运行依赖"
+assert "star_gui_panes" in _x4p.local_modules(), "X4 本地模块扫描"
+assert _x4p.missing_resources() == [], "X4 资源清单齐全"
+_x4vm = _x4p.version_manifest()
+assert _x4vm["name"] == _x4p.APP_NAME and _x4vm["version"] == _x4p.APP_VERSION, "X4 版本清单"
+assert len(_x4p.add_data_args()) == len(_x4p.DATA_FILES), "X4 add-data"
+_x4cmd = _x4p.pyinstaller_command()
+assert _x4cmd[0] == "pyinstaller" and "--add-data" in _x4cmd and _x4cmd[-1] == _x4p.ENTRY_SCRIPT, "X4 打包命令"
+assert "Analysis(" in _x4p.pyinstaller_spec_text() and "star_gui_theme.qss" in _x4p.pyinstaller_spec_text(), "X4 spec"
+assert "[Setup]" in _x4p.inno_setup_text() and _x4p.APP_VERSION in _x4p.inno_setup_text(), "X4 安装器"
+import tempfile as _x4tmp
+_x4out = _x4tmp.mkdtemp(prefix="x4self_")
+try:
+    assert len(_x4p.write_build_scripts(_x4out)) == len(_x4p.BUILD_SCRIPTS), "X4 构建脚本落盘"
+finally:
+    import shutil as _x4sh
+    _x4sh.rmtree(_x4out, ignore_errors=True)
+_x4plan = _x4p.build_plan()
+assert _x4plan["available"] == (_x4plan["packager"] is not None), "X4 构建计划一致"
+assert _x4plan["notes"], "X4 构建计划说明"
+print("X 波 客户端体验收尾：X4 打包/版本发布（打包器探测 %s、资源清单/依赖解析/"
+      "版本清单、PyInstaller spec+命令、Inno Setup 安装器、发布说明、诚实降级）全通过"
+      % (_x4p.available_packager() or "缺失"))
+
 print("ALL CHECKS PASSED")
