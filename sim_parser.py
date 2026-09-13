@@ -64,6 +64,9 @@ except ImportError:  # 允许单文件独立运行
 class ReprParser:
     """解析 modeller 写出的 Python repr 风格文本值。"""
 
+    _WORD_RE = re.compile(r"[A-Za-z_]\w*")
+    _NUM_RE = re.compile(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?L?")
+
     def __init__(self, s):
         self.s = s
         self.i = 0
@@ -111,7 +114,7 @@ class ReprParser:
             if self.i < self.n and self.s[self.i] == "(":
                 return {"__opaque__": w + self._raw_parens()}
             self._err("bare word " + w)
-        m = re.match(r"[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?L?", self.s[self.i:])
+        m = self._NUM_RE.match(self.s, self.i)
         if m:
             t = m.group(0)
             self.i += len(t)

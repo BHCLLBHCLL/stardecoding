@@ -218,12 +218,20 @@ def test_run_action_glyphs_probe_line_plane_iso_volume():
     assert gl["ok"] and gl["payload"]["count"] > 0
     pr = run_action(s, "Post>Probe")
     assert pr["ok"] and pr["payload"]["inside"].sum() >= 0
+    assert np.asarray(pr["payload"]["points"]).shape[1] == 3
     ln = run_action(s, "Post>Line", n=5)
     assert ln["ok"] and len(ln["payload"]["t"]) == 5
+    assert np.asarray(ln["payload"]["points"]).shape == (5, 3)
     pl = run_action(s, "Post>PlaneSample", n=4)
     assert pl["ok"] and tuple(pl["payload"]["grid_shape"]) == (4, 4)
+    assert np.asarray(pl["payload"]["points"]).shape == (16, 3)
     iv = run_action(s, "Post>IsoVolume", field="x")
     assert iv["ok"] and 0.0 <= iv["payload"]["fraction"] <= 1.0
+    tris = np.asarray(iv["payload"]["triangles"])
+    verts = np.asarray(iv["payload"]["vertices"])
+    assert tris.ndim == 2 and tris.shape[1] == 3
+    assert verts.shape[1] == 3
+    assert ("scalars" in iv["payload"]) and len(iv["payload"]["scalars"]) > 0
 
 
 def test_run_action_xy_histogram_colorbar_legend():
@@ -234,8 +242,14 @@ def test_run_action_xy_histogram_colorbar_legend():
     assert hi["ok"] and hi["payload"]["counts"].sum() == s.fv.n_cells
     cb = run_action(s, "Post>Colorbar", field="speed", n=5)
     assert cb["ok"] and cb["payload"]["n"] == 5
+    assert cb["payload"]["field"] == "speed"
+    assert np.asarray(cb["payload"]["strip"]).shape[1] == 4
+    assert int(cb["payload"]["samples"]) >= 2
     lg = run_action(s, "Post>Legend")
     assert lg["ok"] and len(lg["payload"]) == len(s.field_names())
+    for item in lg["payload"]:
+        assert len(item["label"]) >= 0
+        assert np.asarray(item["rgba"]).reshape(-1).size >= 3
 
 
 def test_run_action_exports_and_animate_degradation():

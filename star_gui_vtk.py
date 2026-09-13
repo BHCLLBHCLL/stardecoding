@@ -558,6 +558,209 @@ def glyph_actor(points, tips, scalars=None, lut=None, color=(0.12, 0.12, 0.14),
     return act
 
 
+def polyline_polydata(points):
+    """采样折线几何：(N,3) 点 → vtkPolyData（单条 VTK_LINE 折线）。
+
+    对应 `postprocess.line_sample` 载荷的 points；少于 2 点时抛 ValueError。
+    """
+    import vtk
+    nps = _numpy_support()
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if p.shape[0] < 2:
+        raise ValueError("折线需至少 2 个采样点")
+    pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(p), deep=True))
+    pd.SetPoints(pts)
+    n = int(p.shape[0])
+    line = vtk.vtkPolyLine()
+    line.GetPointIds().SetNumberOfIds(n)
+    for i in range(n):
+        line.GetPointIds().SetId(i, i)
+    ca = vtk.vtkCellArray()
+    ca.InsertNextCell(line)
+    pd.SetLines(ca)
+    return pd
+
+
+def grid_surface_polydata(points, shape):
+    """结构化采样网格 → vtkPolyData（逐格两三角面）。
+
+    `postprocess.plane_sample` 的载荷 points 为 (n·m,3)（行主序 u 快变），
+    shape=(n,m)。单元网格不足或点数不符时抛 ValueError。
+    """
+    import vtk
+    nps = _numpy_support()
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    nu, nv = int(shape[0]), int(shape[1])
+    if nu < 2 or nv < 2 or nu * nv != p.shape[0]:
+        raise ValueError("采样网格形状与点数不符")
+    pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(p), deep=True))
+    pd.SetPoints(pts)
+    tris = []
+    for i in range(nu - 1):
+        for j in range(nv - 1):
+            a = i * nv + j
+            b = (i + 1) * nv + j
+            c = (i + 1) * nv + j + 1
+            d = i * nv + j + 1
+            tris.append((a, b, c))
+            tris.append((a, c, d))
+    f = np.asarray(tris, dtype=np.int64)
+    n = int(f.shape[0])
+    cells = np.empty(n * 4, dtype=np.int64)
+    cells[0::4] = 3
+    cells[1::4] = f[:, 0]
+    cells[2::4] = f[:, 1]
+    cells[3::4] = f[:, 2]
+    ca = vtk.vtkCellArray()
+    try:
+        idarr = nps.numpy_to_vtkIdTypeArray(cells, deep=True)
+        if hasattr(ca, "ImportLegacyFormat"):
+            ca.ImportLegacyFormat(idarr)
+        else:
+            ca.SetCells(n, idarr)
+    except Exception:
+        for tri in f:
+            ca.InsertNextCell(3, [int(tri[0]), int(tri[1]), int(tri[2])])
+    pd.SetPolys(ca)
+    return pd
+
+
+def marker_actor(points, color=(0.90, 0.15, 0.15), radius=None):
+    """探针点标记：球体 glyph → vtkActor（域内采样点可视化）。
+
+    半径缺省按点集包围盒最大跨度的 2% 取，空点集抛 ValueError。
+    """
+    import vtk
+    nps = _numpy_support()
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if p.shape[0] == 0:
+        raise ValueError("探针点集不能为空")
+    src_pd = vtk.vtkPolyData()
+    pts = vtk.vtkPoints()
+    pts.SetData(nps.numpy_to_vtk(np.ascontiguousarray(p), deep=True))
+    src_pd.SetPoints(pts)
+    verts = vtk.vtkVertexGlyphFilter()
+    verts.SetInputData(src_pd)
+    verts.Update()
+    if radius is None:
+        span = float(np.max(p.max(axis=0) - p.min(axis=0)))
+        radius = max(span * 0.02, 1e-6)
+    sphere = vtk.vtkSphereSource()
+    sphere.SetRadius(float(radius))
+    sphere.SetThetaResolution(12)
+    sphere.SetPhiResolution(12)
+    glyph = vtk.vtkGlyph3D()
+    glyph.SetInputConnection(verts.GetOutputPort())
+    glyph.SetSourceConnection(sphere.GetOutputPort())
+    glyph.SetScaleModeToDataScalingOff()
+    glyph.Update()
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(glyph.GetOutputPort())
+    mapper.ScalarVisibilityOff()
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    prop = actor.GetProperty()
+    prop.SetColor(*tuple(float(x) for x in color[:3]))
+    prop.SetAmbient(0.3)
+    prop.SetDiffuse(0.7)
+    return actor
+
+
+def scalar_bar_actor(lut, title="", n_labels=6, width=0.05, height=0.55,
+                     position=(0.91, 0.22)):
+    """色标尺（2D 叠加）：官方 LUT 断点 + 场名 → vtkScalarBarActor。
+
+    位置为归一化视口坐标（VTK 2D prop），不随相机旋转。
+    """
+    import vtk
+    bar = vtk.vtkScalarBarActor()
+    if lut is not None:
+        bar.SetLookupTable(lut)
+    try:
+        bar.SetNumberOfLabels(int(max(2, n_labels)))
+    except Exception:
+        pass
+    bar.SetTitle(str(title or ""))
+    bar.SetOrientationToVertical()
+    for setter, val in (("SetWidth", width), ("SetHeight", height),
+                        ("SetBarRatio", 0.28)):
+        try:
+            getattr(bar, setter)(float(val))
+        except Exception:
+            pass
+    try:
+        bar.SetPosition(float(position[0]), float(position[1]))
+    except Exception:
+        pass
+    for tp in (bar.GetTitleTextProperty(), bar.GetLabelTextProperty()):
+        try:
+            tp.SetColor(0.10, 0.10, 0.12)
+            tp.SetFontFamilyToArial()
+        except Exception:
+            pass
+    return bar
+
+
+def legend_box_actor(items, position=(0.74, 0.74), size=(0.22, 0.20),
+                     background=(1.0, 1.0, 1.0)):
+    """图例（2D 叠加）：(label, rgba) 条目 → vtkLegendBoxActor 色块 + 文本。
+
+    `items` 为 `postprocess.legend_items` 的列表载荷；空列表抛 ValueError。
+    """
+    import vtk
+    entries = list(items or [])
+    if not entries:
+        raise ValueError("图例条目不能为空")
+    box = vtk.vtkLegendBoxActor()
+    swatch = vtk.vtkPlaneSource()
+    swatch.SetXResolution(1)
+    swatch.SetYResolution(1)
+    swatch.Update()
+    quad = swatch.GetOutput()
+    try:
+        box.SetNumberOfEntries(len(entries))
+    except Exception:
+        pass
+    for i, it in enumerate(entries):
+        rgba = np.asarray(it.get("rgba", (1.0, 1.0, 1.0, 1.0)),
+                          dtype=np.float64).reshape(-1)
+        col = tuple(float(x) for x in rgba[:3])
+        label = str(it.get("label", ""))
+        try:
+            box.SetEntry(i, quad, label, col)
+        except Exception:
+            try:
+                box.SetEntryString(i, label)
+            except Exception:
+                pass
+    try:
+        box.UseBackgroundOn()
+        box.SetBackgroundColor(*tuple(float(x) for x in background[:3]))
+        box.SetBackgroundOpacity(0.0)
+        box.SetBorderOn()
+    except Exception:
+        pass
+    try:
+        box.GetEntryTextProperty().SetColor(0.10, 0.10, 0.12)
+        box.GetEntryTextProperty().SetFontFamilyToArial()
+    except Exception:
+        pass
+    for setter, val in (("SetPosition", position), ("SetWidth", size[0]),
+                        ("SetHeight", size[1])):
+        try:
+            if setter == "SetPosition":
+                box.SetPosition(float(val[0]), float(val[1]))
+            else:
+                getattr(box, setter)(float(val))
+        except Exception:
+            pass
+    return box
+
+
 def axes_actor(length=1.0):
     """全局坐标轴（RGB = XYZ）。"""
     import vtk

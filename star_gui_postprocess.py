@@ -449,9 +449,20 @@ def _op_iso_volume(session, params):
     iso = params.get("iso")
     iso = 0.5 * (lo + hi) if iso is None else float(iso)
     res = session.processor.iso_volume(name, iso, above=params.get("above", True))
-    return _ok("iso_volume", "等值体积 %s %s %.4g：占比 %.4g（%d 单元）"
+    from postprocess import extract_surface
+    if res["count"]:
+        surf = extract_surface(session.fv, res["cells"],
+                               fields={name: session.fields[name]})
+        res["vertices"] = surf["vertices"]
+        res["triangles"] = surf["triangles"]
+        res["scalars"] = surf["scalars"]
+    else:
+        res["vertices"] = np.zeros((0, 3), float)
+        res["triangles"] = np.zeros((0, 3), np.int64)
+        res["scalars"] = {}
+    return _ok("iso_volume", "等值体积 %s %s %.4g：占比 %.4g（%d 单元，%d 三角面）"
                % (name, "≥" if res["above"] else "≤", iso,
-                  res["fraction"], res["count"]), res)
+                  res["fraction"], res["count"], len(res["triangles"])), res)
 
 
 def _op_xy(session, params):
@@ -477,6 +488,11 @@ def _op_colorbar(session, params):
     if name is None:
         return _fail("colorbar", "无可用标量场")
     res = session.processor.colorbar(name, n=params.get("n", 6))
+    from postprocess import colorbar_strip
+    strip = colorbar_strip(cmap=session.colormap)
+    res["field"] = name
+    res["strip"] = strip["rgba"]
+    res["samples"] = strip["samples"]
     return _ok("colorbar", "色标尺 %s [%.4g, %.4g]"
                % (name, res["lo"], res["hi"]), res)
 

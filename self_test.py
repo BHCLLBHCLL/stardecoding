@@ -2717,9 +2717,47 @@ assert _vganim["count"] == 4 and _vganim["plan"]["count"] == 4 and \
     all(os.path.exists(p) and os.path.getsize(p) > 0 for p in _vganim["frames"]), \
     "Vg 动画帧序列渲染/写盘"
 assert not _vnp.array_equal(_vgboxes[0], _vgboxes[1]), "Vg 轨道帧随方位角变化"
+
+_vgline = _vg.run_action(_vgsess, "Post>Line", n=5)
+assert _vgline["ok"], "Vg line 载荷"
+from star_gui_vtk import polyline_polydata as _vgpoly_pd
+_vgpoly = _vgpoly_pd(_vgline["payload"]["points"])
+assert _vgpoly.GetNumberOfPoints() == 5 and _vgpoly.GetNumberOfLines() == 1, \
+    "Vg 线取样折线几何"
+_vgplane = _vg.run_action(_vgsess, "Post>PlaneSample", n=4)
+from star_gui_vtk import grid_surface_polydata as _vggrid_pd
+_vggrid = _vggrid_pd(_vgplane["payload"]["points"],
+                     _vgplane["payload"]["grid_shape"])
+assert _vggrid.GetNumberOfPoints() == 16 and _vggrid.GetNumberOfPolys() == 18, \
+    "Vg 面取样结构化网格曲面几何"
+_vgprobe = _vg.run_action(_vgsess, "Post>Probe")
+from star_gui_vtk import marker_actor as _vgmarker_actor
+_vgmark = _vgmarker_actor(_vgprobe["payload"]["points"])
+assert _vgmark.GetMapper() is not None, "Vg 探针标记球体 glyph"
+_vgiv = _vg.run_action(_vgsess, "Post>IsoVolume", field="x")
+assert _vgiv["ok"] and _vgiv["payload"]["triangles"].shape[1] == 3 and \
+    _vgiv["payload"]["vertices"].shape[1] == 3, "Vg 等值体积外表面几何"
+_vgivpd = _vgmesh_pd(_vgiv["payload"]["vertices"], _vgiv["payload"]["triangles"])
+assert _vgivpd.GetNumberOfCells() == _vgiv["payload"]["triangles"].shape[0], \
+    "Vg 等值体积表面 polydata"
+_vgcb = _vg.run_action(_vgsess, "Post>Colorbar", field="speed", n=5)
+assert _vgcb["ok"] and _vgcb["payload"]["field"] == "speed" and \
+    _vnp.asarray(_vgcb["payload"]["strip"]).shape[1] == 4, "Vg 色标尺色带载荷"
+from star_gui_vtk import (scalar_bar_actor as _vgbar_actor,
+                          legend_box_actor as _vglegend_actor,
+                          lut_from_colormap as _vglut)
+_vglutobj = _vglut(_vg.official_colormap(), None, _vgcb["payload"]["lo"],
+                   _vgcb["payload"]["hi"])
+_vgbar = _vgbar_actor(_vglutobj, title=_vgcb["payload"]["field"],
+                      n_labels=_vgcb["payload"]["n"])
+assert _vgbar.GetClassName() == "vtkScalarBarActor", "Vg 色标尺 2D 叠加 actor"
+_vglg = _vg.run_action(_vgsess, "Post>Legend")
+_vglgbox = _vglegend_actor(_vglg["payload"])
+assert _vglgbox.GetClassName() == "vtkLegendBoxActor", "Vg 图例 2D 叠加 actor"
 print("V 波 遗留项：后处理 GUI 接线（19 动作注册/菜单键一致/会话可用/color-isosurface-"
       "threshold-glyphs 载荷/求解器节点场补入与阈值折算/矢量符号线元几何/离屏帧图像/"
-      "动画帧计划+注入渲染器 PNG 序列/无 FVM 诚实降级）"
+      "动画帧计划+注入渲染器 PNG 序列/线取样折线+面取样网格曲面+探针球体+等值体积外表面/"
+      "色标尺+图例 2D 叠加 actor/无 FVM 诚实降级）"
       "全通过")
 
 print("ALL CHECKS PASSED")

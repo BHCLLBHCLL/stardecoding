@@ -170,6 +170,7 @@ class Star3DViewport(QWidget):
         self._picker = None
         self._orient = None
         self._watermark = None
+        self._overlays2d = {}   # {key: vtkActor2D}（色标尺/图例，独立于 self.actors）
         self._rep_mode = "solid"   # solid | wireframe | edges
         self._opacity = None      # None = 保留 actor 自带透明度（场景 TransparencyOverride）
         self._base_opacity = {}
@@ -356,6 +357,40 @@ class Star3DViewport(QWidget):
             else:
                 keep.append(entry)
         self.actors = keep
+        if removed:
+            self._safe_render()
+        return removed
+
+    def set_overlay2d(self, key, actor):
+        """注册/替换 2D 叠加 actor（色标尺/图例）；不入 self.actors。
+
+        2D prop（vtkActor2D）无 3D 包围盒与 GetProperty()，若混入 self.actors
+        会污染 `bounds_of` 相机取景并让 `_apply_rep`/`color_actors_by_array`
+        抛错，故与淡水印一致单独保管、经 AddActor2D 叠加。
+        """
+        try:
+            old = self._overlays2d.pop(key, None)
+            if old is not None:
+                self.renderer.RemoveActor2D(old)
+            self.renderer.AddActor2D(actor)
+            self._overlays2d[key] = actor
+        except Exception:
+            return 0
+        self._safe_render()
+        return 1
+
+    def remove_overlays(self, keys):
+        """按 key 移除 2D 叠加 actor。"""
+        removed = 0
+        for key in (keys or []):
+            old = self._overlays2d.pop(key, None)
+            if old is None:
+                continue
+            try:
+                self.renderer.RemoveActor2D(old)
+                removed += 1
+            except Exception:
+                pass
         if removed:
             self._safe_render()
         return removed

@@ -2189,6 +2189,18 @@ class StarMainWindow(QMainWindow):
             self._render_post_geometry(key, payload)
         elif op == "glyphs" and isinstance(payload, dict):
             self._render_post_glyphs(key, payload)
+        elif op == "probe" and isinstance(payload, dict):
+            self._render_post_probe(key, payload)
+        elif op == "line" and isinstance(payload, dict):
+            self._render_post_line(key, payload)
+        elif op == "plane" and isinstance(payload, dict):
+            self._render_post_plane(key, payload)
+        elif op == "iso_volume" and isinstance(payload, dict):
+            self._render_post_geometry(key, payload)
+        elif op == "colorbar" and isinstance(payload, dict):
+            self._render_post_colorbar(payload)
+        elif op == "legend" and payload:
+            self._render_post_legend(payload)
         elif op == "xy" and isinstance(payload, dict):
             self._render_post_series("XY 曲线", payload.get("x"), payload.get("y"))
         elif op == "histogram" and isinstance(payload, dict):
@@ -2262,6 +2274,121 @@ class StarMainWindow(QMainWindow):
             added += vp.add_actors([(gkey, "后处理矢量", None, act)])
             if hasattr(vp, "render"):
                 vp.render()
+        return added
+
+    def _render_post_probe(self, key, payload):
+        """探针：域内采样点 → 球体 glyph actor（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        import numpy as np
+        from star_gui_vtk import marker_actor
+        pts = payload.get("points")
+        if pts is None:
+            return 0
+        pts = np.asarray(pts, float)
+        if pts.ndim != 2 or pts.shape[0] == 0:
+            return 0
+        inside = payload.get("inside")
+        if inside is not None and len(inside) == pts.shape[0]:
+            pts = pts[np.asarray(inside, bool)]
+        if pts.shape[0] == 0:
+            return 0
+        gkey = "post:" + key
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                act = marker_actor(pts)
+            except Exception:
+                continue
+            vp.remove_actors([gkey])
+            added += vp.add_actors([(gkey, "后处理探针", None, act)])
+            if hasattr(vp, "render"):
+                vp.render()
+        return added
+
+    def _render_post_line(self, key, payload):
+        """线取样：采样折线 → 视口线元 actor（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        import numpy as np
+        from star_gui_vtk import _actor, polyline_polydata
+        pts = payload.get("points")
+        if pts is None or len(pts) < 2:
+            return 0
+        gkey = "post:" + key
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                pd = polyline_polydata(np.asarray(pts, float))
+            except Exception:
+                continue
+            act = _actor(pd, (0.90, 0.15, 0.15), line_width=2.0)
+            vp.remove_actors([gkey])
+            added += vp.add_actors([(gkey, "后处理线取样", None, act)])
+            if hasattr(vp, "render"):
+                vp.render()
+        return added
+
+    def _render_post_plane(self, key, payload):
+        """面取样：结构化采样网格 → 三角面片 actor（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        import numpy as np
+        from star_gui_vtk import _actor, grid_surface_polydata
+        pts = payload.get("points")
+        shape = payload.get("grid_shape")
+        if pts is None or shape is None:
+            return 0
+        gkey = "post:" + key
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                pd = grid_surface_polydata(np.asarray(pts, float), shape)
+            except Exception:
+                continue
+            act = _actor(pd, (0.20, 0.55, 0.85), opacity=0.85)
+            vp.remove_actors([gkey])
+            added += vp.add_actors([(gkey, "后处理面取样", None, act)])
+            if hasattr(vp, "render"):
+                vp.render()
+        return added
+
+    def _render_post_colorbar(self, payload):
+        """色标尺：官方色表 LUT + 场名 → 2D 叠加条（同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        from star_gui_postprocess import official_colormap
+        from star_gui_vtk import lut_from_colormap, scalar_bar_actor
+        lo, hi = payload.get("lo"), payload.get("hi")
+        if lo is None or hi is None:
+            return 0
+        lo, hi = float(lo), float(hi)
+        if hi <= lo:
+            hi = lo + 1.0
+        lut = lut_from_colormap(official_colormap(), None, lo, hi)
+        title = str(payload.get("field") or "")
+        n = int(payload.get("n") or 6)
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                bar = scalar_bar_actor(lut, title=title, n_labels=n)
+            except Exception:
+                continue
+            added += vp.set_overlay2d("overlay:colorbar", bar)
+        return added
+
+    def _render_post_legend(self, items):
+        """图例：(label, rgba) 条目 → 2D 叠加色块 + 文本（同名替换）。"""
+        if HEADLESS or not items:
+            return 0
+        from star_gui_vtk import legend_box_actor
+        added = 0
+        for vp in self._iter_viewports():
+            try:
+                box = legend_box_actor(items)
+            except Exception:
+                continue
+            added += vp.set_overlay2d("overlay:legend", box)
         return added
 
     def _render_post_series(self, name, xs, ys):
