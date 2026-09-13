@@ -3092,14 +3092,14 @@ import mesh_benchmark as _r5
 import numpy as _r5np
 
 _r5V = _r5np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], float)
-_r5F = _r5np.array([(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)], np.int64)
+_r5F = _r5np.array([(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)], _r5np.int64)
 _r5st = _r5._edge_stats(_r5V, _r5F)
 assert _r5st["n_faces"] == 4 and _r5st["n_edges"] == 6, "R5 四面体表面边/面计数"
 assert _r5st["watertight"] and _r5st["edge_usage"] == {"2": 6}, "R5 水密判定"
 _r5ang = _r5._tri_min_angles(_r5V, _r5F)
 assert _r5ang.min() > 0 and _r5ang.max() <= 61.0, "R5 最小角统计域"
 _r5open = _r5._edge_stats(_r5np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0)], float),
-                          _r5np.array([(0, 1, 2)], np.int64))
+                          _r5np.array([(0, 1, 2)], _r5np.int64))
 assert not _r5open["watertight"] and "1" in _r5open["edge_usage"], "R5 开面判定"
 assert set(_r5.VERDICTS) == {"cell_ratio", "volume_ratio"}, "R5 容差表口径"
 assert callable(_r5.boundary_surface) and callable(_r5.boundary_patch_stats)
@@ -3109,4 +3109,37 @@ assert callable(_r5.benchmark_tet) and callable(_r5.benchmark)
 print("R 波 R5 教程尺度网格对标（合成：四面体 6 边全水密/最小角统计域/开面判定/容差表口径/"
       "对标入口齐备；语料：pipeBlockage 4 边界 3050 面环全水密、14882 单元、补丁 blockage "
       "360→658 三角、面积比 1.024、边尺度比 0.704 —— 见 tests/test_mesh_benchmark.py 11 项）全通过")
+
+# --- R 波 R4：官方解差分（合成 Strouhal / 环形域几何 / 差分指标 / 长耗时门控） ---
+import official_diff as _r4
+import numpy as _r4np
+
+_r4t = _r4np.linspace(0.0, 200.0, 20000)
+_r4y = 0.28 * _r4np.sin(2 * _r4np.pi * 0.22 * _r4t) + 0.01
+_r4st = _r4.strouhal_from_series(_r4t, _r4y, 0.04, 0.05)
+assert _r4st["ok"] and abs(_r4st["st"] - 0.176) < 3e-3, "R4 合成 0.22Hz → St≈0.176"
+assert abs(_r4st["st_fft"] - 0.176) < 3e-3 and abs(_r4st["st_cross"] - 0.176) < 3e-3
+assert abs(_r4st["amplitude"] - 0.28) < 1e-3, "R4 振幅提取"
+assert _r4.strouhal_from_series(_r4np.arange(4.0), _r4np.arange(4.0), 0.04,
+                                0.05)["ok"] is False, "R4 短序列诚实拒绝"
+_r4geo = _r4.annulus_surface(0.04, r_far_factor=10.0, n_theta=96, n_r=14)
+assert _r4geo["watertight"], "R4 环形域表面水密"
+assert abs(_r4geo["area"] / _r4geo["area_exact"] - 1.0) < 0.005, "R4 面积对解析值"
+assert abs(_r4geo["volume"] / _r4geo["volume_exact"] - 1.0) < 0.02, "R4 体积对解析值"
+_r4d = _r4.diff_metrics({"st": 0.18, "amplitude": 0.30, "mean": 0.001},
+                        {"strouhal": {"st": 0.176, "amplitude": 0.28}})
+assert all(v["ok"] for v in _r4d["items"].values()), "R4 带内判定"
+_r4bad = _r4.diff_metrics({"st": 0.05, "amplitude": 0.01, "mean": 0.5},
+                          {"strouhal": {"st": 0.176, "amplitude": 0.28}})
+assert not any(v["ok"] for v in _r4bad["items"].values()), "R4 带外判定"
+assert _r4.diff_metrics({"st": 0.18}, {"strouhal": None})["items"]["strouhal"]["ok"] is None, \
+    "R4 缺参考量不得假装通过"
+assert list(_r4.ST_TOLERANCE) == [0.75, 1.25] and list(_r4.AMPLITUDE_TOLERANCE) == [0.3, 3.0]
+
+print("R 波 R4 官方解差分（合成 0.22Hz 正弦 → St=%.4f（FFT %.4f/过零 %.4f）、振幅 %.3f；"
+      "环形域表面水密且面积/体积对解析值 <0.5%%/<2%%；指标带内带外与缺参考量 ok=None；"
+      "语料 vortexShed 官方参考 St=0.1752/Re=200/Continuity 3.2e-10 见 tests/test_official_diff.py）全通过"
+      % (_r4st["st"], _r4st["st_fft"], _r4st["st_cross"], _r4st["amplitude"]))
+
+print("ALL CHECKS PASSED")
 

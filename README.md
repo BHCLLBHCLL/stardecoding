@@ -15,7 +15,8 @@
 | `star_gui_commands.py` / `star_gui_document.py` | 可撤销命令总线与会话文档模型 |
 | `sim_writer.py` | 对象图 repr 回写（Save / Save As） |
 | `cosimulation.py` | 协同仿真链接配置前段（R6：类型/连接/启动/耦合区间/URF/区域与场映射 + 校验 + JSON 往返 + Java 宏前端 best-effort） |
-| `mesh_benchmark.py` | 教程尺度网格对标（R5：官方 .sim 网格尺度 ↔ 自研 tet，域表面/体积守恒/单元数比） |
+| `mesh_benchmark.py` | 教程尺度网格对标（R5：官方 .sim 网格尺度 ↔ 自研重网格化，面数/面积/边尺度/质量） |
+| `official_diff.py` | 官方解差分（R4：官方参考量 St/D/Re + 同工况环形域几何 + 误差带判定；真实瞬态跑门控 STARDECODING_LONG） |
 | `star_gui_plots.py` | 绘图/报告查看窗 |
 | `star_gui_parity.md` | 对标 STAR-CCM+ 20.02 能力表（view / session / persist / needs_kernel） |
 | `star_gui_next.md` | **E0–E8 后完整度复盘与 F0–F8 改进规划** |
