@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """P 波 P5：压力基求解器（SIMPLE 分离 + Rhie-Chow + AMG/ILU/numpy 线性求解）。
 
-在 P4 的 `FVM` 单元中心面拓扑上构建**速度-压力耦合**的稳态不可压求解器：
+在 P4 的 `FVM` 单元中心面拓扑上构建**速度-压力耦合**的不可压求解器（默认稳态
+SIMPLE；可选非稳态后向欧拉时间推进 `enable_transient`/`advance`/`solve_transient`）：
 
   1) 稀疏线性求解：COO(row, col, data) 表示。occ 环境优先走 `scipy.sparse`
      （构造 CSR；`pyamg` 若安装用 smoothed_aggregation AMG，否则 `spilu`+`bicgstab`
@@ -188,7 +189,7 @@ class PressureSolver:
                  compressible_model=None, compressible_gamma=1.4,
                  compressible_mw=28.96, compressible_p_ref=101325.0,
                  compressible_t_ref=300.0, compressible_dt=1.0e-3,
-                 compressible_relax=0.5):
+                 compressible_relax=0.5, unsteady=False, dt=None):
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
@@ -233,6 +234,13 @@ class PressureSolver:
         self.compressible_t_ref = float(compressible_t_ref)
         self.compressible_dt = float(compressible_dt)
         self.compressible_relax = float(compressible_relax)
+        # 非稳态（瞬态）时间推进：unsteady 关闭时为稳态 SIMPLE，零回归。
+        self.unsteady = bool(unsteady)
+        self.dt = float(dt) if dt is not None else None
+        self.time = 0.0
+        self._u_old = None
+        self._v_old = None
+        self._w_old = None
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -356,6 +364,10 @@ class PressureSolver:
         self._w[:] = 0.0
         self._rebuild_mdot()
         self.iteration = 0
+        self.time = 0.0
+        self._u_old = None
+        self._v_old = None
+        self._w_old = None
         self._last_residual = float("nan")
         self._last_cont_ratio = float("nan")
 
@@ -365,6 +377,10 @@ class PressureSolver:
         self._v = np.zeros(fv.n_cells, float)
         self._w = np.zeros(fv.n_cells, float)
         self._p = np.full(fv.n_cells, self.pressure_ref, float)
+        self.time = 0.0
+        self._u_old = None
+        self._v_old = None
+        self._w_old = None
         if self.initializer is not None and self.initializer.source_field is not None:
             self.initializer.apply_initial(self)
             self.iteration = 0
@@ -455,6 +471,31 @@ class PressureSolver:
 
     def continuity_ratio(self):
         return self._last_cont_ratio
+
+    def forces(self, a_ref=1.0, u_ref=None, drag_dir=None, lift_dir=None,
+               p_ref=0.0, faces=None):
+        """R1-3：壁面压力 + 剪应力积分 → 合力与升/阻力系数 Cd/Cl。
+
+        对 `_wall_faces`（或指定面）积分流体对固壁的应力，参考速度缺省取入口
+        速度大小、阻力方向缺省取入口速度方向，按动压 q=½ρU²A_ref 归一化。
+        返回 `aero_forces.force_coefficients` 结果字典（含 force/pressure/
+        viscous/cd/cl 等）。惰性导入 `aero_forces`：其依赖 `turbulence`，而
+        `turbulence` 又导入本模块的 `solve_linear`，故须延迟到调用期导入。
+        """
+        from aero_forces import force_coefficients
+        if faces is None:
+            faces = self._wall_faces
+        vel = np.asarray(self.inlet_velocity, float)
+        u_mag = _safe_norm(vel)
+        if drag_dir is None:
+            drag_dir = vel / u_mag if u_mag > 1e-30 else np.array([1.0, 0.0, 0.0])
+        if u_ref is None:
+            u_ref = u_mag
+        return force_coefficients(
+            self._fv, self._p, self._u, self._v, self._w,
+            self.mu, self.rho, faces, a_ref=a_ref, u_ref=u_ref,
+            rho_ref=self._rho0, drag_dir=drag_dir, lift_dir=lift_dir,
+            p_ref=p_ref)
 
     # -- 物性：单相标量 / VOF 可变密度 ----------------------------
     @property
@@ -909,6 +950,20 @@ class PressureSolver:
         # VOF 重力耦合暂不启用显式密度差体源：水/气密度比 (~850×) 下该源项过大，
         # 且未在压力方程中以 p_rgh（剔除静水压）同步处理，导致 SIMPLE 发散。
         # 单流体界面捕捉保持稳定即可；浮力/静水耦合留给自由面算例用 p_rgh 形式完善。
+        # 非稳态项（后向欧拉）：ρV/Δt 进对角、ρV/Δt·φⁿ 进右端；稳态/未启用时为 0，
+        # 因此 d_cell=V/(aP/α) 自然随 1/Δt 减小，Rhie-Chow 面通量同步获得瞬态修正。
+        if self.unsteady and self.dt and self.dt > 0.0:
+            coeff = np.asarray(self.rho, float) * np.asarray(fv.volumes, float) / self.dt
+            if np.ndim(coeff) == 0:
+                coeff = np.full(n, float(coeff), float)
+            old = {0: self._u_old, 1: self._v_old, 2: self._w_old}[comp]
+            if old is None:
+                old = {0: self._u, 1: self._v, 2: self._w}[comp]
+            idx = np.arange(n, dtype=np.int64)
+            rows.extend(idx)
+            cols.extend(idx)
+            vals.extend(coeff)
+            rhs = rhs + coeff * np.asarray(old, float)
         # 速度欠松弛：aP = ap/α；RHS 补偿 (1-α)/α * ap * φ_old
         rows = np.array(rows, np.int64)
         cols = np.array(cols, np.int64)
@@ -1057,6 +1112,68 @@ class PressureSolver:
                 "u_min": float(self._u.min()),
                 "u_max": float(self._u.max()),
                 "u_mean": float(self._u.mean())}
+
+    # -- 非稳态时间推进（后向欧拉 + 内迭代 SIMPLE） -----------------
+    def enable_transient(self, dt, snapshot=True):
+        """启用瞬态时间推进：设定时间步 Δt；snapshot 时冻结当前场为 φⁿ 参考。"""
+        dt = float(dt)
+        if not dt > 0.0:
+            raise ValueError("时间步 dt 必须为正")
+        self.unsteady = True
+        self.dt = dt
+        if snapshot or self._u is None:
+            self._snapshot_old()
+        return self
+
+    def disable_transient(self):
+        """关闭瞬态项，退回稳态 SIMPLE（保留当前场，清空 φⁿ 参考）。"""
+        self.unsteady = False
+        self._u_old = None
+        self._v_old = None
+        self._w_old = None
+        return self
+
+    def _snapshot_old(self):
+        """把当前场冻结为上一时刻场 φⁿ（瞬态项参考）。"""
+        if self._u is None:
+            return
+        self._u_old = self._u.copy()
+        self._v_old = self._v.copy()
+        self._w_old = self._w.copy()
+
+    def advance(self, dt=None, n_inner=1):
+        """推进一个物理时间步：冻结 φⁿ → n_inner 次内迭代 SIMPLE → t += Δt。"""
+        if dt is not None:
+            self.enable_transient(dt)
+        if not self.unsteady or self.dt is None:
+            raise ValueError("未启用瞬态：先 enable_transient(dt=...) 或传入 dt")
+        self._snapshot_old()
+        last = None
+        for _ in range(max(int(n_inner), 1)):
+            last = self.step()
+        self.time += self.dt
+        out = dict(last) if last is not None else {}
+        out["time"] = float(self.time)
+        out["dt"] = float(self.dt)
+        return out
+
+    def solve_transient(self, t_end, dt=None, n_inner=1, max_steps=None):
+        """推进到物理时刻 t_end，返回逐步历史 [(t, residual), ...]。"""
+        if dt is not None:
+            self.enable_transient(dt)
+        if self.dt is None:
+            raise ValueError("未启用瞬态：需提供 dt")
+        t_end = float(t_end)
+        if max_steps is None:
+            max_steps = int(np.ceil(abs(t_end - self.time) / self.dt)) + 1
+        hist = []
+        for _ in range(max(int(max_steps), 1)):
+            r = self.advance(n_inner=n_inner)
+            hist.append((float(r.get("time", self.time)),
+                         float(r.get("residual", float("nan")))))
+            if self.time >= t_end - 1e-12:
+                break
+        return hist
 
     def _recompute_mdot_rhie_chow(self):
         """Rhie-Chow 动量插值面质量通量（消除棋盘压力）。

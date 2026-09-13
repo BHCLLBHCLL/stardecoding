@@ -5,7 +5,8 @@
 
 路由（客户端自动选可用库，两环境皆出实际四面体单元）：
   A) scipy.spatial.Delaunay（默认 Python 3.14 有 scipy）：表面顶点 + 内部填充点
-     Delaunay → 全部保留（水密凸性至少覆盖内部）；
+     Delaunay → 按**单元质心归属**裁剪（even-odd 射线）：凸域全保留，
+     非凸域（圆柱/翼型凹腔）剔除落在域外的填满单元；
   B) Gmsh（conda occ 环境有 gmsh）：三角表面→面环→体，前沿/约束 Delaunay；
   C) 二者皆无 → 抛 ValueError（由上层门控，不在测试断言路径）。
 
@@ -103,6 +104,81 @@ def _pt_on_tri(p, A, B, C, eps):
             and u + v + w <= 1 + eps)
 
 
+def _pt_on_tri_batch(p, A, B, C, eps):
+    """向量化 _pt_on_tri：单点 p 对一批三角形 (A,B,C) 是否落在其上。"""
+    v0 = C - A
+    v1 = B - A
+    v2 = p - A
+    n = np.cross(v0, v1)
+    ln = np.linalg.norm(n, axis=1)
+    good = ln > 1e-300
+    d = np.einsum("ij,ij->i", n, v2)
+    d00 = np.einsum("ij,ij->i", v0, v0)
+    d01 = np.einsum("ij,ij->i", v0, v1)
+    d11 = np.einsum("ij,ij->i", v1, v1)
+    d20 = np.einsum("ij,ij->i", v2, v0)
+    d21 = np.einsum("ij,ij->i", v2, v1)
+    den = d00 * d11 - d01 * d01
+    good &= np.abs(den) > 1e-300
+    safe = np.where(good, den, 1.0)         # 规避除零；good 掩码随后过滤
+    vv = (d11 * d20 - d01 * d21) / safe
+    ww = (d00 * d21 - d01 * d20) / safe
+    uu = 1.0 - vv - ww
+    return (good & (np.abs(d) <= eps * ln)
+            & (uu >= -eps) & (vv >= -eps) & (ww >= -eps)
+            & (uu + vv + ww <= 1.0 + eps))
+
+
+def _points_in_domain(P, V, F, eps=1e-9):
+    """批量 even-odd 射线法（+x）：判断多个点是否在闭合三角网格内部。
+
+    与 point_in_mesh 同一判据（表面命中即内部；命中簇按射线参数去重），
+    向量化实现以支撑**非凸域**体网格裁剪：Delaunay 填满凸包，凹腔单元
+    的质心落在域外（如圆柱/翼型内部）→ 剔除。
+    """
+    P = np.asarray(P, float).reshape(-1, 3)
+    V = np.asarray(V, float)
+    F = np.asarray(F, np.int64)
+    n = len(P)
+    out = np.zeros(n, bool)
+    if n == 0 or len(F) == 0:
+        return out
+    A = V[F[:, 0]]
+    B = V[F[:, 1]]
+    C = V[F[:, 2]]
+    D = np.array([1.0, 0.0, 0.0])
+    E1 = B - A
+    E2 = C - A
+    Pv = np.cross(D, E2)                    # (m,3)，与点无关
+    det = np.einsum("ij,ij->i", E1, Pv)
+    live = np.abs(det) > 1e-300
+    inv = np.zeros_like(det)
+    inv[live] = 1.0 / det[live]
+    diag = float(np.linalg.norm(V.max(axis=0) - V.min(axis=0)))
+    tol = eps * max(1.0, diag)
+    for i in range(n):
+        p = P[i]
+        if _pt_on_tri_batch(p, A, B, C, eps).any():
+            out[i] = True
+            continue
+        T = p - A                           # (m,3)
+        u = np.einsum("ij,ij->i", T, Pv) * inv
+        Q = np.cross(T, E1)
+        v = (Q @ D) * inv
+        t = np.einsum("ij,ij->i", Q, E2) * inv
+        valid = (live & (u >= -eps) & (u <= 1.0 + eps)
+                 & (v >= -eps) & (v <= 1.0 + eps)
+                 & (u + v >= -eps) & (u + v <= 1.0 + eps)
+                 & (t > 1e-9))
+        ts = t[valid]
+        if ts.size == 0:
+            continue
+        ts = np.sort(ts)
+        hits = 1 + int(np.count_nonzero(np.diff(ts) > tol))
+        out[i] = (hits % 2) == 1
+    return out
+
+
 def _interior_fill_points(V, F, spacing):
     """水密体内均匀栅格填充点（even-odd 判定）。"""
     lo = V.min(axis=0)
@@ -151,9 +227,23 @@ def _tet_scipy(V, F, spacing):
     interior = _interior_fill_points(V, F, spacing)
     pts = np.vstack([V, np.asarray(interior, float)])
     tri = Delaunay(pts)
-    cells = np.asarray(tri.simplices, np.int64)
+    cells = np.asarray(tri.simplices, np.int64).copy()
+    # scipy Delaunay 单元定向不一致（正负混排），若不翻正会丢弃近半数负单元、
+    # 造成体网格缺洞与体积不守恒。统一翻正（交换负单元第 2、3 顶点）。
     vol = _tet_volumes(pts, cells)
+    neg = vol < 0.0
+    if neg.any():
+        tmp = cells[neg, 1].copy()
+        cells[neg, 1] = cells[neg, 2]
+        cells[neg, 2] = tmp
+        vol[neg] = -vol[neg]
     keep = vol > 1e-12
+    # 非凸域裁剪：Delaunay 填满凸包，须剔除落在凹腔（圆柱/翼型内部）的单元。
+    # 判据取单元质心归属（even-odd 射线）：凸域所有质心在域内→全保留，
+    # 穿越凹腔的单元质心在域外→剔除；边界单元质心仍在域内故保留。
+    if len(cells):
+        cent = pts[cells].mean(axis=1)
+        keep = keep & _points_in_domain(cent, V, F)
     cells = cells[keep]
     return {"ok": len(cells) > 0, "vertices": pts, "cells": cells,
             "n_cells": int(len(cells)), "method": "scipy.delaunay",

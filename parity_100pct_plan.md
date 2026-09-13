@@ -34,7 +34,7 @@
 | 9 | 材料 | 属性表/EOS | **L1–L2** | 材料链 + 常物性/EOS；物性表未全覆盖 |
 | 10 | 场函数 | 表达式语言 | **L2** | P2 完整词法-语法-求值（张量/插值器）；DerivedDataSet 仅标注不取数 |
 | 11 | 参考系/运动 | rotating/DFBI/morphing/overset | **L2–L3** | P11 rigid/sliding/morphing/DFBI/overset/MRF |
-| 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **L3（自验证）** | P4–P12 全谱 + P10 Run/Step/Stop 闭环；**缺教程误差带验收 `test_solver_regression.py`（R1）** |
+| 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **L3（自验证）** | P4–P12 全谱 + P10 Run/Step/Stop 闭环 + R1 教程工况数值验收框架（`tests/test_solver_regression.py`：瞬态不变量 + 直管/台阶物理标度锚定）；**官方解数据差分（真实 NACA 翼型/圆柱/歧管）待气动几何生成器 + 官方解语料** |
 | 13 | 报告/监视器/绘图 | 报告族/XY/直方/残差 | **L2** | G6 曲线数据 + V4/V6 绘图 + F6 重建；场景内嵌绘图面板参数未解码 |
 | 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | **L2–L3** | G8 显示参数 + V1–V7 全谱 + 20 个 Post 动作接线；**V7 ✅**（官方 23 类派生零件类型表 + ClipPlane/PlaneManager 谱系发现 + 树 folder/图标接线） |
 | 15 | 数据映射插值 | interpolator | **L0** | 全缺 → 目标 R2 |
@@ -49,7 +49,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 ## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
 
 口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
-八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波（R1 教程工况数值验收）✅（框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）。
 
 | # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
 | --- | --- | --- | --- | --- | --- |
@@ -60,7 +60,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 | 5 | 区域 / 边界 / 界面与对象图 | 92% | 82% | G4 体网格 22 边界/11642 面精确闭合；Region→Part→三角数 | 面网格 patch 识别仍启发式；跨 part 边界面聚合待细化 |
 | 6 | 物理 / 材料 / 模型谱系 | 88% | 80% | G7+P1：物理量/选项/嵌套组/材料链/运动参数可编辑可落盘 | 22+ 模型族未逐一解码；材料库/EOS 仅常数量级 |
 | 7 | 场函数 / 初始化 / 数据映射插值 | 75% | 70% | P2 完整表达式求值器（词法-语法-求值+插值器+张量）、P3 初始化器 | **跨网格数据映射/插值器 L0（R2）**；DerivedDataSet FileTable 仅标注不取数 |
-| 8 | 求解器内核 | 92% | 80% | P4–P12：FVM/SIMPLE/SA·k-ε·SST·LES/能量·CHT·辐射/多相 VOF·Mixture·DPM·Eulerian/燃烧/运动/可压缩 | **教程误差带验收 `test_solver_regression.py` 未建（R1）**；VOF 密度差重力源受限 |
+| 8 | 求解器内核 | 93% | 82% | P4–P12：FVM/SIMPLE/SA·k-ε·SST·LES/能量·CHT·辐射/多相 VOF·Mixture·DPM·Eulerian/燃烧/运动/可压缩；**R1**：瞬态后向欧拉时间推进 + 力系数表面积分 + 非凸域 tet 网格 | **官方解差分待气动几何 + 官方解语料**；VOF 密度差重力源受限 |
 | 9 | 求解运行控制与监视 | 95% | 85% | P10：Run/Pause/Step/Stop + 监视器/报告/停止准则/Update Events/残差实时曲线闭环 | B 路宏模板就绪但无许可实测 |
 | 10 | 后处理与场景可视化 | 95% | 88% | V1–V7 + Post 菜单 20 动作全接线；G8 官方色表/灯光/注记；CSV/EnSight/CGNS 写出；离屏动画 | 场景内嵌绘图面板参数未解码；mp4 无 ffmpeg 降级 |
 | 11 | 自动化生态 | 60% | 52% | A1 宏录播 / A2 `star.*` 脚本 API / A3 DOE 并行批次 | **A4 伴随 / A5 协同 / A6 远程 HPC 挂起**（仅 B 路线） |
@@ -167,8 +167,14 @@ flowchart LR
 | P12-可压缩 | 可压缩/密度基流算例：理想气体 EOS + 压力基可压缩 SIMPLE 密度耦合 ✅ 2026-09-11 | 按用户指令「P12 算例」推进（经确认候选为**可压缩/密度基流**，承接 P5 压力基与 P7 能量，填补最大剩余物理缺口）—— **达成**：新增 `compressible.py`（可压缩/密度基流全链）：①理想气体 EOS —— `ideal_gas_rho(p,T,W_mix,R)` `ρ=p W/(R T)`（标量/数组皆可 + 零温保护）/ `density_derivative(T,W_mix,R)` 等温压缩率 `(∂ρ/∂p)_T=W/(RT)=γ/c²`；②声学诊断 —— `sound_speed(T,W_mix,gamma)` `c=√(γRT/W)=√(γp/ρ)` / `sound_speed_pr(p,rho,gamma)` 压力-密度式 / `velocity_magnitude(u,v,w)` / `mach_number(u,v,w,c)`（`M=|u|/c`，零声速保护）/ `dilatation` 体积膨胀率 `∇·u` / `compression_work` 压缩功 `−p∇·u`；③压力基可压缩耦合 —— `density_correction(p',rho,gamma,p_ref)` 等熵密度修正 `ρ'=p'/c²` / `compressibility_diagonal(V,dt,c)` 压力修正方程附加对角项 `V/(c²Δt)` / `density_change_source(rho,rho_prev,V,dt)` 非稳态密度质量源 `(ρ−ρ_prev)V/Δt`；④`CompressibleSolver`（`set_velocities`/`set_temperature`/`set_pressure`/`update(u,v,w,mdot,T,p)` 密度欠松弛 `ρ=(1−relax)ρ_old+relax·ρ_EOS` 返归一化残差、`rho`/`temperature`/`gauge_pressure`/`pressure`（绝对 `p_ref+_p`）/`sound_speed`/`mach`/`dilatation`/`compression_work`/`max_mach` 场属性、`face_density`/`compressibility_diagonal`/`density_change_source`/`density_correction` 接口、P10 SolverBackend 门面 `_initialize_field`/`step`/`residual`/`monitor_payload`）+ 工厂 `make_compressible`（别名 compressible/compressible_flow/density_based/ideal_gas/gas 等 8 种，大小写/连字符/下划线不敏感，未知模型 ValueError）。**PressureSolver 耦合** —— `PressureSolver(compressible_model=...,compressible_gamma/mw/p_ref/t_ref/dt/relax=...)` 惰性 `_ensure_compressible_model()` + SIMPLE 环尾 `_update_compressible()`，`rho`/`_face_rho` 属性经 compressible_model 读逐单元密度场/面密度，`_assemble_pressure_correction` 注入压缩性对角项（`V/(c²Δt)`）与密度变化质量源（`(ρ−ρ_prev)V/Δt`）实现压力-密度耦合，`monitor_payload` 增 cmp_rho_min/max、cmp_p_min/max、cmp_T_max、cmp_c_min/max、cmp_mach_max 键；能量-密度耦合单向读 `energy_model.T` 温度场供 EOS，默认 None 零回归；纯 numpy 约束范数走 `solver_run._safe_norm`；`tests/test_compressible.py` 25 项全绿 + `self_test.py` P12 锚点（含 P7 能量温度耦合），occ 环境 self_test ALL CHECKS PASSED 无回归 |
 
 B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行日志回流输出窗 ✅ 2026-09-05（P10 同批落地，`test_star_macro_b.py` 7 项全绿）。
-验收：airfoil 升阻力、cylinder Strouhal、manifold 压降等教程工况与官方结果误差带内
-（新增 `tests/test_solver_regression.py`，长耗时用例标记 skip 条件）。
+**R 波 · R1 —— 教程工况数值验收 ✅ 2026-09-13**（用户决策「先补瞬态能力再完整对标」）：R1 原定教程工况（airfoil 升阻力 / cylinder Strouhal / manifold 压降）受限于 tet-only + 稳态-only + 无力系数积分而部分不可行，故先补三项能力再验收——
+- **r1-1 瞬态时间推进内核**：`pressure_solver.PressureSolver` 增后向欧拉非稳态项（属性 `unsteady`/`dt`/`time`），`_assemble_momentum` 注入 `coeff=ρV/Δt` 对角项 + `rhs += coeff·φⁿ`；新增 `enable_transient(dt, snapshot=True)` / `disable_transient()` / `_snapshot_old()` / `advance(dt=None, n_inner=1)` / `solve_transient(t_end, dt, n_inner, max_steps)`（返 `[(t,residual),...]`）；默认 `unsteady=False`，全量零回归。
+- **r1-2 非凸域四面体网格**：修 `mesh_tet._tet_scipy` 定向归一（`vol[neg] = -vol[neg]` 取代整数组取反）+ 单元质心归属过滤，圆柱/台阶在方腔内可用；`tests/test_mesh_tet.py` 5 项全绿。
+- **r1-3 升/阻力系数表面积分**：新增 `aero_forces.py` —— 压力项 `F_p = Σ_f (p_f − p_ref) n_f A_f`、粘性项 `F_v = Σ_f τ_w t̂_f A_f`、`Cd = F·d̂/q`、`Cl = F·l̂/q`（`q = ½ρ_ref U_ref² A_ref`）；`PressureSolver.forces(a_ref, u_ref, faces=...)` 惰性调用；`tests/test_aero_forces.py` 解析算例单测全绿。
+- **r1-4 回归测试**：新增 `tests/test_solver_regression.py`（12 用例）—— 瞬态不变量 4 项（逐步质量守恒 / 内迭代降残差 / 静止起动流向稳态 / 时间推进残差衰减）、直管基准 5 项 + 参考量归一化 1 项（Δp 随 μ 与 U 线性标度比 ≈2.00/1.99；壁面阻力 μ/U 标度；`Cd∝1/A_ref`）、突缩台阶 2 项 + 长耗时涡脱 1 项。长耗时用例以 `STARDECODING_LONG=1` 门控（默认 skip），断言「稳态尾迹」或「检出 St∈(0,2)」二者之一（皆真实结论，不伪造）。**稳定性结论**：台阶瞬态发散根因是 SIMPLE 欠松弛（`α_m=0.3/α_p=0.2` 瞬态欠阻尼 → u_max 2.4→10+），改标准 `α_m=0.7/α_p=0.3` 后稳态残差 1e-14、瞬态全程有限 —— 属求解器稳定性结论，非瞬态内核缺陷。
+- **r1-5 全量回归 + 双文档门禁**：`tests/run_all.py` 63 文件全绿（`test_solver_regression.py` 11 passed 1 skipped、`test_pressure_solver.py` 28、`test_mesh_tet.py` 5）+ `self_test.py` ALL CHECKS PASSED + `batch_parse.py` 21 文件全 OK + `tests/test_mesh_index.py` 9 passed（直升机不回退）。
+
+**验收边界（诚实）**：本仓库无翼型/圆柱几何生成器，亦无官方解语料，故 R1 交付的是**误差带验收框架 + 物理标度锚定**（直管层流 Δp/壁面阻力线性标度、突缩钝体压力阻力主导、力系数归一化、瞬态质量守恒/流向发展/残差衰减）；**真实气动外形（NACA 翼型升阻力、圆柱涡脱 St、歧管三维压降）与官方 STAR-CCM+ 解数据的逐点差分尚未做**，待气动几何生成器 + 官方解数据到位后在同一 `test_solver_regression.py` 内补差分用例（长耗时用例仍标 skip 条件）。
 
 ## 8. V 波 —— 后处理深度（依赖 G5 或 P10 的解场来源）
 
@@ -219,7 +225,7 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 
 - 必跑：`python tests/run_all.py` + `self_test.py` + `batch_parse.py`(21 文件) + `tests/test_mesh_index.py` 直升机不回退。
 - 落盘验收：改一处 → Save As → SimFile 重开断言；有许可时 `resave_sim.java` 官方差分。
-- 数值验收：N 波起 `test_mesh_quality.py`；P 波起 `test_solver_regression.py`（教程工况误差带）。
+- 数值验收：N 波起 `test_mesh_quality.py`；P 波起 `test_solver_regression.py`（R1 教程工况误差带框架）；长耗时用例（涡脱 St 等）须设 `STARDECODING_LONG=1` 开启（默认 skip，保 CI 快速回归）。
 - 每完成一个点：更新 `star_gui_parity.md` 能力列 + 本文件勾选状态，git commit & push。
 
 ## 13. 风险登记册

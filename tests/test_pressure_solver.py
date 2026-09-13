@@ -244,3 +244,122 @@ def test_pressure_solver_solverbackend_closed_loop():
     items = be.curve_items()
     assert items and items[0][0] == "residual"
     assert any("迭代" in ln for ln in be.report_lines())
+
+
+# ---------------------------------------------------------------- R1-1 瞬态时间推进
+def _make_transient(nx=2, **kw):
+    kw.setdefault("mu", 0.05)
+    return _make(nx=nx, **kw)
+
+
+def _run_steady(s, n=200):
+    for _ in range(n):
+        s.step()
+    return s.velocity().copy()
+
+
+def _run_transient(s, dt, n=200, n_inner=1):
+    s.enable_transient(dt=dt)
+    for _ in range(n):
+        s.advance(n_inner=n_inner)
+    return s.velocity().copy()
+
+
+def test_solver_transient_disabled_by_default():
+    """默认稳态：unsteady=False、dt=None、time=0；未启用时 advance 报错。"""
+    s = _make(nx=2)
+    assert s.unsteady is False
+    assert s.dt is None
+    assert s.time == 0.0
+    with pytest.raises(ValueError):
+        s.advance()
+    with pytest.raises(ValueError):
+        s.solve_transient(1.0)
+
+
+def test_solver_transient_enable_disable_and_guards():
+    """enable/disable 生命周期与非法 dt 守卫。"""
+    s = _make_transient(nx=2)
+    with pytest.raises(ValueError):
+        s.enable_transient(0.0)
+    with pytest.raises(ValueError):
+        s.enable_transient(-1.0)
+    s.enable_transient(0.25)
+    assert s.unsteady is True and s.dt == pytest.approx(0.25)
+    assert s._u_old is not None and s._v_old is not None and s._w_old is not None
+    s.disable_transient()
+    assert s.unsteady is False
+    assert s._u_old is None and s._v_old is None and s._w_old is None
+    with pytest.raises(ValueError):
+        s.advance()
+
+
+def test_solver_transient_time_bookkeeping():
+    """时间推进记账：time 按 Δt 累加；advance 返回 time/dt；solve_transient 到 t_end。"""
+    s = _make_transient(nx=2)
+    s.enable_transient(0.1)
+    out = s.advance()
+    assert out["dt"] == pytest.approx(0.1)
+    assert out["time"] == pytest.approx(0.1)
+    assert s.time == pytest.approx(0.1)
+    for k in ("residual", "cont_residual", "u_mean"):
+        assert k in out
+
+    t = _make_transient(nx=2)
+    hist = t.solve_transient(t_end=1.0, dt=0.1, n_inner=1)
+    assert len(hist) == 10
+    assert t.time == pytest.approx(1.0)
+    assert all(isinstance(p, tuple) and len(p) == 2 for p in hist)
+    assert hist[-1][0] == pytest.approx(1.0)
+
+
+def test_solver_transient_zero_regression_when_disabled():
+    """未启用瞬态时与既有稳态路径逐位一致（零回归）。"""
+    a = _make(nx=2)
+    va = _run_steady(a, n=60)
+    b = PressureSolver(*cube_tet_mesh(2), mu=1e-3,
+                       inlet_velocity=(1.0, 0.0, 0.0),
+                       alpha_momentum=0.7, alpha_pressure=0.3,
+                       unsteady=False, dt=None)
+    vb = _run_steady(b, n=60)
+    assert np.array_equal(va, vb)
+    assert a.time == 0.0 and b.time == 0.0
+
+
+def test_solver_transient_quasi_steady_limit_recovers_steady():
+    """R1-1 核心不变量：Δt→∞ 时瞬态项退化为零，瞬态推进精确退回稳态解。"""
+    us = _run_steady(_make_transient(nx=2), n=200)
+    ut = _run_transient(_make_transient(nx=2), dt=1.0e6, n=200)
+    maxdiff = float(np.abs(ut - us).max())
+    assert maxdiff < 1.0e-6, "Δt→∞ 应收敛到稳态解，maxdiff=%.3e" % maxdiff
+
+
+def test_solver_transient_first_order_in_inverse_dt():
+    """准稳态偏差应严格 ∝ 1/Δt（后向欧拉一阶）：Δmax·Δt ≈ 常数。"""
+    us = _run_steady(_make_transient(nx=2), n=200)
+    d1 = float(np.abs(_run_transient(_make_transient(nx=2), dt=1.0e3, n=200) - us).max())
+    d2 = float(np.abs(_run_transient(_make_transient(nx=2), dt=1.0e2, n=200) - us).max())
+    assert d1 < d2, "Δt 越小偏差越大：%.3e vs %.3e" % (d1, d2)
+    ratio = d2 / max(d1, 1e-300)
+    assert 5.0 < ratio < 20.0, "一阶标度 Δmax·Δt≈常数，ratio=%.3f" % ratio
+    assert abs(d1 * 1.0e3 - d2 * 1.0e2) / max(d1 * 1.0e3, 1e-300) < 0.1
+
+
+def test_solver_transient_term_is_active_at_finite_dt():
+    """有限 Δt 下瞬态项确实生效：解与稳态解出现可分辨差异。"""
+    us = _run_steady(_make_transient(nx=2), n=200)
+    ut = _run_transient(_make_transient(nx=2), dt=0.05, n=400)
+    assert float(np.abs(ut - us).max()) > 1.0e-3
+
+
+def test_solver_transient_set_mesh_resets_time():
+    """set_mesh 复位瞬态状态：time 归零、φⁿ 参考清空。"""
+    s = _make_transient(nx=2)
+    s.enable_transient(0.1)
+    for _ in range(5):
+        s.advance()
+    assert s.time > 0.0
+    V, C = cube_tet_mesh(3)
+    s.set_mesh(V, C)
+    assert s.time == 0.0
+    assert s._u_old is None and s._v_old is None and s._w_old is None
