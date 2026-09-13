@@ -16,32 +16,58 @@
 
 **100% = 全部能力域达到 L2；几何/网格/求解/后处理四域另须达 L3。**
 
-## 1. 现状基线（F8 后，按域）
+## 1. 现状基线（第 8 批后重估，按域）
+
+> 本节原为「F8 后」快照；C/N/P/V/A/X 波落地后逐域重估。级别依 §0 四口径（L0 外壳 / L1 会话 / L2 落盘 / L3 正确）。
+> 12 维度完整度/深度汇总见 §1.1。
 
 | # | 官方能力域 | 代表功能 | 当前级别 | 主要缺口 |
 | --- | --- | --- | --- | --- |
-| 1 | 项目管理 | Open/Save/SaveAs/Reload | **L2（窄）** | Save All/AutoSave/.simt/checkpoint/备份；ZIP 写出；.simh |
-| 2 | 导入导出 | CAD/表面/体网格/解/图像动画 | L1–L2（STL/OBJ/CCM-dll） | STEP/IGES 等 CAD 族、体网格导入导出、图像动画、EnSight/CGNS 写 |
-| 3 | 3D-CAD 建模 | 草图/特征/布尔/B-Rep | **L0** | T 块文法未解（读）；无几何内核（写） |
-| 4 | 表面修复/包裹 | hole fill/wrapper | **L0** | 全缺 |
-| 5 | 自动网格 | poly/trimmer/tet/prism/directed/thin | **L0**（宏桥雏形 `star_macro.py` 仅 generateVolumeMesh） | 无本地网格内核 |
-| 6 | 网格诊断/质量 | 统计/修复/自适应 AMR | L0（诊断=view） | 体网格表未抽取 |
-| 7 | 区域/边界/界面 | boundary 类型/interface 谱系 | L1（Keys persist） | 边界↔FaceTypes 映射未做；界面参数不解 |
-| 8 | 物理连续体/模型谱系 | 22+ 模型族参数 | L1（对象已解析归组） | 模型参数未解码/不可语义编辑 |
-| 9 | 材料 | 属性表/EOS | L0–L1 | 同上 |
-| 10 | 场函数 | 表达式语言 | L0 | 求值器全缺 |
-| 11 | 参考系/运动 | rotating/DFBI/morphing/overset | L0 | 参数不解 |
-| 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **disabled**（正确禁用） | 求解框架全缺 |
-| 13 | 报告/监视器/绘图 | 报告族/XY/直方/残差 | L1（F6 文本+对象曲线） | 曲线数据重建不全；实时监视无 |
-| 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | L1–L2（面网格着色/框选/测距 ✅；G5 真解场 ✅；V 波 20 个 Post 动作 GUI 接线：着色/等值面·剖面·裁剪·阈值·镜像/矢量符号/XY·直方图/Probe 球体标记·Line 折线·PlaneSample 采样网格曲面·IsoVolume 外表面/Colorbar·Legend·Annotation 2D 叠加/Post>Animate 帧序列离屏渲染） | ~~派生零件谱系不全~~ → **V7 ✅**（官方 23 类派生零件类型表 + ClipPlane/PlaneManager 谱系发现 + 树 folder/图标接线；3 份语料 6/12/6 个 ClipPlane 显现） |
-| 15 | 数据映射插值 | interpolator | L0 | 全缺 |
-| 16 | 自动化 | Java 宏录播/脚本 API/Design Manager/伴随优化 | L0（F7 宏桥=网格生成单项） | 录制、命令映射全覆盖、参数研究、伴随 |
-| 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | L0 | 协议私有，仅能配置解析+桥接 |
-| 18 | 客户端体验 | undo/搜索/单位/i18n/主题 | **L2**（本仓库最强项） | 多窗口/跨仿真粘贴/帮助系统 |
+| 1 | 项目管理 | Open/Save/SaveAs/Reload/AutoSave | **L2** | X1 已落地 Save All/AutoSave/.simt/checkpoint/`~` 备份；余 `.simh` HDF5（无语料）、官方 ZIP 容器差分（无许可 auto-skip） |
+| 2 | 导入导出 | CAD/表面/体网格/解/图像动画 | **L2** | C6 STL/OBJ/STEP/IGES/BREP 双向 + CCM 读 + EnSight/CGNS/图像动画写；缺体网格导入、`.sim` 导入 |
+| 3 | 3D-CAD 建模 | 草图/特征/布尔/B-Rep | **L2–L3** | C1–C3 OCC 构造/编辑/布尔/圆角/抽壳/阵列/镜像；缺 T 块文法（读）、界内 B-Rep 建模 UI、Parasolid 写（仅 B 路线） |
+| 4 | 表面修复/包裹 | hole fill/wrapper | **L2–L3** | C4 修复 + C5 包裹（OCC 内核） |
+| 5 | 自动网格 | poly/trimmer/tet/prism/directed/thin | **L2–L3** | N1–N5 本地流水线全谱（tet/poly/trimmer/prism/extruder/thin/controls）；缺教程尺度对标（R5） |
+| 6 | 网格诊断/质量 | 统计/修复/自适应 AMR | **L2–L3** | N6 `mesh_quality.py` histogram/repair + `mesh_interface.py` interface + `mesh_amr.py` AMR |
+| 7 | 区域/边界/界面 | boundary 类型/interface 谱系 | **L2** | G4 边界↔FaceTypes 22 边界/11642 面精确闭合；面网格 patch 识别仍启发式 |
+| 8 | 物理连续体/模型谱系 | 22+ 模型族参数 | **L2** | P1/G7 语义读写闭环；22+ 模型族未逐一解码 |
+| 9 | 材料 | 属性表/EOS | **L1–L2** | 材料链 + 常物性/EOS；物性表未全覆盖 |
+| 10 | 场函数 | 表达式语言 | **L2** | P2 完整词法-语法-求值（张量/插值器）；DerivedDataSet 仅标注不取数 |
+| 11 | 参考系/运动 | rotating/DFBI/morphing/overset | **L2–L3** | P11 rigid/sliding/morphing/DFBI/overset/MRF |
+| 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **L3（自验证）** | P4–P12 全谱 + P10 Run/Step/Stop 闭环；**缺教程误差带验收 `test_solver_regression.py`（R1）** |
+| 13 | 报告/监视器/绘图 | 报告族/XY/直方/残差 | **L2** | G6 曲线数据 + V4/V6 绘图 + F6 重建；场景内嵌绘图面板参数未解码 |
+| 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | **L2–L3** | G8 显示参数 + V1–V7 全谱 + 20 个 Post 动作接线；**V7 ✅**（官方 23 类派生零件类型表 + ClipPlane/PlaneManager 谱系发现 + 树 folder/图标接线） |
+| 15 | 数据映射插值 | interpolator | **L0** | 全缺 → 目标 R2 |
+| 16 | 自动化 | Java 宏录播/脚本 API/Design Manager/伴随优化 | **L1–L2** | A1 宏录播 + A2 `star_api` + A3 DOE 已落地；A4 伴随 / A5 协同 / A6 远程 HPC 挂起（B 路线） |
+| 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | **L0** | 协议私有；目标 R6 仅做配置解析前段（不依赖三方求解器） |
+| 18 | 客户端体验 | undo/搜索/单位/i18n/主题/多窗口/帮助/打包 | **L2** | X1–X4 + F0–F8 全绿（会话生命周期/多窗口跨仿真粘贴/帮助/打包脚本）；打包诚实降级（无打包器） |
 
 解析层底座（支撑以上全部）：容器/分区/对象图/数组/表面网格抽取 21/21 ✅；
 剩余黑盒集中在 **T 块文法、二进制状态表文法、数组字段级语义、边界映射、解场位置、
 NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
+
+## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
+
+口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅。
+
+| # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 文件格式解析（逆向） | 90% | 84% | G1–G9：21/21 容器/分区/对象图；ASCII 18 + binary 3（可逆）；体网格/边界/解场/监视器/物理/场景全抽取 | T 块内部语义（几何三元组 95.0%）、数组字段级 91.3%、NameManager 存储、状态表尾部校验和、`.simh` |
+| 2 | 文件写入 / 落盘往返 | 96% | 88% | W1–W6：变长数组重定位、状态表等宽安全编辑、ZIP 容器、ClassVersions、NameManager 保守写、引用/嵌套写 | 官方差分门控无许可 auto-skip |
+| 3 | CAD 几何内核 | 85% | 78% | C1–C6：OCC 构造/编辑/修复/包裹 + STL/OBJ/STEP/IGES/BREP 双向往返 | T 块文法未解（读侧 B-Rep）；Parasolid 仅 B 路；缺官方 B-Rep 对标 |
+| 4 | 网格内核 | 90% | 85% | N1–N6：tet/poly/trimmer/prism/extruder/thin + 控制/质量/interface/AMR；水密与体积守恒定点断言 | 教程尺度对标（R5）；interface 教程语料缺 |
+| 5 | 区域 / 边界 / 界面与对象图 | 92% | 82% | G4 体网格 22 边界/11642 面精确闭合；Region→Part→三角数 | 面网格 patch 识别仍启发式；跨 part 边界面聚合待细化 |
+| 6 | 物理 / 材料 / 模型谱系 | 88% | 80% | G7+P1：物理量/选项/嵌套组/材料链/运动参数可编辑可落盘 | 22+ 模型族未逐一解码；材料库/EOS 仅常数量级 |
+| 7 | 场函数 / 初始化 / 数据映射插值 | 75% | 70% | P2 完整表达式求值器（词法-语法-求值+插值器+张量）、P3 初始化器 | **跨网格数据映射/插值器 L0（R2）**；DerivedDataSet FileTable 仅标注不取数 |
+| 8 | 求解器内核 | 92% | 80% | P4–P12：FVM/SIMPLE/SA·k-ε·SST·LES/能量·CHT·辐射/多相 VOF·Mixture·DPM·Eulerian/燃烧/运动/可压缩 | **教程误差带验收 `test_solver_regression.py` 未建（R1）**；VOF 密度差重力源受限 |
+| 9 | 求解运行控制与监视 | 95% | 85% | P10：Run/Pause/Step/Stop + 监视器/报告/停止准则/Update Events/残差实时曲线闭环 | B 路宏模板就绪但无许可实测 |
+| 10 | 后处理与场景可视化 | 95% | 88% | V1–V7 + Post 菜单 20 动作全接线；G8 官方色表/灯光/注记；CSV/EnSight/CGNS 写出；离屏动画 | 场景内嵌绘图面板参数未解码；mp4 无 ffmpeg 降级 |
+| 11 | 自动化生态 | 60% | 52% | A1 宏录播 / A2 `star.*` 脚本 API / A3 DOE 并行批次 | **A4 伴随 / A5 协同 / A6 远程 HPC 挂起**（仅 B 路线） |
+| 12 | 客户端体验 | 95% | 86% | X1–X4 + F0–F8：会话生命周期/多窗口跨仿真粘贴/帮助系统/打包脚本 | 打包诚实降级（无打包器）；未产出真实二进制 |
+
+**汇总：功能完整度 ≈ 88% · 深度 ≈ 80%。**
+**深度短板集中在三个 L3 空档**：解析侧黑盒语义（T 块/数组字段/校验和）、求解侧教程数值对标缺失、自动化侧 A4–A6。
 
 ## 2. 双路线策略（贯穿所有内核波次）
 

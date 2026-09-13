@@ -30,7 +30,7 @@
 | 网格>缩放 | persist（`TransformPartCommand` → Float8 顶点/`ImportedVertices` 回写，可撤销） |
 | 网格>诊断 | view（指纹/长度/ClassVersions 自洽标志）；kernel N6 侧在 `mesh_quality.py` 提供质量 histogram/repair/`mesh_interface.py` interface/`mesh_amr.py` AMR 钩子，供运行环（P10）与湍流（P6）联调 |
 | 场景>（本客户端保留，官方在 Vis 工具栏） | view |
-| 求解/连接 | disabled（Run/Pause/Step/Stop 与 Server 均 `setEnabled(False)`，测试锁定） |
+| 求解/连接 | session（P10 已闭环：`Solution>Run` 默认启用并驱动本地求解器；`Pause/Step/Stop` 由 `_sync_solution_actions(state)` 按 `SolverState` 动态启停，初值禁用（`test_gui_editor.py` 锁初态）；`Connection>Server` 诚实禁用 `setEnabled(False)`——服务端协议未实现） |
 | 工具>诊断/选项 | view / session |
 | 后处理>（Post，绘图之后） | view（`star_gui_postprocess.py` 纯逻辑桥 + `star_gui.py` `cmd_post_action`：20 个 `Post>*` 动作 → 视口标量着色（`_render_post_color`）/ 等值面·剖面·裁剪·阈值·镜像三角面（`_render_post_geometry` → `Star3DViewport.add_actors`）/ 矢量符号线元（`_render_post_glyphs`）/ 探针球体·线取样折线·面取样网格曲面·等值体积外表面（`_render_post_probe`/`_render_post_line`/`_render_post_plane` + `iso_volume` 复用 `_render_post_geometry`）/ XY·直方图曲线（`_render_post_series` → `PlotPane.canvas.set_series`）/ Colorbar·Legend·Annotation 2D 叠加（`_render_post_colorbar`/`_render_post_legend`/`_render_post_annotation` → `Star3DViewport.set_overlay2d`，`vtkScalarBarActor`/`vtkLegendBoxActor`/`vtkTextActor`（`text_actor`，注记逐行下移、无 FVM 亦可经 `overlay_keys` 清陈旧行）经 `AddActor2D` 隔离出 3D `actors` 避免扰动 `bounds_of`/`_apply_rep`）/ `Post>Animate` 前置拦截 → `_cmd_post_animate` 帧序列离屏渲染；场来源 `resolve_fv` 三路径 + 默认求解器节点场补入；无 FVM/无场诚实降级） |
 | 窗口>树/属性/输出/绘图/CAD | view（checkable 开关） |
