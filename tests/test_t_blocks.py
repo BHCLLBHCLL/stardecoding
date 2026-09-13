@@ -22,8 +22,9 @@ sys.path.insert(0, ROOT)
 import pytest  # noqa: E402
 
 from sim_parser import (  # noqa: E402
-    T_BINARY_MARKERS, T_CONTAINER_CLOSE, T_CONTAINER_OPEN, T_GEOM_A_SIZE,
-    T_GEOM_B_SIZE, SimFile, _t_scan_binary, decode_t_blocks, t_block_report,
+    T_BINARY_MARKERS, T_CONTAINER_CLOSE, T_CONTAINER_MAX_COUNT, T_CONTAINER_OPEN,
+    T_CONTAINER_SIZE, T_GEOM_A_SIZE, T_GEOM_B_SIZE, SimFile, _t_scan_binary,
+    decode_t_blocks, t_block_report,
 )
 
 CORPUS = r"D:/training/starccm/startutorialsdata"
@@ -62,6 +63,8 @@ def test_constants():
     assert T_BINARY_MARKERS[82][0] == "container-close"
     assert T_CONTAINER_OPEN == b"\x00\x51\x00\x00\x00\x01"
     assert T_CONTAINER_CLOSE == b"\x00\x52\x00\x00\x00\x01"
+    assert T_CONTAINER_SIZE == 8 and T_CONTAINER_MAX_COUNT == 64
+    assert T_BINARY_MARKERS[29][1] == "confirmed"
     assert len(a_record()) == T_GEOM_A_SIZE
     assert len(b_record()) == T_GEOM_B_SIZE
 
@@ -100,6 +103,32 @@ def test_scan_resyncs_after_noise():
     assert recs[0]["off"] == 3 and attr == 68
 
 
+def test_scan_container_elements():
+    blob = struct.pack(">HI H", 81, 1, 432) + struct.pack(">HI H", 82, 3, 433)
+    assert len(blob) == 2 * T_CONTAINER_SIZE
+    recs, attr = _t_scan_binary(blob, set())
+    assert attr == 2 * T_CONTAINER_SIZE
+    assert [r["kind"] for r in recs] == ["container-open", "container-close"]
+    assert recs[0]["count"] == 1 and recs[0]["id"] == 432
+    assert recs[1]["count"] == 3 and recs[1]["id"] == 433
+    assert recs[0]["resolved"] is None      # 无 objmap 时不假装解析
+
+
+def test_scan_container_count_out_of_range_rejected():
+    blob = struct.pack(">HI H", 81, 10 ** 6, 432)
+    recs, attr = _t_scan_binary(blob, set())
+    assert recs == [] and attr == 0          # 计数越界 → 不当容器元素吞掉字节
+
+
+def test_scan_container_id_resolves_against_objmap():
+    class _O:
+        class_name = "star.common.NameManager"
+
+    blob = struct.pack(">HI H", 81, 1, 432)
+    recs, _ = _t_scan_binary(blob, set(), {432: _O()})
+    assert recs[0]["resolved"] == "star.common.NameManager"
+
+
 def test_scan_b_only_record():
     blob = b_record(v0=42)
     recs, attr = _t_scan_binary(blob, set())
@@ -131,11 +160,16 @@ def test_corpus_manifold_geometry_records():
     assert rep["n_geometry"] == 15
     assert rep["n_verified"] == 15 and rep["verify_rate_pct"] == 100.0
     assert rep["n_conform"] == 14 and rep["conform_rate_pct"] == 93.3
-    assert 0 < rep["coverage_pct"] < 10          # 未解字节占多数，如实计数
+    assert 10 < rep["coverage_pct"] < 25         # 未解字节仍占多数，如实计数
+    att = rep["attribution"]
+    assert sum(att.values()) == rep["bytes"]
+    assert att["geom-A+B"] == 1020 and att["geom-B"] == 208 and att["container"] == 2648
     assert rep["markers"]["geometry-element"] == 15
     assert rep["markers"]["geom-companion"] == 23
-    assert rep["markers"]["container-open"] == 133
-    assert rep["markers"]["container-close"] == 196
+    assert rep["markers"]["container-open"] == 159
+    assert rep["markers"]["container-close"] == 172
+    assert rep["container_ids"] == 331 and rep["container_ids_resolved"] == 155
+    assert rep["residue_top_u16"]                      # 残差画像非空（事实统计）
 
 
 @needs_binary
@@ -146,7 +180,8 @@ def test_corpus_binary_files_honest_zero():
         assert rep["bytes"] == nbytes
         assert rep["n_geometry"] == 0
         assert rep["verify_rate_pct"] is None    # 无几何 → 不报命中率（诚实）
-        assert rep["coverage_pct"] == 0.0
+    assert t_block_report(SimFile(AIRFOIL))["coverage_pct"] < 10.0    # 仅容器元素
+    assert t_block_report(SimFile(VIBPIPE))["coverage_pct"] == 0.0    # 完全未解
 
 
 @needs_adjwing

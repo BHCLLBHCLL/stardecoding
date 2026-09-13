@@ -3003,6 +3003,8 @@ T_BINARY_MARKERS = {
 
 T_GEOM_A_SIZE = 42     # A 记录字节数
 T_GEOM_B_SIZE = 26     # B 记录字节数
+T_CONTAINER_SIZE = 8   # 容器元素：marker(u16) + count(u32) + id(u16)
+T_CONTAINER_MAX_COUNT = 64   # 容器计数取值上界（实测 1/3）
 T_CONTAINER_OPEN = b"\x00\x51\x00\x00\x00\x01"
 T_CONTAINER_CLOSE = b"\x00\x52\x00\x00\x00\x01"
 
@@ -3021,11 +3023,13 @@ def _t_vertex_set(sim, item_limit=900000):
     return merged
 
 
-def _t_scan_binary(blob, vset=None):
-    """二进制 T 载荷字节流 → A/B 几何记录（字节级重同步）。
+def _t_scan_binary(blob, vset=None, objmap=None):
+    """二进制 T 载荷字节流 → A/B 几何记录 + 81/82 容器元素（字节级重同步）。
 
     返回 (records, attributed_bytes)：records 按出现顺序；attributed 只统计
-    结构已确证的 A/B 记录字节，未归属字节如实保留。
+    结构已确证/已标注的元素字节（A/B 记录 + 容器元素），未归属字节如实保留。
+    容器元素 = marker(81/82) + count(u32) + id(u16)：id 若命中对象图则附带解析
+    结果（likely 置信度，不计入几何真值）。
     """
     n = len(blob)
     recs = []
@@ -3064,6 +3068,18 @@ def _t_scan_binary(blob, vset=None):
             attributed += T_GEOM_B_SIZE
             i += T_GEOM_B_SIZE
             continue
+        if i + T_CONTAINER_SIZE <= n and _u16be(blob, i) in (81, 82):
+            cnt = _struct.unpack_from(">I", blob, i + 2)[0]
+            cid = _u16be(blob, i + 6)
+            if cnt <= T_CONTAINER_MAX_COUNT:
+                target = objmap.get(cid) if objmap else None
+                recs.append({"kind": "container-open" if _u16be(blob, i) == 81
+                             else "container-close",
+                             "off": i, "count": cnt, "id": cid,
+                             "resolved": (target.class_name if target is not None else None)})
+                attributed += T_CONTAINER_SIZE
+                i += T_CONTAINER_SIZE
+                continue
         i += 1
     return recs, attributed
 
@@ -3076,6 +3092,12 @@ def _f64be(blob, off, count):
     return list(_struct.unpack_from(">%dd" % count, blob, off))
 
 
+def _t_residue_profile(chunk, counter):
+    """未归属残差段内的高频 u16（事实统计，不含语义推断）。"""
+    for k in range(0, len(chunk) - 1):
+        counter[_u16be(chunk, k)] += 1
+
+
 def decode_t_blocks(sim, max_records=0, vertex_check=True):
     """R3：T 记录载荷解码（二进制 A/B 几何记录；ASCII 走 G1 元素流口径）。
 
@@ -3083,6 +3105,7 @@ def decode_t_blocks(sim, max_records=0, vertex_check=True):
           "coverage","n_geometry","n_verified","n_conform","markers","records","reason"}
     records=[{token_index,n_bytes,attributed,geometry:[...],markers:{...}}]
     """
+    from collections import Counter
     trecs = [r for r in sim.records if r.get("fmt") == "T"]
     payloads = [r for r in trecs if r.get("raw")]
     is_binary = bool(payloads) and sim.state_mode == "binary"
@@ -3090,23 +3113,21 @@ def decode_t_blocks(sim, max_records=0, vertex_check=True):
     records = []
     total = attributed = n_geom = n_ver = n_conf = 0
     markers = {name: 0 for name, _ in T_BINARY_MARKERS.values()}
+    attribution = {"geom-A+B": 0, "geom-B": 0, "container": 0, "unattributed": 0}
+    container_ids = []
+    residue_u16 = Counter()
 
     if is_binary:
         for r in payloads:
             blob = bytes.fromhex(r["raw"].replace(" ", ""))
-            recs, attr = _t_scan_binary(blob, vset)
+            recs, attr = _t_scan_binary(blob, vset, sim.objmap)
             total += len(blob)
             attributed += attr
-            rec_markers = {}
-            n_open = blob.count(T_CONTAINER_OPEN)
-            n_close = blob.count(T_CONTAINER_CLOSE)
-            if n_open:
-                rec_markers["container-open"] = n_open
-                markers["container-open"] += n_open
-            if n_close:
-                rec_markers["container-close"] = n_close
-                markers["container-close"] += n_close
+            attributed_spans = []
             for rec in recs:
+                size = {"geom-A": T_GEOM_A_SIZE + T_GEOM_B_SIZE,
+                        "geom-B": T_GEOM_B_SIZE}.get(rec["kind"], T_CONTAINER_SIZE)
+                attributed_spans.append((rec["off"], rec["off"] + size))
                 if rec["kind"] == "geom-A":
                     n_geom += 1
                     n_conf += 1 if rec["conform"] else 0
@@ -3114,13 +3135,35 @@ def decode_t_blocks(sim, max_records=0, vertex_check=True):
                         n_ver += 1
                     markers["geometry-element"] += 1
                     markers["geom-companion"] += 1
-                else:
+                    attribution["geom-A+B"] += T_GEOM_A_SIZE + T_GEOM_B_SIZE
+                elif rec["kind"] == "geom-B":
                     markers["geom-companion"] += 1
-            if recs or rec_markers:
+                    attribution["geom-B"] += T_GEOM_B_SIZE
+                else:
+                    markers[rec["kind"]] += 1
+                    attribution["container"] += T_CONTAINER_SIZE
+                    container_ids.append(rec.get("id"))
+            # 未归属残差画像：极大间隙 + 间隙内高频 u16（均为事实统计，非猜测）
+            small = max(T_CONTAINER_SIZE, 2)
+            attributed_spans.sort()
+            cursor = 0
+            for a, b in attributed_spans:
+                if a - cursor > small:
+                    _t_residue_profile(blob[cursor:a], residue_u16)
+                cursor = max(cursor, b)
+            if len(blob) - cursor > small:
+                _t_residue_profile(blob[cursor:], residue_u16)
+            attribution["unattributed"] += len(blob) - attr
+            if recs:
                 if not max_records or len(records) < max_records:
                     records.append({"token_index": r.get("token_index"),
                                     "n_bytes": len(blob), "attributed": attr,
-                                    "geometry": recs, "markers": rec_markers})
+                                    "geometry": [x for x in recs
+                                                 if x["kind"].startswith("geom")],
+                                    "containers": [x for x in recs
+                                                   if x["kind"].startswith("container")],
+                                    "markers": {}})
+        residual_top = dict(residue_u16.most_common(8))
     else:
         # ASCII：T 载荷以元素流形式出现，几何三元组判定同 G1（29 标记后第 7-9 个值为浮点）
         for r in trecs:
@@ -3143,22 +3186,29 @@ def decode_t_blocks(sim, max_records=0, vertex_check=True):
                         n_ver += 1 if hit else 0
                         n_conf += 1
             attributed += len(els)
+            attribution["geom-A+B"] += len(els)
             if geo and (not max_records or len(records) < max_records):
                 records.append({"token_index": r.get("token_index"),
                                 "n_bytes": len(els), "attributed": len(els),
-                                "geometry": geo, "markers": {}})
+                                "geometry": geo, "containers": [], "markers": {}})
         markers = {}
+        residual_top = {}
 
     if not trecs:
         return {"ok": False, "mode": sim.state_mode, "n_t_records": 0,
                 "n_with_payload": 0, "bytes": 0, "attributed_bytes": 0,
                 "coverage": 0.0, "n_geometry": 0, "n_verified": 0, "n_conform": 0,
                 "markers": markers, "records": [], "reason": "无 T 记录"}
+    n_cid = len(container_ids)
+    n_cid_res = sum(1 for c in container_ids if c in sim.objmap) if is_binary else 0
     return {"ok": True, "mode": "binary" if is_binary else "ascii",
             "n_t_records": len(trecs), "n_with_payload": len(payloads),
             "bytes": total, "attributed_bytes": attributed,
             "coverage": round(100.0 * attributed / total, 2) if total else 0.0,
             "n_geometry": n_geom, "n_verified": n_ver, "n_conform": n_conf,
+            "attribution": attribution,
+            "container_ids": n_cid, "container_ids_resolved": n_cid_res,
+            "residue_top_u16": residual_top,
             "markers": markers, "records": records, "reason": ""}
 
 
@@ -3183,6 +3233,10 @@ def t_block_report(sim):
         if dec["n_geometry"] else None,
         "conform_rate_pct": round(100.0 * dec["n_conform"] / dec["n_geometry"], 1)
         if dec["n_geometry"] else None,
+        "attribution": dec.get("attribution") or {},
+        "container_ids": dec.get("container_ids", 0),
+        "container_ids_resolved": dec.get("container_ids_resolved", 0),
+        "residue_top_u16": dec.get("residue_top_u16") or {},
         "markers": {k: v for k, v in dec["markers"].items() if v},
         "reason": "",
     }
@@ -3692,12 +3746,26 @@ def main(argv=None):
             for k, v in dec["markers"].items():
                 if v:
                     print("  标记 %s: %d" % (k, v))
+            if dec.get("attribution"):
+                print("  归属分账: %s" % ", ".join(
+                    "%s=%d" % (k, v) for k, v in dec["attribution"].items()))
+            if dec.get("container_ids"):
+                print("  容器 id: %d（对象图解析 %d）"
+                      % (dec["container_ids"], dec["container_ids_resolved"]))
+            if dec.get("residue_top_u16"):
+                print("  未归属高频 u16: %s" % ", ".join(
+                    "%d×%d" % (k, v) for k, v in
+                    list(dec["residue_top_u16"].items())[:6]))
             for rec in dec["records"]:
                 head = ["#%s" % rec["token_index"], "len=%d" % rec["n_bytes"],
                         "decoded=%d" % rec["attributed"]]
                 if rec["markers"]:
                     head.append("markers=%s" % rec["markers"])
                 print("  " + "  ".join(head))
+                for c in rec.get("containers") or []:
+                    print("      %s off=%d count=%d id=%d%s" % (
+                        c["kind"], c["off"], c["count"], c["id"],
+                        (" -> %s" % c["resolved"]) if c.get("resolved") else ""))
                 for g in rec["geometry"]:
                     if g["kind"] == "geom-A":
                         print("      A off=%-4d n=%d base=%d ref=%d vids=%s "

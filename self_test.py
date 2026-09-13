@@ -3011,23 +3011,33 @@ assert _r3rep["bytes"] == 24469, "R3 T 载荷字节数"
 assert _r3rep["n_geometry"] == 15 and _r3rep["n_verified"] == 15, "R3 几何记录真值"
 assert _r3rep["verify_rate_pct"] == 100.0 and _r3rep["n_conform"] == 14
 assert _r3rep["conform_rate_pct"] == 93.3, "R3 索引不变量 14/15（1 条变异留待后续）"
-assert 0.0 < _r3rep["coverage_pct"] < 10.0, "R3 未解字节须如实计数"
+assert 10.0 < _r3rep["coverage_pct"] < 25.0, "R3 未解字节须如实计数"
 assert _r3rep["markers"]["geometry-element"] == 15
-assert _r3rep["markers"]["container-open"] == 133
-assert _r3rep["markers"]["container-close"] == 196
+assert _r3rep["markers"]["container-open"] == 159
+assert _r3rep["markers"]["container-close"] == 172
 assert _r3rep["markers"]["geom-companion"] == 23
+_r3att = _r3rep["attribution"]
+assert sum(_r3att.values()) == _r3rep["bytes"], "R3 归属分账须配平"
+assert _r3att["geom-A+B"] == 1020 and _r3att["geom-B"] == 208
+assert _r3att["container"] == 2648, "R3 容器元素字节"
+assert _r3rep["container_ids"] == 331 and _r3rep["container_ids_resolved"] == 155, \
+    "R3 容器 id 对象图解析"
+assert _r3rep["residue_top_u16"], "R3 残差画像（事实统计）"
 
-for _r3n, _r3bytes in (("airfoil.sim", 2250), ("vibratingPipe_start.sim", 613)):
+for _r3n, _r3bytes, _r3cov in (("airfoil.sim", 2250, 4.98),
+                               ("vibratingPipe_start.sim", 613, 0.0)):
     _r3zero = _r3report(SimFile(_find9(_r3n)))
     assert _r3zero["ok"] and _r3zero["bytes"] == _r3bytes, "R3 %s 载荷字节" % _r3n
     assert _r3zero["n_geometry"] == 0 and _r3zero["verify_rate_pct"] is None,         "R3 %s 无几何记录须诚实零（不报命中率）" % _r3n
+    assert _r3zero["coverage_pct"] == _r3cov, "R3 %s 覆盖率" % _r3n
 
 _r3dec = _r3decode(SimFile(_r3man), max_records=1)
 assert _r3dec["records"][0]["attributed"] <= _r3dec["records"][0]["n_bytes"]
 
 print("R 波 R3 二进制 T 载荷文法（A 记录 42B=count/29/7×u16/3×f64 + B 记录 26B=18/8×u16/f64；"
       "索引不变量 v0=a+3/v1=a+4/v2=a-4；manifold 15 几何记录 15/15 命中 Float8 顶点表、"
-      "不变量 14/15、容器标记 133 开/196 闭；airfoil 2250B 与 vibratingPipe 613B 诚实零；"
-      "未解字节如实计数 %.2f%% 已解码）全通过" % _r3rep["coverage_pct"])
+      "不变量 14/15；容器元素 81/82+u32+u16 id 共 331 个（155 id 解析入对象图）；"
+      "归属分账配平与残差画像如实统计；airfoil 仅容器 4.98%%、vibratingPipe 0%%；"
+      "合计已解码 %.2f%%）全通过" % _r3rep["coverage_pct"])
 
 print("ALL CHECKS PASSED")
