@@ -27,7 +27,7 @@
 | 2 | 导入导出 | CAD/表面/体网格/解/图像动画 | **L2** | C6 STL/OBJ/STEP/IGES/BREP 双向 + CCM 读 + EnSight/CGNS/图像动画写；缺体网格导入、`.sim` 导入 |
 | 3 | 3D-CAD 建模 | 草图/特征/布尔/B-Rep | **L2–L3** | C1–C3 OCC 构造/编辑/布尔/圆角/抽壳/阵列/镜像；缺 T 块文法（读）、界内 B-Rep 建模 UI、Parasolid 写（仅 B 路线） |
 | 4 | 表面修复/包裹 | hole fill/wrapper | **L2–L3** | C4 修复 + C5 包裹（OCC 内核） |
-| 5 | 自动网格 | poly/trimmer/tet/prism/directed/thin | **L2–L3** | N1–N5 本地流水线全谱（tet/poly/trimmer/prism/extruder/thin/controls）；缺教程尺度对标（R5） |
+| 5 | 自动网格 | poly/trimmer/tet/prism/directed/thin | **L2–L3** | N1–N5 本地流水线全谱（tet/poly/trimmer/prism/extruder/thin/controls）；**R5 ✅ 教程尺度对标框架**（域表面/补丁尺度 ↔ 自研重网格化：面数比/面积比/边尺度比/最小角 + 退化保护与 attempts 记录） |
 | 6 | 网格诊断/质量 | 统计/修复/自适应 AMR | **L2–L3** | N6 `mesh_quality.py` histogram/repair + `mesh_interface.py` interface + `mesh_amr.py` AMR |
 | 7 | 区域/边界/界面 | boundary 类型/interface 谱系 | **L2** | G4 边界↔FaceTypes 22 边界/11642 面精确闭合；面网格 patch 识别仍启发式 |
 | 8 | 物理连续体/模型谱系 | 22+ 模型族参数 | **L2** | P1/G7 语义读写闭环；22+ 模型族未逐一解码 |
@@ -49,7 +49,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 ## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
 
 口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
-八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 部分达成**（二进制 T 载荷几何 A/B 记录 + 容器元素已确证并真值校验，已解码字节 15.84%，完整 T 文法未解）、**R6 ✅**（协同仿真链接配置前段：模型/校验/JSON 往返/宏前端；语料 0 个 cosim 对象 → 抽取诚实拒绝）。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 部分达成**（二进制 T 载荷几何 A/B 记录 + 容器元素已确证并真值校验，已解码字节 15.84%，完整 T 文法未解）、**R6 ✅**（协同仿真链接配置前段：模型/校验/JSON 往返/宏前端；语料 0 个 cosim 对象 → 抽取诚实拒绝）、**R5 ✅**（教程尺度网格对标：域表面/补丁尺度 ↔ 自研重网格化，面数/面积/边尺度/质量四项 + 退化保护）。
 
 | # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
 | --- | --- | --- | --- | --- | --- |
@@ -200,6 +200,13 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 - **CLI**：`sim_parser.py <file> --cosimulation`（抽取，语料无对象时打印原因）；`python cosimulation.py --template TYPE|--validate JSON|--macro JSON [--out PATH]`。
 - **验收**：`tests/test_cosimulation.py` **17 项全绿**；`self_test.py` R6 锚点 ALL CHECKS PASSED（类型/别名/场方式/合法配置零问题/空区域与连接文件必填/JSON 往返/无对象诚实拒绝/宏 best-effort 标注）。
 - **诚实边界**：不解协议、不建连接、不提交作业、不依赖三方求解器（维度 17 的"仅配置前段"）；宏为**前端产物**，未在许可环境实测；A5 协同仿真协议本体仍挂起。
+**R 波 · R5 —— 教程尺度网格对标 ✅ 2026-09-14**：
+- **口径**：官方 `.sim` 体网格（G3 抽取）+ G4 边界补丁 → **域表面**（去重 + 扇形三角化）；水密性用「每条边恰被两个三角形使用」判定；面积与**封闭体积**（散度定理）为几何参考量；官方单元数/顶点数为尺度参考。
+- **落地（`mesh_benchmark.py`）**：① `boundary_surface`（域表面 + 水密/面积/体积）；② `official_scale`（单元/顶点/面数 + 特征尺寸 `h=(V_ref/n_cells)^(1/3)`）；③ `boundary_patch_stats`（逐补丁三角数/边中位数/最小角中位数）；④ `surface_benchmark`（取一个官方补丁 → 自研 `remesh_surface` 到官方边尺度 → 面数比/面积比/边尺度比/质量对标 + **退化保护**：激进算子集过粗化时自动回退保守算子集并**记录全部 attempts**）；⑤ `benchmark_tet`（同域表面 tet 重划，opt-in，慢）；CLI 默认秒级。
+- **实测（pipeBlockage）**：域表面 **4 边界 / 3050 面环 / 6068 三角 / 9102 边全水密**（`{"2": 9102}`），面积 0.3083、散度体积 0.009096；官方 **14882 单元 / 16013 顶点 / 42655 面**；补丁 `blockage`(idx=4) 360 三角 → 658，面积比 **1.024**、边尺度比 **0.704**、最小角中位数 **44.4° → 45.1°**，四项达标。
+- **顺带发现（已记录，未修）**：`remesh_surface` 在「目标边尺度 ≈ 当前边尺度」的开放补丁上，激进算子集（split+collapse+smooth）会**过粗化**（本轮实测面积比 0.851、面数比 0.806；另一次运行甚至到 0.13），保守算子集（split+flip）稳定（1.024）。对标框架已内置退化保护与双尝试记录；算子集稳定性本身留作后续（不在 R5 承诺内）。
+- **诚实边界**：二维（airfoil，边界环仅 2 点 → 无三角面片）与边界环非流形（methaneOnPt，边使用分布 `{2:3778, 1:3774, 6:2007}`）**分别给出拒绝理由**，不硬凑数字；`tet` 同域对标因耗时长默认关闭（`STARDECODING_LONG=1` 才跑）。
+- **验收**：`tests/test_mesh_benchmark.py` **10 项通过 + 1 项 long 门控跳过**；CLI `python mesh_benchmark.py <file> [--mode tet] [--patch NAME:INDEX] [--json]`。
 ## 8. V 波 —— 后处理深度（依赖 G5 或 P10 的解场来源）
 
 | 点 | 任务 | 验收 |

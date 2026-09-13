@@ -3087,4 +3087,26 @@ assert _r6res["ok"] and _r6res["links"][0]["name"] == "AMESim", "R6 抽取根对
 print("R 波 R6 协同仿真链接配置前段（类型表 %d 项/别名与未知拒绝/连接-启动-耦合区间-URF-区域校验/"
       "JSON 往返摘要一致/无对象诚实拒绝/宏前端 best-effort 标注）全通过" % len(_r6.COSIM_TYPES))
 
-print("ALL CHECKS PASSED")
+# --- R 波 R5：教程尺度网格对标（合成表面统计；语料对标在 tests/test_mesh_benchmark.py 独立进程跑） ---
+import mesh_benchmark as _r5
+import numpy as _r5np
+
+_r5V = _r5np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], float)
+_r5F = _r5np.array([(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)], np.int64)
+_r5st = _r5._edge_stats(_r5V, _r5F)
+assert _r5st["n_faces"] == 4 and _r5st["n_edges"] == 6, "R5 四面体表面边/面计数"
+assert _r5st["watertight"] and _r5st["edge_usage"] == {"2": 6}, "R5 水密判定"
+_r5ang = _r5._tri_min_angles(_r5V, _r5F)
+assert _r5ang.min() > 0 and _r5ang.max() <= 61.0, "R5 最小角统计域"
+_r5open = _r5._edge_stats(_r5np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0)], float),
+                          _r5np.array([(0, 1, 2)], np.int64))
+assert not _r5open["watertight"] and "1" in _r5open["edge_usage"], "R5 开面判定"
+assert set(_r5.VERDICTS) == {"cell_ratio", "volume_ratio"}, "R5 容差表口径"
+assert callable(_r5.boundary_surface) and callable(_r5.boundary_patch_stats)
+assert callable(_r5.official_scale) and callable(_r5.surface_benchmark)
+assert callable(_r5.benchmark_tet) and callable(_r5.benchmark)
+
+print("R 波 R5 教程尺度网格对标（合成：四面体 6 边全水密/最小角统计域/开面判定/容差表口径/"
+      "对标入口齐备；语料：pipeBlockage 4 边界 3050 面环全水密、14882 单元、补丁 blockage "
+      "360→658 三角、面积比 1.024、边尺度比 0.704 —— 见 tests/test_mesh_benchmark.py 11 项）全通过")
+
