@@ -14,7 +14,7 @@
 | --- | --- |
 | repr 字典头 / 分区遍历（2112~5047 分区） | ✅ 全 21 文件 |
 | 状态表 ASCII 编码（80 列折行还原、记录文法） | ✅ 18 文件 |
-| 状态表**二进制**编码变体（id=3B 大端、1B flags/version/尾值） | ✅ 3 文件（airfoil / manifold / vibratingPipe），数值流新增 2B 整 + 8B 双精度扫描（改进④），完整文法待解 |
+| 状态表**二进制**编码变体（id=3B 大端、1B flags/version/尾值） | ✅ 3 文件（airfoil / manifold / vibratingPipe）；记录层可逆（G9/W2）；**T 载荷几何 A/B 记录已解（R3，manifold 15/15 真值命中）**，载荷字节仅 5.02% 归属，完整文法待解 |
 | 数组块（Character1/Unsigned4/Integer4/Float8/**Integer8/Float4**） | ✅ 全部解码为 numpy；**面网格语义已解（改进②）**，其余字段级语义待解 |
 | 对象图（2076~10395 对象，id=序号+2，Parent/Keys/NameManager 建树） | ✅ 全部；与官方 API 视图逐项一致（adjointWing 验证） |
 | 语义字典/分层/别名表/全量建树（改进①） | ✅ semantic_dict.py：包→语义层、旧名→新名别名、属性引用方向；--layers/--aliases/--validate；游离对象 304→87 |
@@ -61,8 +61,13 @@
    **新发现**：用 starccmw.exe 重存二进制文件（airfoil/vibratingPipe，见 resave_sim.java）
    仍得到二进制编码 → 二进制模式**不是**老版本遗留，而是内容/特性决定（疑似与
    3D-CAD 几何数据相关）；重存后状态表与原件一致（写入器确定性）。
-   **仍开放**：T/Q/G/V 块内 int/double 无类型标记的交替文法未完全还原（配对标例
-   未能得到 ASCII 版本）。
+   **R3 部分达成（2026-09-13）**：T 载荷**只存在于二进制文件**（ASCII 的 T 只有 banner）；
+   已确证 **A 记录 42B**（`count,29,a,0,b,1,v0,v1,v2, x,y,z`，不变量 v0=a+3/v1=a+4/v2=a−4、
+   count∈{3,4}、坐标命中 Float8 顶点表）与 **B 记录 26B**（`18,8×u16,标量`，首字段链接 A.v0），
+   落地 `decode_t_blocks()`/`t_block_report()` + CLI `--t-blocks`；manifold 15 条 A 记录 15/15 命中、
+   不变量 14/15；结构标记 81/82 容器对（likely）。
+   **仍开放**：T 载荷是字节流（元素长度可为奇数），**已解码字节仅 5.02%（manifold）/0%（airfoil、
+   vibratingPipe）**；`00 51/00 52` 字节级 DOM 结构、Q/G/V 块内 int/double 交替文法未还原。
 3. **状态表尾部校验记录**（`S0 74 4 CI16 ... dCCZ ... 550 460 178 ...`）：含义
    （偏移/校验和）未定；可尝试修改文件重存验证。
 4. ~~多 id 魔数与长度自校验~~ ✅（改进⑥）：`check_state_length()`/`--check-length`

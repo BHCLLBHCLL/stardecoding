@@ -2970,4 +2970,64 @@ print("R 波 R2 跨网格数据映射与插值器（重心定位+权重缓存复
       "未设目标点诚实拒绝/TableInterpolator LINEAR 钳位 与自然三次样条 0.5→0.3125）"
       "全通过" % (_r2res["n_points"], _r2dst.n_vertices))
 
+# --- R 波 R3：二进制 T 载荷文法（A/B 几何记录 + 覆盖率 + 坐标真值校验） ---
+import struct as _struct3
+
+from sim_parser import (T_GEOM_A_SIZE as _R3A, T_GEOM_B_SIZE as _R3B,
+                        _t_scan_binary as _r3scan, decode_t_blocks as _r3decode,
+                        t_block_report as _r3report)
+
+
+def _r3_a(count=4, base=100, ref=5000, vids=None, xyz=(1.0, 2.0, 3.0)):
+    if vids is None:
+        vids = (base + 3, base + 4, base - 4)
+    return _struct3.pack(">9H3d", count, 29, base, 0, ref, 1,
+                         vids[0], vids[1], vids[2], xyz[0], xyz[1], xyz[2])
+
+
+def _r3_b(v0=103, ref=6000, val=0.5):
+    return _struct3.pack(">9Hd", 18, v0, 0, ref, v0 + 2, v0 + 3, v0 - 4,
+                         v0 + 4, v0 + 1, val)
+
+
+assert _R3A == 42 and _R3B == 26 and len(_r3_a()) == 42 and len(_r3_b()) == 26
+_r3xyz = (0.25, -1.5, 3.75)
+_r3blob = _r3_a(xyz=_r3xyz) + _r3_b(v0=103)
+_r3recs, _r3attr = _r3scan(_r3blob, {tuple(round(v, 9) for v in _r3xyz)})
+assert _r3attr == 68 and len(_r3recs) == 1, "R3 A+B 成对记录应整体归属"
+assert _r3recs[0]["conform"] and _r3recs[0]["verified"], "R3 索引不变量 + 坐标真值"
+assert _r3recs[0]["vids"] == [103, 104, 96] and _r3recs[0]["b"]["links_a"], "R3 B 链接 A.v0"
+assert _r3scan(_r3_a()[:30], set()) == ([], 0), "R3 截断 A 记录不得误判"
+_r3noise, _r3a2 = _r3scan(b"\x01\x02\x03" + _r3_a(base=7) + _r3_b(v0=10), set())
+assert len(_r3noise) == 1 and _r3noise[0]["off"] == 3 and _r3a2 == 68, "R3 字节级重同步"
+_r3bad, _ = _r3scan(_r3_a(vids=(1, 2, 3)) + _r3_b(v0=42), set())
+assert _r3bad[0]["conform"] is False and _r3bad[0]["b"]["links_a"] is False, "R3 变异标记"
+
+_r3man = _find9("manifold_start.sim")
+_r3rep = _r3report(SimFile(_r3man))
+assert _r3rep["ok"] and _r3rep["mode"] == "binary", "R3 manifold 编码"
+assert _r3rep["n_t_records"] == 1264 and _r3rep["n_with_payload"] == 1224
+assert _r3rep["bytes"] == 24469, "R3 T 载荷字节数"
+assert _r3rep["n_geometry"] == 15 and _r3rep["n_verified"] == 15, "R3 几何记录真值"
+assert _r3rep["verify_rate_pct"] == 100.0 and _r3rep["n_conform"] == 14
+assert _r3rep["conform_rate_pct"] == 93.3, "R3 索引不变量 14/15（1 条变异留待后续）"
+assert 0.0 < _r3rep["coverage_pct"] < 10.0, "R3 未解字节须如实计数"
+assert _r3rep["markers"]["geometry-element"] == 15
+assert _r3rep["markers"]["container-open"] == 133
+assert _r3rep["markers"]["container-close"] == 196
+assert _r3rep["markers"]["geom-companion"] == 23
+
+for _r3n, _r3bytes in (("airfoil.sim", 2250), ("vibratingPipe_start.sim", 613)):
+    _r3zero = _r3report(SimFile(_find9(_r3n)))
+    assert _r3zero["ok"] and _r3zero["bytes"] == _r3bytes, "R3 %s 载荷字节" % _r3n
+    assert _r3zero["n_geometry"] == 0 and _r3zero["verify_rate_pct"] is None,         "R3 %s 无几何记录须诚实零（不报命中率）" % _r3n
+
+_r3dec = _r3decode(SimFile(_r3man), max_records=1)
+assert _r3dec["records"][0]["attributed"] <= _r3dec["records"][0]["n_bytes"]
+
+print("R 波 R3 二进制 T 载荷文法（A 记录 42B=count/29/7×u16/3×f64 + B 记录 26B=18/8×u16/f64；"
+      "索引不变量 v0=a+3/v1=a+4/v2=a-4；manifold 15 几何记录 15/15 命中 Float8 顶点表、"
+      "不变量 14/15、容器标记 133 开/196 闭；airfoil 2250B 与 vibratingPipe 613B 诚实零；"
+      "未解字节如实计数 %.2f%% 已解码）全通过" % _r3rep["coverage_pct"])
+
 print("ALL CHECKS PASSED")

@@ -57,7 +57,8 @@ python sim_parser.py adjointWing_start.sim --summary    :: 总体概览
 python sim_parser.py adjointWing_start.sim --arrays     :: 数组表（G2：角色标注/覆盖率/A<n>引用/面·顶点自洽）
 python sim_parser.py adjointWing_start.sim --state      :: STAR-CORE 状态表记录流
 python sim_parser.py adjointWing_start.sim --state-tree :: 状态表结构化语义树（G1：头/指针三分法/类型化元素流/T块分段/几何验证）
-python sim_parser.py adjointWing_start.sim --grammar    :: 状态表文法统计（G1：fmt分布/指针角色/高频标记/几何验证率）
+python sim_parser.py adjointWing_start.sim --grammar    :: 状态表文法统计（G1：fmt分布/指针角色/高频标记/几何验证率/T 载荷覆盖率）
+python sim_parser.py airfoil.sim --t-blocks             :: T 载荷文法解码（R3：二进制 A/B 几何记录 + 覆盖率 + 坐标真值校验）
 python sim_parser.py adjointWing_start.sim --objects    :: 对象图
 python sim_parser.py adjointWing_start.sim --tree       :: 对象树
 python sim_parser.py adjointWing_start.sim --layers     :: 语义层统计（几何/网格/物理/场景...）

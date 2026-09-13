@@ -2976,6 +2976,219 @@ def state_grammar_report(sim):
 
 
 # ----------------------------------------------------------------------------
+# 5.5b R3 二进制状态表 T 载荷文法（几何记录 A/B + 结构标记 + 覆盖率）
+# ----------------------------------------------------------------------------
+# 语料实测（21 文件）：T 记录**载荷**只存在于 3 个 binary 状态表文件
+# （manifold_start 24469B/1224 条、airfoil 2250B/71 条、vibratingPipe 613B/53 条）；
+# ASCII 文件的 T 记录只有 banner（+ adjointWing 一条 66 值记录）。二进制 T 载荷是
+# 字节流（元素长度可为奇数，不能整体按 u16 对齐），已确证元素：
+#   A 记录（42B）：count(u16) | 29(u16) | a,0,b,1（4×u16） | v0,v1,v2（3×u16）
+#                  | x,y,z（3 × big-endian f64）
+#       不变量：v0=a+3, v1=a+4, v2=a-4；count∈{3,4}；(x,y,z) ∈ 文件 Float8 顶点表
+#   B 记录（26B）：18(u16) | v0,0,ref,a+5,a+6,a-1,a+7,a（8×u16） | 标量(big-endian f64)
+#       不变量：首字段 == 前一 A 记录的 v0
+# 结构标记（likely）：`00 51 00 00 00 01` = 81 容器开（u32 计数 + u16 id），
+# `00 52 00 00 00 01` = 82 容器闭。置信度口径同 G1：confirmed = 语料真值校验。
+# 未归属字节如实计数 —— R3 只宣布已校验的部分，其余留待后续。
+
+T_BINARY_MARKERS = {
+    18: ("geom-companion", "confirmed"),
+    29: ("geometry-element", "confirmed"),
+    81: ("container-open", "likely"),
+    82: ("container-close", "likely"),
+    51: ("dom-open", "likely"),
+    52: ("dom-close", "likely"),
+    255: ("separator", "likely"),
+}
+
+T_GEOM_A_SIZE = 42     # A 记录字节数
+T_GEOM_B_SIZE = 26     # B 记录字节数
+T_CONTAINER_OPEN = b"\x00\x51\x00\x00\x00\x01"
+T_CONTAINER_CLOSE = b"\x00\x52\x00\x00\x00\x01"
+
+
+def _t_vertex_set(sim, item_limit=900000):
+    """Float8 顶点表 → 坐标集合（与 G1 decode_state_tree 同口径，多表合并）。"""
+    if _np is None:
+        return set()
+    merged = set()
+    for a in sim.arrays:
+        if (a.get("type") == "Float8" and a.get("count")
+                and a["count"] % 3 == 0 and 0 < a["count"] <= item_limit):
+            d = sim.array_data(a["index"])
+            if d is not None and hasattr(d, "dtype"):
+                merged.update(map(tuple, _np.round(d.reshape(-1, 3), 9)))
+    return merged
+
+
+def _t_scan_binary(blob, vset=None):
+    """二进制 T 载荷字节流 → A/B 几何记录（字节级重同步）。
+
+    返回 (records, attributed_bytes)：records 按出现顺序；attributed 只统计
+    结构已确证的 A/B 记录字节，未归属字节如实保留。
+    """
+    n = len(blob)
+    recs = []
+    attributed = 0
+    i = 0
+    while i + 2 <= n:
+        if (i + T_GEOM_A_SIZE + T_GEOM_B_SIZE <= n
+                and _u16be(blob, i + 2) == 29
+                and _u16be(blob, i + T_GEOM_A_SIZE) == 18):
+            count = _u16be(blob, i)
+            base = _u16be(blob, i + 4)
+            pad0 = _u16be(blob, i + 6)
+            ref = _u16be(blob, i + 8)
+            one = _u16be(blob, i + 10)
+            vids = (_u16be(blob, i + 12), _u16be(blob, i + 14), _u16be(blob, i + 16))
+            xyz = _f64be(blob, i + 18, 3)
+            bints = tuple(_u16be(blob, i + T_GEOM_A_SIZE + 2 + 2 * k) for k in range(8))
+            bval = _f64be(blob, i + T_GEOM_A_SIZE + 18, 1)[0]
+            verified = None
+            if vset:
+                verified = tuple(round(v, 9) for v in xyz) in vset
+            conform = (count in (3, 4) and pad0 == 0 and one == 1
+                       and vids == (base + 3, base + 4, base - 4))
+            recs.append({"kind": "geom-A", "off": i, "count": count,
+                         "base": base, "ref": ref, "vids": list(vids),
+                         "xyz": list(xyz), "verified": verified, "conform": conform,
+                         "b": {"ints": list(bints), "value": bval,
+                               "links_a": bints[0] == vids[0]}})
+            attributed += T_GEOM_A_SIZE + T_GEOM_B_SIZE
+            i += T_GEOM_A_SIZE + T_GEOM_B_SIZE
+            continue
+        if i + T_GEOM_B_SIZE <= n and _u16be(blob, i) == 18:
+            bints = tuple(_u16be(blob, i + 2 + 2 * k) for k in range(8))
+            bval = _f64be(blob, i + 18, 1)[0]
+            recs.append({"kind": "geom-B", "off": i, "ints": list(bints), "value": bval})
+            attributed += T_GEOM_B_SIZE
+            i += T_GEOM_B_SIZE
+            continue
+        i += 1
+    return recs, attributed
+
+
+def _u16be(blob, off):
+    return _struct.unpack_from(">H", blob, off)[0]
+
+
+def _f64be(blob, off, count):
+    return list(_struct.unpack_from(">%dd" % count, blob, off))
+
+
+def decode_t_blocks(sim, max_records=0, vertex_check=True):
+    """R3：T 记录载荷解码（二进制 A/B 几何记录；ASCII 走 G1 元素流口径）。
+
+    返回 {"ok","mode","n_t_records","n_with_payload","bytes","attributed_bytes",
+          "coverage","n_geometry","n_verified","n_conform","markers","records","reason"}
+    records=[{token_index,n_bytes,attributed,geometry:[...],markers:{...}}]
+    """
+    trecs = [r for r in sim.records if r.get("fmt") == "T"]
+    payloads = [r for r in trecs if r.get("raw")]
+    is_binary = bool(payloads) and sim.state_mode == "binary"
+    vset = _t_vertex_set(sim) if (vertex_check and is_binary) else set()
+    records = []
+    total = attributed = n_geom = n_ver = n_conf = 0
+    markers = {name: 0 for name, _ in T_BINARY_MARKERS.values()}
+
+    if is_binary:
+        for r in payloads:
+            blob = bytes.fromhex(r["raw"].replace(" ", ""))
+            recs, attr = _t_scan_binary(blob, vset)
+            total += len(blob)
+            attributed += attr
+            rec_markers = {}
+            n_open = blob.count(T_CONTAINER_OPEN)
+            n_close = blob.count(T_CONTAINER_CLOSE)
+            if n_open:
+                rec_markers["container-open"] = n_open
+                markers["container-open"] += n_open
+            if n_close:
+                rec_markers["container-close"] = n_close
+                markers["container-close"] += n_close
+            for rec in recs:
+                if rec["kind"] == "geom-A":
+                    n_geom += 1
+                    n_conf += 1 if rec["conform"] else 0
+                    if rec["verified"]:
+                        n_ver += 1
+                    markers["geometry-element"] += 1
+                    markers["geom-companion"] += 1
+                else:
+                    markers["geom-companion"] += 1
+            if recs or rec_markers:
+                if not max_records or len(records) < max_records:
+                    records.append({"token_index": r.get("token_index"),
+                                    "n_bytes": len(blob), "attributed": attr,
+                                    "geometry": recs, "markers": rec_markers})
+    else:
+        # ASCII：T 载荷以元素流形式出现，几何三元组判定同 G1（29 标记后第 7-9 个值为浮点）
+        for r in trecs:
+            vals = r.get("values")
+            if not vals:
+                continue
+            els = _decode_elements(vals)
+            total += len(els)
+            geo = []
+            for i, e in enumerate(els):
+                if e.get("t") == "marker" and e.get("v") == 29 and i + 9 < len(els):
+                    tri = [els[i + j].get("v") for j in (7, 8, 9)]
+                    if all(isinstance(x, float) for x in tri):
+                        hit = None
+                        if vset:
+                            hit = tuple(round(x, 9) for x in tri) in vset
+                        geo.append({"kind": "geom-ascii", "off": i, "xyz": tri,
+                                    "verified": hit})
+                        n_geom += 1
+                        n_ver += 1 if hit else 0
+                        n_conf += 1
+            attributed += len(els)
+            if geo and (not max_records or len(records) < max_records):
+                records.append({"token_index": r.get("token_index"),
+                                "n_bytes": len(els), "attributed": len(els),
+                                "geometry": geo, "markers": {}})
+        markers = {}
+
+    if not trecs:
+        return {"ok": False, "mode": sim.state_mode, "n_t_records": 0,
+                "n_with_payload": 0, "bytes": 0, "attributed_bytes": 0,
+                "coverage": 0.0, "n_geometry": 0, "n_verified": 0, "n_conform": 0,
+                "markers": markers, "records": [], "reason": "无 T 记录"}
+    return {"ok": True, "mode": "binary" if is_binary else "ascii",
+            "n_t_records": len(trecs), "n_with_payload": len(payloads),
+            "bytes": total, "attributed_bytes": attributed,
+            "coverage": round(100.0 * attributed / total, 2) if total else 0.0,
+            "n_geometry": n_geom, "n_verified": n_ver, "n_conform": n_conf,
+            "markers": markers, "records": records, "reason": ""}
+
+
+def t_block_report(sim):
+    """R3：T 载荷文法统计（覆盖率/几何记录/真值校验率/结构标记频次）。"""
+    dec = decode_t_blocks(sim)
+    if not dec.get("ok"):
+        return {"ok": False, "mode": dec.get("mode"), "reason": dec.get("reason"),
+                "n_t_records": dec.get("n_t_records", 0)}
+    return {
+        "ok": True,
+        "mode": dec["mode"],
+        "n_t_records": dec["n_t_records"],
+        "n_with_payload": dec["n_with_payload"],
+        "bytes": dec["bytes"],
+        "attributed_bytes": dec["attributed_bytes"],
+        "coverage_pct": dec["coverage"],
+        "n_geometry": dec["n_geometry"],
+        "n_verified": dec["n_verified"],
+        "n_conform": dec["n_conform"],
+        "verify_rate_pct": round(100.0 * dec["n_verified"] / dec["n_geometry"], 1)
+        if dec["n_geometry"] else None,
+        "conform_rate_pct": round(100.0 * dec["n_conform"] / dec["n_geometry"], 1)
+        if dec["n_geometry"] else None,
+        "markers": {k: v for k, v in dec["markers"].items() if v},
+        "reason": "",
+    }
+
+
+# ----------------------------------------------------------------------------
 # 5.6 G2 数组块语义标注（A<n> 引用 × 网格规模自洽性交叉验证）
 # ----------------------------------------------------------------------------
 # 三类证据源：
@@ -3322,6 +3535,8 @@ def main(argv=None):
     ap.add_argument("--max-records", type=int, default=0, help="--state 最多输出的记录数（0=全部）")
     ap.add_argument("--state-tree", action="store_true", help="输出状态表结构化语义树（G1）")
     ap.add_argument("--grammar", action="store_true", help="状态表文法统计报告（G1）")
+    ap.add_argument("--t-blocks", action="store_true",
+                    help="T 载荷文法解码（R3：二进制 A/B 几何记录 + 覆盖率 + 真值校验）")
     args = ap.parse_args(argv)
 
     sim = SimFile(args.file)
@@ -3337,7 +3552,7 @@ def main(argv=None):
                                 args.boundaries,
                                 args.fingerprint, args.check_length,
                                 args.report, args.export, args.state_tree,
-                                args.grammar]):
+                                args.grammar, args.t_blocks]):
         print(sim.summary())
 
     if args.fingerprint:
@@ -3450,6 +3665,49 @@ def main(argv=None):
             h, t = g.get("hits", 0), g.get("triples", 0)
             print("  几何验证: %d/%d 顶点三元组命中 Float8 顶点表（%.1f%%）" % (
                 h, t, 100.0 * h / t if t else 0))
+        tr = t_block_report(sim)
+        if tr.get("ok"):
+            print("  T 载荷（R3）: %s  记录 %d（含载荷 %d）  字节 %d  已解码 %.1f%%"
+                  % (tr["mode"], tr["n_t_records"], tr["n_with_payload"],
+                     tr["bytes"], tr["coverage_pct"]))
+            if tr["n_geometry"]:
+                print("    几何记录 %d（索引不变量 %s%%、真值命中 %s%%）"
+                      % (tr["n_geometry"], tr["conform_rate_pct"], tr["verify_rate_pct"]))
+            if tr["markers"]:
+                print("    结构标记: %s" % ", ".join(
+                    "%s×%d" % (k, v) for k, v in tr["markers"].items()))
+
+    if args.t_blocks:
+        print("\n== T 载荷文法解码（R3）==")
+        dec = decode_t_blocks(sim, max_records=args.max_records)
+        if not dec.get("ok"):
+            print("  %s" % dec.get("reason"))
+        else:
+            print("  编码: %s   T 记录: %d（含载荷 %d）  载荷字节: %d  已解码: %d（%.2f%%）"
+                  % (dec["mode"], dec["n_t_records"], dec["n_with_payload"],
+                     dec["bytes"], dec["attributed_bytes"], dec["coverage"]))
+            if dec["n_geometry"]:
+                print("  几何记录: %d  索引不变量: %d  坐标真值命中: %d"
+                      % (dec["n_geometry"], dec["n_conform"], dec["n_verified"]))
+            for k, v in dec["markers"].items():
+                if v:
+                    print("  标记 %s: %d" % (k, v))
+            for rec in dec["records"]:
+                head = ["#%s" % rec["token_index"], "len=%d" % rec["n_bytes"],
+                        "decoded=%d" % rec["attributed"]]
+                if rec["markers"]:
+                    head.append("markers=%s" % rec["markers"])
+                print("  " + "  ".join(head))
+                for g in rec["geometry"]:
+                    if g["kind"] == "geom-A":
+                        print("      A off=%-4d n=%d base=%d ref=%d vids=%s "
+                              "xyz=(%.5f,%.5f,%.5f) 不变量=%s 真值=%s"
+                              % (g["off"], g["count"], g["base"], g["ref"],
+                                 g["vids"], g["xyz"][0], g["xyz"][1], g["xyz"][2],
+                                 "OK" if g["conform"] else "变异",
+                                 {True: "命中", False: "未命中", None: "未校验"}[g["verified"]]))
+                    else:
+                        print("      %s off=%d" % (g["kind"], g["off"]))
     if args.objects:
         print("\n== 对象图（%d）==" % len(sim.objects))
         for o in sim.objects:
