@@ -307,6 +307,15 @@ class AppIcons:
     def _draw_part(self, p, r, _s):
         self._draw_cube(p, r, "#fde68a", "#f59e0b", "#d97706")
 
+    def _draw_derived(self, p, r, _s):
+        """派生零件：立方体 + 贯穿切面（切片/等值面/阈值共用族徽）。"""
+        self._draw_cube(p, r, "#ddd6fe", "#a78bfa", "#7c3aed")
+        pts = self._iso_pts(r)[3]
+        b, d, e, g = pts[1], pts[3], pts[4], pts[6]
+        p.setPen(self._pen("#4c1d95", 1.15))
+        p.setBrush(QBrush(_c("#f5f3ff", 170)))
+        p.drawPolygon(QPolygonF([d, b, g, e]))
+
     def _draw_mesh(self, p, r, _s):
         self._draw_cube(p, r, "#a5f3fc", "#06b6d4", "#0e7490", edge="#155e75", edge_w=0.9)
         p.setPen(self._pen("#0f766e", 0.9))

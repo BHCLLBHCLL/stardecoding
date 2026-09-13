@@ -2772,4 +2772,83 @@ print("V 波 遗留项：后处理 GUI 接线（20 动作注册/菜单键一致/
       "色标尺+图例+注记 2D 叠加 actor/注记无 FVM 亦可渲染/无 FVM 诚实降级）"
       "全通过")
 
+# ---------------- V 波 遗留项：派生零件谱系（纯逻辑类型表 + 谱系发现） ----------
+import star_gui_derived as _vd
+
+assert len(_vd.DERIVED_TYPES) >= 20, "Vd 官方派生零件类型表条目数"
+for _vdshort in ("ClipPlane", "PlaneManager", "PlaneSection", "IsoPart",
+                 "ThresholdPart", "StreamlineCreator", "ScalarWarpSurface",
+                 "PartDataSource", "FvRecordedPart", "ExtractedPart"):
+    assert _vdshort in _vd.DERIVED_TYPES, "Vd 类型表缺 %s" % _vdshort
+assert _vd.is_derived("star.vis.ClipPlane") and \
+    _vd.is_derived("star.post.FvRecordedPart") and \
+    _vd.is_derived("star.meshing.ExtractedPart"), "Vd 正向分类"
+assert not _vd.is_derived("star.common.Region") and \
+    not _vd.is_derived("star.vis.Scene") and \
+    not _vd.is_derived("") and not _vd.is_derived(None), "Vd 负向分类"
+for _vdx in ("star.meshing.FaceQualityThreshold",
+             "star.meshing.FaceProximityThreshold",
+             "star.meshing.FreeEdgesThreshold",
+             "star.meshing.NonManifoldEdgesThreshold",
+             "star.meshing.NonManifoldVerticesThreshold",
+             "star.meshing.PiercedFacesThreshold",
+             "star.meshing.SurfaceMeshWidgetThresholdManager",
+             "star.cadmodeler.CanonicalSketchPlane"):
+    assert _vd.classify(_vdx) is None and not _vd.is_derived(_vdx) and \
+        not _vd.is_tree_member(_vdx), "Vd 排除 %s" % _vdx
+assert _vd.is_tree_member("star.vis.ClipPlane") and \
+    _vd.is_tree_member("star.vis.PartDataSource") and \
+    not _vd.is_tree_member("star.vis.PlaneManager") and \
+    not _vd.is_tree_member("star.vis.IsoCreator") and \
+    not _vd.is_tree_member("star.vis.IsoValue"), "Vd 树成员 kind 过滤"
+assert _vd.type_cn("star.vis.ClipPlane") == "切片平面" and \
+    _vd.category_of("star.vis.IsoPart") == "iso" and \
+    _vd.category_cn("iso") == "等值面" and \
+    _vd.category_cn("clip") == "切面", "Vd CN 标注"
+
+# 真实语料：无 DerivedPartManager，靠 star.vis.ClipPlane ← PlaneManager 谱系显现
+_vdroot = os.path.dirname(os.path.abspath(__file__))
+_VD_EXPECT = [("adjointWing_start.sim", 6), ("resaved_airfoil.sim", 12),
+              ("resaved_vibratingPipe_start.sim", 6)]
+for _vdname, _vdwant in _VD_EXPECT:
+    _vdp = os.path.join(_vdroot, _vdname)
+    assert os.path.isfile(_vdp), "Vd 缺少语料 %s" % _vdname
+    _vdsim = SimFile(_vdp)
+    _vdsum = _vd.summary(_vdsim)
+    assert _vdsum["total"] == _vdwant and \
+        _vdsum["categories"] == {"clip": _vdwant} and \
+        _vdsum["types"] == ["ClipPlane"], \
+        "Vd %s 谱系 %s" % (_vdname, _vdsum)
+    _vdmembers = _vd.derived_members(_vdsim)
+    assert len(_vdmembers) == _vdwant and \
+        all(_vd.short_class(o.class_name) == "ClipPlane" for o in _vdmembers), \
+        "Vd %s 阈值/草图基准面误入" % _vdname
+    _vdmodel = StarSceneModel(_vdsim)
+    _vdtree = _vdmodel.sim_tree()[0]
+    _vdfolder = [c for c in _vdtree.children if c.label == "Derived Parts"]
+    assert _vdfolder, "Vd %s 派生零件文件夹缺失" % _vdname
+    _vdfolder = _vdfolder[0]
+    assert _vdfolder.layer == "derived", "Vd %s folder 语义层" % _vdname
+    assert len(_vdfolder.children) == _vdwant, \
+        "Vd %s 树中派生零件 %d != %d" % (_vdname, len(_vdfolder.children), _vdwant)
+    assert all(c.layer == "derived" for c in _vdfolder.children) and \
+        all("ClipPlane" in (c.class_name or "") for c in _vdfolder.children) and \
+        all(_vdmodel.object_by_id(c.obj_id) is not None
+            for c in _vdfolder.children), \
+        "Vd %s 子节点语义层/类型/回指" % _vdname
+
+# 谱系回指：parent=PlaneManager、scene=Scene
+_vdsim = SimFile(os.path.join(_vdroot, "adjointWing_start.sim"))
+_vdclip = [o for o in _vd.derived_members(_vdsim)
+           if _vd.short_class(o.class_name) == "ClipPlane"][0]
+_vdlin = _vd.lineage(_vdsim, _vdclip)
+assert _vdlin["id"] == _vdclip.id and _vdlin["category"] == "clip" and \
+    _vdlin["cn"] == "切片平面" and \
+    _vd.short_class(_vdlin["parent"]["class_name"]) == "PlaneManager" and \
+    _vd.short_class(_vdlin["scene"]["class_name"]) == "Scene", "Vd 谱系 parent/scene"
+print("V 波 遗留项：派生零件谱系（官方类型表 %d 类/正向负向分类/8 项阈值-草图基准面排除/"
+      "树成员 kind 过滤/CN 标注/真实语料 adjointWing 6 + airfoil 12 + pipe 6 "
+      "ClipPlane 谱系显现/树 folder layer=derived 与子节点回指/parent=PlaneManager "
+      "scene=Scene）全通过" % len(_vd.DERIVED_TYPES))
+
 print("ALL CHECKS PASSED")

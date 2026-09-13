@@ -136,6 +136,10 @@ LAYER_CN = {
     "containers": "容器",
     "serialization": "序列化元信息",
     "cad-clients": "CAD 客户端",
+    # 派生零件叠加层：跨包（star.vis / star.post / star.meshing）归纳，
+    # 不改 layer_of() 的包前缀语义（后者仍用于 star_api 类型分派）；
+    # 类型表见 star_gui_derived.DERIVED_TYPES。
+    "derived": "派生零件",
     "unknown": "未分类",
 }
 

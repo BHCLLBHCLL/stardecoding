@@ -752,7 +752,7 @@ class SimulationTree(QWidget):
             "Units": "units",
             "Tables": "table",
             "Operations": "layer_meshing",
-            "Derived Parts": "part",
+            "Derived Parts": "derived",
             "3D-CAD": "layer_geometry",
         }
         if label in folders:
@@ -801,6 +801,7 @@ class SimulationTree(QWidget):
             "physics": "layer_physics",
             "visualization": "layer_visualization",
             "post-processing": "layer_post",
+            "derived": "derived",
             "solver": "solver",
             "query": "tools",
             "core": "simulation",

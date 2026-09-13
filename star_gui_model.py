@@ -11,6 +11,7 @@ import re
 from collections import defaultdict
 
 from semantic_dict import layer_of, resolve_class, LAYER_CN
+import star_gui_derived
 
 
 class Node:
@@ -67,7 +68,7 @@ def friendly_name(obj):
 _FOLDER_LAYER = {
     "Geometry": "cad-geometry",
     "Operations": "meshing",
-    "Derived Parts": "visualization",
+    "Derived Parts": "derived",
     "3D-CAD": "cad-geometry",
     "Continua": "physics",
     "Regions": "core",
@@ -166,10 +167,10 @@ class StarSceneModel:
                 out.append(o)
         return out
 
-    def _obj_node(self, obj, children=None, label=None):
+    def _obj_node(self, obj, children=None, label=None, layer=None):
         n = Node(self._key("obj", obj.id),
                  label if label is not None else friendly_name(obj),
-                 obj.id, obj.class_name, children=children or [])
+                 obj.id, obj.class_name, layer=layer, children=children or [])
         self._register(n)
         return n
 
@@ -295,23 +296,32 @@ class StarSceneModel:
         return [root]
 
     def _derived_folder(self):
-        mgr = self._manager("DerivedPartManager")
-        if mgr is not None:
-            return self._folder_node("Derived Parts", "Derived Parts",
-                                     self._group_children(mgr), layer="visualization")
-        kids = []
-        seen = set()
-        for o in self.sim.objects:
-            cn = o.class_name or ""
-            if "Manager" in cn:
+        """派生零件文件夹：官方类型表（star_gui_derived）精确分类与谱系发现。
+
+        覆盖 star.vis 切片/剖面/等值面/阈值/流线/变形面/数据源、star.post 记录
+        数据对象、star.meshing 抽取部件；排除 star.meshing.*Threshold 与
+        CanonicalSketchPlane 等非派生零件。真实语料的 star.vis.ClipPlane 经
+        PlaneManager.Keys / Parent 谱系由此可在树中显现；多类别时按类别分组。
+        """
+        by_cat = {}
+        order = []
+        for o in star_gui_derived.derived_members(self.sim):
+            if not star_gui_derived.is_tree_member(o.class_name):
                 continue
-            if any(tag in cn for tag in ("PlaneSection", "ThresholdPart", "IsoPart",
-                                         "DerivedPart", "ProbePart")):
-                if o.id not in seen:
-                    seen.add(o.id)
-                    kids.append(self._obj_node(o))
+            cat = star_gui_derived.category_of(o.class_name)
+            if cat not in by_cat:
+                by_cat[cat] = []
+                order.append(cat)
+            by_cat[cat].append(self._obj_node(o, layer="derived"))
+        if len(order) == 1:
+            kids = by_cat[order[0]]
+        else:
+            kids = [self._folder_node("Derived Parts:%s" % cat,
+                                      star_gui_derived.category_cn(cat),
+                                      by_cat[cat], layer="derived")
+                    for cat in order]
         return self._folder_node("Derived Parts", "Derived Parts", kids,
-                                 layer="visualization")
+                                 layer="derived")
 
     def _cad_folder(self):
         kids = []
