@@ -3212,6 +3212,120 @@ def decode_t_blocks(sim, max_records=0, vertex_check=True):
             "markers": markers, "records": records, "reason": ""}
 
 
+def _t_gaps(blob, recs):
+    """已归属元素跨度 → 未归属间隙列表。"""
+    spans = []
+    for r in recs:
+        size = {"geom-A": T_GEOM_A_SIZE + T_GEOM_B_SIZE,
+                "geom-B": T_GEOM_B_SIZE}.get(r["kind"], T_CONTAINER_SIZE)
+        spans.append((r["off"], r["off"] + size))
+    spans.sort()
+    out, cur = [], 0
+    for a, b in spans:
+        if a > cur:
+            out.append((cur, a))
+        cur = max(cur, b)
+    if cur < len(blob):
+        out.append((cur, len(blob)))
+    return out
+
+
+def _t_profile_gap(gap):
+    """残差段 → (双精度串字节, 串内数值, 偏移, runs) —— 取覆盖最大的 8B 对齐偏移。"""
+    n = len(gap)
+    best = (0, None, [], 0)
+    for off in range(0, min(8, n)):
+        i, runs, vals = off, [], 0
+        while i + 8 <= n:
+            v = _struct.unpack_from(">d", gap, i)[0]
+            if _np.isfinite(v) and (v == 0.0 or 1e-30 < abs(v) < 1e9):
+                j = i
+                while j + 8 <= n:
+                    w = _struct.unpack_from(">d", gap, j)[0]
+                    if not (_np.isfinite(w) and (w == 0.0 or 1e-30 < abs(w) < 1e9)):
+                        break
+                    j += 8
+                    vals += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        cov = sum(b - a for a, b in runs)
+        if cov > best[0]:
+            best = (cov, off, runs, vals)
+    return best
+
+
+def t_stream_report(sim, semantic_check=True):
+    """R3：T 载荷**流模型**统计（拼接全部载荷后扫描）。
+
+    比逐记录扫描更贴近真实（G9 已证记录边界是长度前缀切分）：元素归属更高，
+    并对未归属残差做**结构分解**（双精度串 / u16 串 / 未知）+ 语义命中率检验
+    （双精度串命中对象图数值、u16 串命中对象图 id；两者基线分别为 ~0 与
+    len(objmap)/65536，如实给出以便判断是否高于随机）。
+    """
+    trecs = [r for r in sim.records if r.get("fmt") == "T" and r.get("raw")]
+    if not trecs or sim.state_mode != "binary":
+        return {"ok": False, "reason": "非二进制 T 载荷（无流模型）"}
+    blob = b"".join(bytes.fromhex(r["raw"].replace(" ", "")) for r in trecs)
+    recs, attributed = _t_scan_binary(blob, set(), sim.objmap)
+    gaps = _t_gaps(blob, recs)
+    dbl_bytes = u16_bytes = unknown_bytes = 0
+    dbl_vals = dbl_hits = 0
+    u16_vals = u16_hits = 0
+    valset = None
+    if semantic_check:
+        valset = set()
+        for o in sim.objects:
+            for v in (getattr(o, "dict", {}) or {}).values():
+                if isinstance(v, float):
+                    valset.add(round(v, 9))
+                elif isinstance(v, int) and not isinstance(v, bool):
+                    valset.add(float(v))
+                elif isinstance(v, (list, tuple)):
+                    for x in v:
+                        if isinstance(x, (int, float)) and not isinstance(x, bool):
+                            valset.add(round(float(x), 9))
+    for a, b in gaps:
+        gap = blob[a:b]
+        n = len(gap)
+        cov, off, runs, nvals = _t_profile_gap(gap)
+        dbl_bytes += cov
+        dbl_vals += nvals
+        rest = n - cov
+        u16_bytes += 2 * (rest // 2)
+        unknown_bytes += rest - 2 * (rest // 2)
+        if valset is not None and runs:
+            for s, e in runs:
+                for i in range(s, e, 8):
+                    w = _struct.unpack_from(">d", gap, i)[0]
+                    if round(w, 9) in valset:
+                        dbl_hits += 1
+        if semantic_check:
+            for j in range(0, n - 1, 2):
+                u16_vals += 1
+                if _u16be(gap, j) in sim.objmap:
+                    u16_hits += 1
+    total = len(blob)
+    chance = (len(sim.objmap) / 65536.0) if semantic_check else None
+    return {
+        "ok": True, "bytes": total, "attributed_bytes": attributed,
+        "attributed_pct": round(100.0 * attributed / total, 2) if total else 0.0,
+        "residue_bytes": total - attributed,
+        "double_bytes": dbl_bytes, "double_pct": round(100.0 * dbl_bytes / total, 2) if total else 0.0,
+        "double_values": dbl_vals, "double_value_hits": dbl_hits,
+        "double_hit_pct": round(100.0 * dbl_hits / dbl_vals, 1) if dbl_vals else None,
+        "u16_bytes": u16_bytes, "u16_pct": round(100.0 * u16_bytes / total, 2) if total else 0.0,
+        "u16_values": u16_vals, "u16_id_hits": u16_hits,
+        "u16_hit_pct": round(100.0 * u16_hits / u16_vals, 1) if u16_vals else None,
+        "u16_chance_pct": round(100.0 * chance, 1) if chance is not None else None,
+        "unknown_bytes": unknown_bytes,
+        "structural_pct": round(100.0 * (attributed + dbl_bytes + u16_bytes) / total, 2)
+        if total else 0.0,
+        "n_elements": len(recs), "n_gaps": len(gaps), "reason": "",
+    }
+
+
 def t_block_report(sim):
     """R3：T 载荷文法统计（覆盖率/几何记录/真值校验率/结构标记频次）。"""
     dec = decode_t_blocks(sim)
@@ -3732,6 +3846,13 @@ def main(argv=None):
             if tr["markers"]:
                 print("    结构标记: %s" % ", ".join(
                     "%s×%d" % (k, v) for k, v in tr["markers"].items()))
+            st = t_stream_report(sim)
+            if st.get("ok"):
+                print("    流模型: 归属 %.2f%% / 双精度串 %.2f%%（命中 %s%%）/ u16 串 %.2f%%"
+                      "（命中 %s%% vs 基线 %s%%）/ 未知 %d 字节 / 结构分解 %.2f%%"
+                      % (st["attributed_pct"], st["double_pct"], st["double_hit_pct"],
+                         st["u16_pct"], st["u16_hit_pct"], st["u16_chance_pct"],
+                         st["unknown_bytes"], st["structural_pct"]))
 
     if args.cosimulation:
         print("\n== 协同仿真链接配置（R6）==")
@@ -3762,6 +3883,14 @@ def main(argv=None):
             for k, v in dec["markers"].items():
                 if v:
                     print("  标记 %s: %d" % (k, v))
+            st = t_stream_report(sim)
+            if st.get("ok"):
+                print("  流模型（拼接全部载荷）: 载荷 %d 字节  元素归属 %.2f%%  双精度串 %.2f%%"
+                      "（对象图数值命中 %s%%）  u16 串 %.2f%%（对象 id 命中 %s%%，随机基线 %s%%）"
+                      "  未知 %d 字节  结构分解 %.2f%%"
+                      % (st["bytes"], st["attributed_pct"], st["double_pct"],
+                         st["double_hit_pct"], st["u16_pct"], st["u16_hit_pct"],
+                         st["u16_chance_pct"], st["unknown_bytes"], st["structural_pct"]))
             if dec.get("attribution"):
                 print("  归属分账: %s" % ", ".join(
                     "%s=%d" % (k, v) for k, v in dec["attribution"].items()))

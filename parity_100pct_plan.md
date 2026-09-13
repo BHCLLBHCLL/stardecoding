@@ -49,7 +49,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 ## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
 
 口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
-八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 部分达成**（二进制 T 载荷几何 A/B 记录 + 容器元素已确证并真值校验，已解码字节 15.84%，完整 T 文法未解）、**R6 ✅**（协同仿真链接配置前段：模型/校验/JSON 往返/宏前端；语料 0 个 cosim 对象 → 抽取诚实拒绝）、**R5 ✅**（教程尺度网格对标：域表面/补丁尺度 ↔ 自研重网格化，面数/面积/边尺度/质量四项 + 退化保护）、**R4 ✅**（官方解差分：vortexShed 官方参考量 St=0.1752/Re=200/残差 3.2e-10 + 同工况环形域几何 + 误差带判定；真实瞬态自研跑受算力/内存限制，门控在 STARDECODING_LONG）。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 结构层达成/语义层部分**（几何 A/B + 容器元素确证；流模型下 T 载荷 **99.86% 结构分解**（归属 18.33% + 双精度串 39.49% 命中对象值 25.7% + u16 串 42.04% 命中 id 32.2% vs 基线 15.9%），字段级语义未还原）、**R6 ✅**（协同仿真链接配置前段：模型/校验/JSON 往返/宏前端；语料 0 个 cosim 对象 → 抽取诚实拒绝）、**R5 ✅**（教程尺度网格对标：域表面/补丁尺度 ↔ 自研重网格化，面数/面积/边尺度/质量四项 + 退化保护）、**R4 ✅**（官方解差分：vortexShed 官方参考量 St=0.1752/Re=200/残差 3.2e-10 + 同工况环形域几何 + 误差带判定；真实瞬态自研跑受算力/内存限制，门控在 STARDECODING_LONG）。
 
 | # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
 | --- | --- | --- | --- | --- | --- |
@@ -185,15 +185,21 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 - **验收**：`tests/test_field_mapper.py` **26 项全绿**；`self_test.py` R2 锚点（**R 波首个锚点段**）ALL CHECKS PASSED —— 粗 nx=2 顶点线性场 `2x+3y−z+1` → 细 nx=3 顶点 **64 点域内全命中且一阶精确复原**（err ~1e-15）、权重缓存复用与 `clear_target`、四策略（nan/zero/constant(−7)/nearest→4.375）、线性矢量场精确 `(64,3)`、MapperManager 注册-检索-注销-类型与缺失拒绝、未设目标点诚实拒绝、TableInterpolator LINEAR 钳位 与 自然三次样条 `0.5→0.3125`。
 - **诚实边界**：源网格为四面体（`FVM`），故跨网格插值为**一阶重心线性**（非高阶/守恒型映射，未做积分守恒与截断误差控制）；官方 `.sim` 中 `FieldMapper` 对象的落盘读写不做（三份语料 grep 无该对象），只提供与官方同一命名空间的计算内核；不新增 scipy 依赖（范数走 `solver_run._safe_norm`）。
 
-**R 波 · R3 —— 二进制状态表 T 载荷文法（几何记录 A/B）⚠️ 部分达成 2026-09-13**：
-- **语料事实（21 文件普查）**：T 记录**载荷**只存在于 3 个 binary 状态表文件（`manifold_start` 24469B/1224 条、`airfoil` 2250B/71 条、`vibratingPipe_start` 613B/53 条）；ASCII 文件的 T 记录只有 banner（外加 `adjointWing_start` 一条 66 值记录）—— ASCII 状态表把几何放在非 T 记录（G1 的 29 标记三元组），二进制才把几何放进 T 载荷。
-- **已确证元素（语料真值校验，conf=confirmed）**：
-  - **A 记录 42B**：`count(u16) | 29(u16) | a,0,b,1（4×u16） | v0,v1,v2（3×u16） | x,y,z（3×big-endian f64）`；不变量 **v0=a+3、v1=a+4、v2=a−4**、**count∈{3,4}**、**(x,y,z) ∈ 文件 Float8 顶点表**。
-  - **B 记录 26B**：`18(u16) | v0,0,ref,a+5,a+6,a−1,a+7,a（8×u16） | 标量（big-endian f64）`；首字段 == 前一 A 记录的 v0（links_a）。
-- **已确证元素 ②（容器）**：**容器元素 8B** = `marker(81/82) + count(u32) + id(u16)`（count 实测 1/3，上界 64 防误吞）；**331 个容器元素中 155 个 id 解析入对象图**（NameRef/Attribute 族，likely）。
-- **落地**：`sim_parser.decode_t_blocks()` / `t_block_report()`（字节级重同步扫描 + 归属分账 + 残差画像）+ CLI `--t-blocks`（`--grammar` 追加 T 覆盖率行）；`tests/test_t_blocks.py` **16 项全绿**（合成 A/B/容器/截断/重同步/变异/计数越界 + 语料锚定）；`self_test.py` R3 锚点 ALL CHECKS PASSED。
-- **实测**：manifold **15 条 A 记录、15/15 坐标命中 Float8 顶点表（100%）**、索引不变量 **14/15（93.3%）**；容器元素 81 开×159 / 82 闭×172；**归属分账（配平到总字节）**：geom-A+B 1020B + geom-B 208B + container 2648B + 未归属 20593B = 24469B，**覆盖率 15.84%**；airfoil 仅容器（4.98%）、vibratingPipe 0%（完全未解）；无几何记录时**不报命中率**（避免 0/0=100% 的假象）。
-- **诚实边界（未达成）**：T 载荷是**字节流**（元素长度可为奇数，不能整体按 u16 对齐）—— **已解码 15.84%（manifold）/ 4.98%（airfoil，仅容器）/ 0%（vibratingPipe）**，未归属 20593B 仅给出残差画像（间隙内高频 u16：0×1453、1×359、256×115…），**不作语义推断**；1 条变异记录（tok=5296，base=5987，vids=(5958,5990,5984) —— 框架确证、索引算术不变量不适用）留待后续。**R3 记部分达成：几何记录与容器元素已确证，完整 T 文法仍是解析侧最大缺口。**
+**R 波 · R3 —— 二进制状态表 T 载荷文法 ⚠️ 结构层达成 / 语义层部分达成 2026-09-14**：
+- **语料事实（21 文件普查）**：T 记录**载荷**只存在于 3 个 binary 状态表文件（`manifold_start` 24469B/1224 条、`airfoil` 2250B/71 条、`vibratingPipe_start` 613B/53 条）；ASCII 文件的 T 记录只有 banner（外加 `adjointWing_start` 一条 66 值记录）。
+- **已确证元素（真值校验）**：**A 记录 42B** `count,29,a,0,b,1,v0,v1,v2 + 3×big-endian f64`（不变量 `v0=a+3/v1=a+4/v2=a−4`、`count∈{3,4}`、坐标命中 Float8 顶点表：manifold **15/15**、不变量 14/15）；**B 记录 26B** `18,8×u16,f64`（首字段链接 A.v0）；**容器元素 8B** `81/82 + u32≤64 + u16 id`（manifold 331 个，**155 个 id 解析入对象图**）。
+- **流模型（本轮新增）**：G9 已证记录边界是长度前缀切分 → 拼接全部 T 载荷后再扫描（`t_stream_report`），归属更高，并对残差做**结构分解 + 语义命中检验**：
+
+| 文件 | 载荷 | 元素归属 | 双精度串（命中对象图数值） | u16 串（命中对象 id / 随机基线） | 未知 | **结构分解** |
+| --- | --- | --- | --- | --- | --- | --- |
+| manifold_start | 24469B | 18.33% | 39.49%（**25.7%**） | 42.04%（**32.2%** / 15.9%） | 35B | **99.86%** |
+| airfoil | 2250B | 7.56% | 36.62%（**47.6%**） | 55.64%（**40.6%** / 7.5%） | 4B | **99.82%** |
+| vibratingPipe | 613B | 0% | 20.88%（**93.8%**） | 78.96%（**47.1%** / 2.3%） | 1B | **99.84%** |
+
+即 **99.8%+ 字节已结构分解**（元素 / 双精度串 / u16 串，未知 <64B），两类残差命中率**显著高于随机基线**（双精度串命中对象图数值基线≈0；u16 串命中对象 id 为随机期望 2–20 倍）。
+- **落地**：`sim_parser`：`decode_t_blocks`/`t_block_report`（逐记录视图）+ **`t_stream_report`（流模型 + 残差分解）** + CLI `--t-blocks`（含流模型摘要）与 `--grammar`（追加 T 覆盖率行）；`tests/test_t_blocks.py` **19 项全绿**；`self_test.py` R3 锚点（含流模型）ALL CHECKS PASSED。
+- **诚实边界（仍未达成）**：**元素级语义只确证三类**（~18% 字节）；双精度串/u16 串的**字段级归属**（属于哪个对象/属性）未还原；1 条变异记录（tok=5296，base=5987，vids=(5958,5990,5984)）留待后续。
+
 **R 波 · R6 —— 协同仿真链接配置前段 ✅ 2026-09-13**：
 - **语料事实**：46 个 .sim（21 教程 + 25 openfoam benchmark）中 `star.cosimulation.*` 对象 **0 个**；coupling 教程的 .sim 是**耦合前状态**（Simulation 名 `plate-cosim_start` / `amesimNewstarting`），链接由 CoSim API 在运行期建立，不落盘。
 - **落地（`cosimulation.py`，纯 Python 无 Qt/numpy）**：① 类型表 8 项（Amesim/Abaqus/GtPower/Fmi/Cgns/Generic，别名大小写-连字符-下划线不敏感，未知拒绝）；② 场传递方式 12 项（pressure/traction/force/temperature/total_temperature/heat_flux/heat_transfer_coefficient/mass_flow/mass_fraction/passive_scalar/displacement/density，对应官方 `CoSim*ProfileMethod` 类）；③ URF 策略 5 项（constant/constant-expert/adaptive/adaptive-expert/anderson + 参数域校验）；④ `CoSimulationLink`/`CoSimZone` 模型：连接方式（host_port/assigned_host_port/connection_file/command_line）、启动方式（none/executable/command_line/partner_library）、可执行文件/命令行、耦合区间与单位、并发模式、时间步调整；⑤ 校验 → 问题清单（端口 1..65535、连接文件/可执行/命令行必填、URF 权重 (0,2)、Anderson 深度 ≥1、区域与场映射完整性）；⑥ JSON 往返（`to_json`/`from_json` 摘要一致）；⑦ `extract_cosimulation(sim)`：**有 CoSimulation 根对象才解，无对象诚实拒绝**；⑧ `render_macro()`：配置 → Java 宏，头部显式标注 **[best-effort]**（类名取自官方类清单，方法签名未逐条核对，须许可环境核验）。

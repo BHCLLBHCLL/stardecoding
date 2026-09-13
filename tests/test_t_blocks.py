@@ -206,6 +206,39 @@ def test_decode_t_blocks_records_view():
 
 
 @needs_manifold
+# ---------------------------------------------------------------- 流模型（残差结构分解）
+@needs_manifold
+def test_stream_report_manifold_structure_and_semantics():
+    from sim_parser import t_stream_report
+    st = t_stream_report(SimFile(MANIFOLD))
+    assert st["ok"] and st["bytes"] == 24469
+    assert 15.0 < st["attributed_pct"] < 22.0          # 流模型下元素归属高于逐记录
+    assert 30.0 < st["double_pct"] < 50.0
+    assert 35.0 < st["u16_pct"] < 50.0
+    assert st["unknown_bytes"] < 64 and st["structural_pct"] > 99.5
+    assert st["double_hit_pct"] > 15.0                 # 命中对象图数值（随机基线≈0）
+    assert st["u16_hit_pct"] > st["u16_chance_pct"]    # 命中对象 id 高于随机基线
+    assert st["n_gaps"] > 0 and st["n_elements"] > 0
+
+
+@needs_binary
+def test_stream_report_binary_files_structure():
+    from sim_parser import t_stream_report
+    for path, nbytes in ((AIRFOIL, 2250), (VIBPIPE, 613)):
+        st = t_stream_report(SimFile(path))
+        assert st["ok"] and st["bytes"] == nbytes
+        assert st["structural_pct"] > 99.0
+        assert st["unknown_bytes"] < 16
+        assert st["u16_hit_pct"] > st["u16_chance_pct"]
+
+
+@needs_adjwing
+def test_stream_report_rejects_ascii():
+    from sim_parser import t_stream_report
+    st = t_stream_report(SimFile(ADJWING))
+    assert st["ok"] is False and "非二进制" in st["reason"]
+
+
 def test_report_shape_and_honesty():
     rep = t_block_report(SimFile(MANIFOLD))
     for key in ("ok", "mode", "n_t_records", "bytes", "attributed_bytes",

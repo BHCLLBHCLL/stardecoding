@@ -3031,6 +3031,16 @@ for _r3n, _r3bytes, _r3cov in (("airfoil.sim", 2250, 4.98),
     assert _r3zero["n_geometry"] == 0 and _r3zero["verify_rate_pct"] is None,         "R3 %s 无几何记录须诚实零（不报命中率）" % _r3n
     assert _r3zero["coverage_pct"] == _r3cov, "R3 %s 覆盖率" % _r3n
 
+from sim_parser import t_stream_report as _r3stream
+
+_r3st = _r3stream(SimFile(_r3man))
+assert _r3st["ok"] and _r3st["bytes"] == 24469, "R3 流模型载荷字节"
+assert 15.0 < _r3st["attributed_pct"] < 22.0, "R3 流模型元素归属"
+assert _r3st["structural_pct"] > 99.5, "R3 残差结构分解率"
+assert _r3st["unknown_bytes"] < 64, "R3 未知字节应极少"
+assert _r3st["double_hit_pct"] > 15.0, "R3 双精度串命中对象图数值（基线≈0）"
+assert _r3st["u16_hit_pct"] > _r3st["u16_chance_pct"], "R3 u16 串命中 id 高于随机基线"
+
 _r3dec = _r3decode(SimFile(_r3man), max_records=1)
 assert _r3dec["records"][0]["attributed"] <= _r3dec["records"][0]["n_bytes"]
 
@@ -3038,7 +3048,11 @@ print("R 波 R3 二进制 T 载荷文法（A 记录 42B=count/29/7×u16/3×f64 +
       "索引不变量 v0=a+3/v1=a+4/v2=a-4；manifold 15 几何记录 15/15 命中 Float8 顶点表、"
       "不变量 14/15；容器元素 81/82+u32+u16 id 共 331 个（155 id 解析入对象图）；"
       "归属分账配平与残差画像如实统计；airfoil 仅容器 4.98%%、vibratingPipe 0%%；"
-      "合计已解码 %.2f%%）全通过" % _r3rep["coverage_pct"])
+      "流模型：拼接载荷 24469B → 元素归属 %.2f%%、双精度串 %.2f%%（对象图数值命中 %s%%）、"
+      "u16 串 %.2f%%（id 命中 %s%% vs 基线 %s%%）、未知 %d 字节、结构分解 %.2f%%）全通过"
+      % (_r3st["attributed_pct"], _r3st["double_pct"],
+         _r3st["double_hit_pct"], _r3st["u16_pct"], _r3st["u16_hit_pct"],
+         _r3st["u16_chance_pct"], _r3st["unknown_bytes"], _r3st["structural_pct"]))
 
 # --- R 波 R6：协同仿真链接配置前段（类型表/校验/JSON 往返/抽取/宏前端） ---
 import cosimulation as _r6
