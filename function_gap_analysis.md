@@ -149,7 +149,7 @@
 | 绘图/监视器/报告 | ✅ 监视器曲线数据重建（G6：XAxisData/MultiYAxisData 双 MasterArray（G3 `_storage_array` 复用），YAxisValues 两代子格式兼容（新版 values 列表/旧版 map.YAxisData）；Continuity CurrentValue==y[-1] 端到端闭合；Plot→AxisTitle/Units/MonitorDataSet 标注关联 + 对齐 XY CSV 导出；CLI `--curves`/`--curves-csv`，GUI 真曲线 X 定位降采样） | DerivedDataSet 表数据（FileTable 载荷）仅标注不取数；场景内嵌绘图面板参数未解码 |
 | 物理模型/材料/场函数 | ✅ 已按 PhysicsContinuum 归组（改进⑦ --report：22-23 模型/continuum） | 模型参数未解码 |
 | 求解状态/解数据 | ✅ 已抽取 .sim 内嵌解场（G5：SolutionRepresentation → FvRegion cells DUP 组 map，标量 n==CellCount / 矢量 x3；CLI `--solution-fields`/`--solution-csv`，GUI 真解场标量着色） | .simh HDF5 路径待语料扩充（本机语料无 .simh 文件；h5py 未装） |
-| 协同仿真链接（cosimulation 包） | ⚠️ 对象已解析 | 未提取链接配置 |
+| 协同仿真链接（cosimulation 包） | ✅ 配置前段（R6：`cosimulation.py` 类型表/连接-启动/耦合区间/URF/区域与场映射/校验/JSON 往返/宏前端 best-effort；`--cosimulation` 抽取） | 语料 46 文件 `star.cosimulation.*` 对象 0 个（链接为运行期配置）→ 无实测样本；协议本体与作业提交（HPC）仍挂起（B 路线） |
 | 回写/修改 .sim | ⚠️ 对象图 repr 行可替换（`sim_writer.py`） | 不能插入新对象、不改数组/状态表；见 `star_gui_next.md` |
 
 ## 6. 官方文档支撑（已调研：用户指南 6909 页 + 发行说明；详见 doc_userguide_sim.md）

@@ -3591,6 +3591,8 @@ def main(argv=None):
     ap.add_argument("--grammar", action="store_true", help="状态表文法统计报告（G1）")
     ap.add_argument("--t-blocks", action="store_true",
                     help="T 载荷文法解码（R3：二进制 A/B 几何记录 + 覆盖率 + 真值校验）")
+    ap.add_argument("--cosimulation", action="store_true",
+                    help="协同仿真链接配置抽取（R6：无对象诚实拒绝；配置模型见 cosimulation.py）")
     args = ap.parse_args(argv)
 
     sim = SimFile(args.file)
@@ -3606,7 +3608,7 @@ def main(argv=None):
                                 args.boundaries,
                                 args.fingerprint, args.check_length,
                                 args.report, args.export, args.state_tree,
-                                args.grammar, args.t_blocks]):
+                                args.grammar, args.t_blocks, args.cosimulation]):
         print(sim.summary())
 
     if args.fingerprint:
@@ -3730,6 +3732,20 @@ def main(argv=None):
             if tr["markers"]:
                 print("    结构标记: %s" % ", ".join(
                     "%s×%d" % (k, v) for k, v in tr["markers"].items()))
+
+    if args.cosimulation:
+        print("\n== 协同仿真链接配置（R6）==")
+        from cosimulation import extract_cosimulation
+        res = extract_cosimulation(sim)
+        if not res.get("ok"):
+            print("  %s（star.cosimulation.* 对象 %d 个）"
+                  % (res.get("reason"), res.get("n_objects", 0)))
+            print("  配置前段模型/校验/JSON 往返/宏前端见 cosimulation.py（--template/--validate/--macro）")
+        else:
+            for link in res["links"]:
+                print("  %s  class=%s  id=%s" % (link["name"], link["class"], link["id"]))
+                for k, v in link["fields"].items():
+                    print("      %s = %s" % (k, v))
 
     if args.t_blocks:
         print("\n== T 载荷文法解码（R3）==")

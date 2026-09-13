@@ -14,6 +14,8 @@
 | `star_gui.py` / `star_gui_panes.py` / `star_gui_model.py` | GUI 查看器 + 编辑器（菜单/树/属性/3D） |
 | `star_gui_commands.py` / `star_gui_document.py` | 可撤销命令总线与会话文档模型 |
 | `sim_writer.py` | 对象图 repr 回写（Save / Save As） |
+| `cosimulation.py` | 协同仿真链接配置前段（R6：类型/连接/启动/耦合区间/URF/区域与场映射 + 校验 + JSON 往返 + Java 宏前端 best-effort） |
+| `mesh_benchmark.py` | 教程尺度网格对标（R5：官方 .sim 网格尺度 ↔ 自研 tet，域表面/体积守恒/单元数比） |
 | `star_gui_plots.py` | 绘图/报告查看窗 |
 | `star_gui_parity.md` | 对标 STAR-CCM+ 20.02 能力表（view / session / persist / needs_kernel） |
 | `star_gui_next.md` | **E0–E8 后完整度复盘与 F0–F8 改进规划** |
@@ -59,6 +61,8 @@ python sim_parser.py adjointWing_start.sim --state      :: STAR-CORE 状态表�
 python sim_parser.py adjointWing_start.sim --state-tree :: 状态表结构化语义树（G1：头/指针三分法/类型化元素流/T块分段/几何验证）
 python sim_parser.py adjointWing_start.sim --grammar    :: 状态表文法统计（G1：fmt分布/指针角色/高频标记/几何验证率/T 载荷覆盖率）
 python sim_parser.py airfoil.sim --t-blocks             :: T 载荷文法解码（R3：二进制 A/B 几何记录 + 覆盖率 + 坐标真值校验）
+python sim_parser.py plate-cosim.sim --cosimulation      :: 协同仿真链接配置抽取（R6：无对象诚实拒绝；模型见 cosimulation.py）
+python mesh_benchmark.py pipeBlockage.sim               :: 教程尺度网格对标（R5：官方网格尺度 ↔ 自研 tet）
 python sim_parser.py adjointWing_start.sim --objects    :: 对象图
 python sim_parser.py adjointWing_start.sim --tree       :: 对象树
 python sim_parser.py adjointWing_start.sim --layers     :: 语义层统计（几何/网格/物理/场景...）

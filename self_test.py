@@ -3040,4 +3040,51 @@ print("R 波 R3 二进制 T 载荷文法（A 记录 42B=count/29/7×u16/3×f64 +
       "归属分账配平与残差画像如实统计；airfoil 仅容器 4.98%%、vibratingPipe 0%%；"
       "合计已解码 %.2f%%）全通过" % _r3rep["coverage_pct"])
 
+# --- R 波 R6：协同仿真链接配置前段（类型表/校验/JSON 往返/抽取/宏前端） ---
+import cosimulation as _r6
+
+assert _r6.resolve_type("gt_power") == "GtPowerCoSimulationType"
+assert _r6.resolve_type("FMU") == "FmiLibraryImportType"
+assert _r6.resolve_profile_method("heat flux") == "CoSimHeatFluxProfileMethod"
+_r6ok = _r6.make_link("amesim", name="amesim", host="127.0.0.1", port=5555,
+                      executable=r"C:/AMESim/amesim.exe", coupling_interval=0.01,
+                      urf_params={"urf": 0.5})
+_r6ok.zones = [_r6.CoSimZone("valve", boundaries=["Inlet"],
+                             exported={"pressure": "pressure"},
+                             imported={"displacement": "displacement"})]
+assert _r6ok.validate() == [], "R6 合法配置不应有问题: %s" % _r6ok.validate()
+_r6bad = _r6.make_link("generic")
+_r6bad.zones = []
+_r6prob = _r6bad.validate()
+assert any("至少需要一个协同仿真区域" in p for p in _r6prob), "R6 空区域须报问题"
+assert any("连接文件" in p for p in _r6prob), "R6 连接文件必填"
+_r6rt = _r6.CoSimulationLink.from_json(_r6ok.to_json())
+assert _r6rt.summary() == _r6ok.summary(), "R6 JSON 往返摘要一致"
+_r6macro = _r6.render_macro(_r6ok)
+assert "[best-effort]" in _r6macro and "CoSimPressureProfileMethod" in _r6macro
+
+
+class _R6Obj(object):
+    def __init__(self, cls, oid, name=None, d=None):
+        self.class_name, self.id, self.name, self.dict = cls, oid, name, d or {}
+
+
+class _R6Sim(object):
+    objects = [_R6Obj("star.common.Simulation", 2, "s")]
+
+
+assert _r6.extract_cosimulation(_R6Sim())["ok"] is False, "R6 无对象须诚实拒绝"
+
+
+class _R6Sim2(object):
+    objects = [_R6Obj("star.cosimulation.link.common.CoSimulation", 42, "l",
+                      {"PresentationName": "AMESim"})]
+
+
+_r6res = _r6.extract_cosimulation(_R6Sim2())
+assert _r6res["ok"] and _r6res["links"][0]["name"] == "AMESim", "R6 抽取根对象"
+
+print("R 波 R6 协同仿真链接配置前段（类型表 %d 项/别名与未知拒绝/连接-启动-耦合区间-URF-区域校验/"
+      "JSON 往返摘要一致/无对象诚实拒绝/宏前端 best-effort 标注）全通过" % len(_r6.COSIM_TYPES))
+
 print("ALL CHECKS PASSED")

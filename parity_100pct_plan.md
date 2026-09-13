@@ -39,7 +39,7 @@
 | 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | **L2–L3** | G8 显示参数 + V1–V7 全谱 + 20 个 Post 动作接线；**V7 ✅**（官方 23 类派生零件类型表 + ClipPlane/PlaneManager 谱系发现 + 树 folder/图标接线） |
 | 15 | 数据映射插值 | interpolator | **L2** | **R2 ✅** `field_mapper.py`：跨网格重心一阶映射（`FieldMapper`/`MapperManager`/`FieldTreatment`/`locate_points`/`build_weights`/`apply_weights`）+ 一维 `TableInterpolator`（LINEAR/SPLINE）；官方 `.sim` 中 `FieldMapper` 对象的落盘读写不做（语料亦无该对象） |
 | 16 | 自动化 | Java 宏录播/脚本 API/Design Manager/伴随优化 | **L1–L2** | A1 宏录播 + A2 `star_api` + A3 DOE 已落地；A4 伴随 / A5 协同 / A6 远程 HPC 挂起（B 路线） |
-| 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | **L0** | 协议私有；目标 R6 仅做配置解析前段（不依赖三方求解器） |
+| 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | **L1** | **R6 ✅**：配置前段模型（类型/连接/启动/耦合区间/URF/区域与场映射）+ 校验 + JSON 往返 + Java 宏前端（best-effort）；语料 46 个 .sim 中 star.cosimulation.* 对象 **0 个**（链接为运行期配置）→ 抽取路径诚实拒绝；作业提交/HPC 仍挂起（B 路线） |
 | 18 | 客户端体验 | undo/搜索/单位/i18n/主题/多窗口/帮助/打包 | **L2** | X1–X4 + F0–F8 全绿（会话生命周期/多窗口跨仿真粘贴/帮助/打包脚本）；打包诚实降级（无打包器） |
 
 解析层底座（支撑以上全部）：容器/分区/对象图/数组/表面网格抽取 21/21 ✅；
@@ -49,7 +49,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 ## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
 
 口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
-八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 部分达成**（二进制 T 载荷几何 A/B 记录文法已确证并真值校验，已解码字节 5.02%，完整 T 文法未解）。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）、**R3 ⚠️ 部分达成**（二进制 T 载荷几何 A/B 记录 + 容器元素已确证并真值校验，已解码字节 15.84%，完整 T 文法未解）、**R6 ✅**（协同仿真链接配置前段：模型/校验/JSON 往返/宏前端；语料 0 个 cosim 对象 → 抽取诚实拒绝）。
 
 | # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
 | --- | --- | --- | --- | --- | --- |
@@ -194,6 +194,12 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 - **落地**：`sim_parser.decode_t_blocks()` / `t_block_report()`（字节级重同步扫描 + 归属分账 + 残差画像）+ CLI `--t-blocks`（`--grammar` 追加 T 覆盖率行）；`tests/test_t_blocks.py` **16 项全绿**（合成 A/B/容器/截断/重同步/变异/计数越界 + 语料锚定）；`self_test.py` R3 锚点 ALL CHECKS PASSED。
 - **实测**：manifold **15 条 A 记录、15/15 坐标命中 Float8 顶点表（100%）**、索引不变量 **14/15（93.3%）**；容器元素 81 开×159 / 82 闭×172；**归属分账（配平到总字节）**：geom-A+B 1020B + geom-B 208B + container 2648B + 未归属 20593B = 24469B，**覆盖率 15.84%**；airfoil 仅容器（4.98%）、vibratingPipe 0%（完全未解）；无几何记录时**不报命中率**（避免 0/0=100% 的假象）。
 - **诚实边界（未达成）**：T 载荷是**字节流**（元素长度可为奇数，不能整体按 u16 对齐）—— **已解码 15.84%（manifold）/ 4.98%（airfoil，仅容器）/ 0%（vibratingPipe）**，未归属 20593B 仅给出残差画像（间隙内高频 u16：0×1453、1×359、256×115…），**不作语义推断**；1 条变异记录（tok=5296，base=5987，vids=(5958,5990,5984) —— 框架确证、索引算术不变量不适用）留待后续。**R3 记部分达成：几何记录与容器元素已确证，完整 T 文法仍是解析侧最大缺口。**
+**R 波 · R6 —— 协同仿真链接配置前段 ✅ 2026-09-13**：
+- **语料事实**：46 个 .sim（21 教程 + 25 openfoam benchmark）中 `star.cosimulation.*` 对象 **0 个**；coupling 教程的 .sim 是**耦合前状态**（Simulation 名 `plate-cosim_start` / `amesimNewstarting`），链接由 CoSim API 在运行期建立，不落盘。
+- **落地（`cosimulation.py`，纯 Python 无 Qt/numpy）**：① 类型表 8 项（Amesim/Abaqus/GtPower/Fmi/Cgns/Generic，别名大小写-连字符-下划线不敏感，未知拒绝）；② 场传递方式 12 项（pressure/traction/force/temperature/total_temperature/heat_flux/heat_transfer_coefficient/mass_flow/mass_fraction/passive_scalar/displacement/density，对应官方 `CoSim*ProfileMethod` 类）；③ URF 策略 5 项（constant/constant-expert/adaptive/adaptive-expert/anderson + 参数域校验）；④ `CoSimulationLink`/`CoSimZone` 模型：连接方式（host_port/assigned_host_port/connection_file/command_line）、启动方式（none/executable/command_line/partner_library）、可执行文件/命令行、耦合区间与单位、并发模式、时间步调整；⑤ 校验 → 问题清单（端口 1..65535、连接文件/可执行/命令行必填、URF 权重 (0,2)、Anderson 深度 ≥1、区域与场映射完整性）；⑥ JSON 往返（`to_json`/`from_json` 摘要一致）；⑦ `extract_cosimulation(sim)`：**有 CoSimulation 根对象才解，无对象诚实拒绝**；⑧ `render_macro()`：配置 → Java 宏，头部显式标注 **[best-effort]**（类名取自官方类清单，方法签名未逐条核对，须许可环境核验）。
+- **CLI**：`sim_parser.py <file> --cosimulation`（抽取，语料无对象时打印原因）；`python cosimulation.py --template TYPE|--validate JSON|--macro JSON [--out PATH]`。
+- **验收**：`tests/test_cosimulation.py` **17 项全绿**；`self_test.py` R6 锚点 ALL CHECKS PASSED（类型/别名/场方式/合法配置零问题/空区域与连接文件必填/JSON 往返/无对象诚实拒绝/宏 best-effort 标注）。
+- **诚实边界**：不解协议、不建连接、不提交作业、不依赖三方求解器（维度 17 的"仅配置前段"）；宏为**前端产物**，未在许可环境实测；A5 协同仿真协议本体仍挂起。
 ## 8. V 波 —— 后处理深度（依赖 G5 或 P10 的解场来源）
 
 | 点 | 任务 | 验收 |
