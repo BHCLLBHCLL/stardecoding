@@ -2129,6 +2129,46 @@ class StarMainWindow(QMainWindow):
             sess.refresh(solver)
         return sess
 
+    def _post_frame_renderer(self):
+        """当前所有视口 actors（去重）→ renderer(azimuth, elevation) 闭包。
+
+        供 `Post>Animate` 逐帧离屏渲染；无可渲染场景时返回 None。
+        """
+        seen = {}
+        for vp in self._iter_viewports():
+            for act in (getattr(vp, "actors", None) or []):
+                seen[act[0]] = act
+        actors = list(seen.values())
+        if not actors:
+            return None
+        from star_gui_vtk import render_offscreen_image
+
+        def _render(azimuth, elevation):
+            return render_offscreen_image(actors, size=(900, 675),
+                                          azimuth=azimuth, elevation=elevation)
+        return _render
+
+    def _cmd_post_animate(self, session, n_frames=12):
+        """Post>Animate：离屏渲染当前场景帧序列 → PNG 动画（无 FVM 也可用）。"""
+        if HEADLESS:
+            return self.msg("动画帧渲染需图形视口（无头模式请用显式帧序列）", "nyi")
+        renderer = self._post_frame_renderer()
+        if renderer is None:
+            return self.msg("动画帧渲染：当前无可渲染场景", "nyi")
+        from star_gui_postprocess import render_animation
+        out_dir = os.path.join(session.export_dir, "animation")
+        try:
+            res = render_animation(renderer, out_dir=out_dir, n_frames=n_frames)
+        except (RuntimeError, ValueError) as exc:
+            return self.msg("动画渲染降级：%s" % exc, "nyi")
+        msg = "已渲染 %d 帧（每帧 %.0f°）→ %s；mp4 无 ffmpeg 降级" % (
+            res["count"], 360.0 / max(1, res["count"]), out_dir)
+        session.last = {"ok": True, "op": "animate", "message": msg,
+                        "payload": res}
+        self.msg(msg)
+        self.set_status("后处理 Post>Animate")
+        return res
+
     def cmd_post_action(self, key):
         """V1–V6：菜单动作 → `run_action` 派发，按载荷分派到视口/绘图/消息。"""
         from star_gui_postprocess import run_action
@@ -2136,6 +2176,8 @@ class StarMainWindow(QMainWindow):
             session = self._post_session_obj()
         except Exception as exc:  # noqa: BLE001
             return self.msg("后处理会话创建失败: %s" % exc, "error")
+        if key == "Post>Animate":
+            return self._cmd_post_animate(session)
         res = run_action(session, key)
         if not res.get("ok"):
             return self.msg(res.get("message") or ("后处理不可用：%s" % key), "nyi")

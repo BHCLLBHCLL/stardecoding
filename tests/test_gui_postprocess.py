@@ -12,9 +12,11 @@ sys.path.insert(0, ROOT)
 
 from fvm_core import FVM, cube_tet_mesh  # noqa: E402
 from star_gui_postprocess import (ACTION_SPECS, POST_MENU_KEYS,  # noqa: E402
-                                  PostProcessSession, action_op, make_session,
-                                  match_location, official_colormap, resolve_fv,
-                                  run_action, solver_fv)
+                                  PostProcessSession, action_op,
+                                  animation_frame_plan, make_session,
+                                  match_location, official_colormap,
+                                  render_animation, resolve_fv, run_action,
+                                  solver_fv)
 
 
 def _fv(nx=2):
@@ -251,6 +253,55 @@ def test_run_action_exports_and_animate_degradation():
         frames = [np.zeros((3, 3, 3), float)]
         ani2 = run_action(s, "Post>Animate", frames=frames, fps=5)
         assert ani2["ok"] and ani2["payload"]["count"] == 1
+        angles = []
+
+        def _render(az, el):
+            angles.append((az, el))
+            return np.zeros((3, 3, 3), float)
+
+        ani3 = run_action(s, "Post>Animate", renderer=_render, n_frames=4, fps=5)
+        assert ani3["ok"] and ani3["payload"]["count"] == 4
+        assert len(angles) == 4 and angles[1][0] == 90.0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_animation_frame_plan_orbit():
+    plan = animation_frame_plan(n_frames=4, azimuth_total=360.0, elevation=10.0,
+                                fps=5)
+    assert plan["count"] == 4 and plan["fps"] == 5
+    assert np.allclose(plan["azimuths"], [0.0, 90.0, 180.0, 270.0])
+    assert np.allclose(plan["elevations"], [10.0, 10.0, 10.0, 10.0])
+    assert list(plan["indices"]) == [0, 1, 2, 3]
+    assert plan["names"] == ["frame_0000.png", "frame_0001.png",
+                             "frame_0002.png", "frame_0003.png"]
+    assert np.isclose(plan["dt"], 0.2)
+    assert np.allclose(plan["times"], [0.0, 0.2, 0.4, 0.6])
+    assert animation_frame_plan(n_frames=0)["count"] == 1
+
+
+def test_render_animation_injected_and_bad_renderer():
+    tmp = tempfile.mkdtemp(prefix="gui_anim_")
+    try:
+        angles = []
+
+        def _render(az, el):
+            angles.append((az, el))
+            return np.full((4, 4, 3), len(angles), dtype=np.uint8)
+
+        res = render_animation(_render, out_dir=tmp, n_frames=3, fps=4)
+        assert res["count"] == 3 and len(angles) == 3
+        assert res["plan"]["count"] == 3
+        assert angles[1][0] == 120.0
+        assert res["mp4"] is None
+        for path in res["frames"]:
+            assert os.path.exists(path) and os.path.getsize(path) > 0
+        raised = False
+        try:
+            render_animation(None, out_dir=tmp)
+        except ValueError:
+            raised = True
+        assert raised
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

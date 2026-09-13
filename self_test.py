@@ -2691,8 +2691,35 @@ from star_gui_vtk import glyph_lines_polydata as _vggly_pd
 _vgglypd = _vggly_pd(_vggly["payload"]["points"], _vggly["payload"]["tips"])
 assert _vgglypd.GetNumberOfPoints() == 2 * _vggly["payload"]["count"] and \
     _vgglypd.GetNumberOfLines() == _vggly["payload"]["count"], "Vg 矢量符号线元几何"
+_vgtri = _vnp.vstack([_vgC[:, [0, 1, 2]], _vgC[:, [0, 1, 3]],
+                      _vgC[:, [0, 2, 3]], _vgC[:, [1, 2, 3]]])
+_vgbox = _vnp.asarray(_vgV, float) * _vnp.array([2.0, 1.0, 1.0])
+from star_gui_vtk import mesh_polydata as _vgmesh_pd, _actor as _vgactor
+from star_gui_vtk import render_offscreen_image as _vgimg
+_vgact = ("anim", "网格", None,
+          _vgactor(_vgmesh_pd(_vgbox, _vgtri), (0.00, 0.55, 0.62)))
+_vgpx = _vgimg([_vgact], size=(240, 180), azimuth=30.0, elevation=15.0)
+assert _vgpx.shape == (180, 240, 3) and _vgpx.dtype == _vnp.uint8, \
+    "Vg 离屏帧图像形状/类型"
+_vgplan = _vg.animation_frame_plan(n_frames=4, azimuth_total=360.0, fps=5)
+assert _vgplan["count"] == 4 and _vgplan["names"][0] == "frame_0000.png" and \
+    abs(float(_vgplan["azimuths"][1]) - 90.0) < 1e-9, "Vg 动画帧计划（等分轨道）"
+_vgboxes = []
+_vganimdir = os.path.join(tempfile.gettempdir(), "stardecoding_anim_anchor")
+
+def _vgframefn(az, el):
+    img = _vgimg([_vgact], size=(80, 60), azimuth=az, elevation=el)
+    _vgboxes.append(img)
+    return img
+
+_vganim = _vg.render_animation(_vgframefn, out_dir=_vganimdir, n_frames=4, fps=5)
+assert _vganim["count"] == 4 and _vganim["plan"]["count"] == 4 and \
+    all(os.path.exists(p) and os.path.getsize(p) > 0 for p in _vganim["frames"]), \
+    "Vg 动画帧序列渲染/写盘"
+assert not _vnp.array_equal(_vgboxes[0], _vgboxes[1]), "Vg 轨道帧随方位角变化"
 print("V 波 遗留项：后处理 GUI 接线（19 动作注册/菜单键一致/会话可用/color-isosurface-"
-      "threshold-glyphs 载荷/求解器节点场补入与阈值折算/矢量符号线元几何/无 FVM 诚实降级）"
+      "threshold-glyphs 载荷/求解器节点场补入与阈值折算/矢量符号线元几何/离屏帧图像/"
+      "动画帧计划+注入渲染器 PNG 序列/无 FVM 诚实降级）"
       "全通过")
 
 print("ALL CHECKS PASSED")

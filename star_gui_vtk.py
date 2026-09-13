@@ -5,6 +5,7 @@
 - build_mesh_actors: 按 Part 分组 actor（复用 extract_mesh 的面/顶点 + Part.TriangleCount）
 - axes_actor / orientation_marker_widget: 全局轴 + 方向指示器
 - render_to_png: 离屏渲染（测试/导出）
+- render_offscreen_image: 离屏渲染 → RGB 像素数组（动画帧序列）
 """
 
 import sys
@@ -1224,8 +1225,13 @@ def bounds_of(actors):
     return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
 
 
-def render_offscreen_png(actors, out_path, size=(1200, 900), background=None):
-    """离屏渲染 actors → PNG（测试/验证）。"""
+def _offscreen_render_window(actors, size=(1200, 900), background=None,
+                             azimuth=0.0, elevation=0.0):
+    """构建离屏渲染窗口 → (vtkRenderWindow, vtkRenderer)。
+
+    共用渲染窗口：PNG 导出与动画帧图像都走这里，保证背景/相机一致。
+    azimuth/elevation 非零时在 ResetCamera 后绕焦心旋转（动画轨道）。
+    """
     import vtk
     if background is None:
         background = STARCCM_BG_BOTTOM
@@ -1238,12 +1244,24 @@ def render_offscreen_png(actors, out_path, size=(1200, 900), background=None):
     b = bounds_of(actors)
     if b:
         ren.ResetCamera()
-    ren.GetActiveCamera().Zoom(1.0)
+    cam = ren.GetActiveCamera()
+    if azimuth:
+        cam.Azimuth(float(azimuth))
+    if elevation:
+        cam.Elevation(float(elevation))
+    cam.Zoom(1.0)
     rw = vtk.vtkRenderWindow()
     rw.SetOffScreenRendering(1)
     rw.SetSize(*size)
     rw.AddRenderer(ren)
     rw.Render()
+    return rw, ren
+
+
+def render_offscreen_png(actors, out_path, size=(1200, 900), background=None):
+    """离屏渲染 actors → PNG（测试/验证）。"""
+    import vtk
+    rw, _ren = _offscreen_render_window(actors, size=size, background=background)
     w2i = vtk.vtkWindowToImageFilter()
     w2i.SetInput(rw)
     w2i.Update()
@@ -1252,3 +1270,27 @@ def render_offscreen_png(actors, out_path, size=(1200, 900), background=None):
     writer.SetInputConnection(w2i.GetOutputPort())
     writer.Write()
     return out_path
+
+
+def render_offscreen_image(actors, size=(1200, 900), background=None,
+                           azimuth=0.0, elevation=0.0):
+    """离屏渲染 actors → RGB 图像数组 (H,W,3) uint8（动画帧像素）。
+
+    与 render_offscreen_png 共用渲染窗口；VTK 图像原点在左下，这里翻转成
+    行主序（首行=顶部），可直接喂给 postprocess.export_animation。
+    """
+    import vtk
+    rw, _ren = _offscreen_render_window(actors, size=size, background=background,
+                                        azimuth=azimuth, elevation=elevation)
+    w2i = vtk.vtkWindowToImageFilter()
+    w2i.SetInput(rw)
+    w2i.Update()
+    img = w2i.GetOutput()
+    dims = img.GetDimensions()
+    scalars = img.GetPointData().GetScalars()
+    arr = _numpy_support().vtk_to_numpy(scalars)
+    arr = arr.reshape(int(dims[1]), int(dims[0]), -1)
+    if arr.shape[2] >= 3:
+        arr = arr[:, :, :3]
+    arr = np.ascontiguousarray(arr[::-1, :, :].astype(np.uint8))
+    return arr

@@ -21,7 +21,8 @@ import tempfile
 import numpy as np
 
 from postprocess import (DEFAULT_COLORMAP_VALUES, PostProcessor,
-                         export_animation, fields_from_solver)
+                         export_animation, fields_from_solver, frame_indices,
+                         frame_name, frame_times)
 
 DEFAULT_FIELD_ORDER = ("pressure", "speed", "rho", "temperature", "T", "mach")
 DEFAULT_VECTOR_ORDER = ("velocity",)
@@ -516,14 +517,78 @@ def _op_export_cgns(session, params):
     return _ok("export_cgns", "已导出 CGNS：%s" % out, out)
 
 
+def animation_frame_plan(n_frames=12, azimuth_total=360.0, elevation=15.0,
+                         fps=10, dt=None, start=0.0, prefix="frame",
+                         digits=4, ext="png"):
+    """动画帧计划：逐帧序号 / 相机角度 / 时间 / 文件名（纯逻辑）。
+
+    相机绕焦心等分旋转一周（默认 12 帧 × 30°，不重复首尾帧）。返回
+    {"count","fps","dt","azimuth_total","elevation","indices","azimuths",
+     "elevations","times","names"}。
+    """
+    n = max(1, int(n_frames))
+    fps = max(1, int(fps))
+    dt = (1.0 / fps) if dt is None else float(dt)
+    indices = frame_indices(n, start=0, step=1)
+    azimuths = float(azimuth_total) * np.arange(n, dtype=float) / n
+    elevations = np.full(n, float(elevation), dtype=float)
+    names = [frame_name(prefix, int(i), digits=digits, ext=ext)
+             for i in indices]
+    return {"count": n, "fps": fps, "dt": dt,
+            "azimuth_total": float(azimuth_total), "elevation": float(elevation),
+            "indices": indices, "azimuths": azimuths,
+            "elevations": elevations, "times": frame_times(n, dt, start=start),
+            "names": names}
+
+
+def render_animation(renderer, out_dir=None, n_frames=12, azimuth_total=360.0,
+                     elevation=15.0, fps=10, prefix="frame", fmt="png",
+                     gif=None, mp4=None):
+    """逐帧调用注入渲染器 → 图像数组 → 导出动画序列（纯逻辑可无头测试）。
+
+    `renderer(azimuth, elevation)` 由 GUI 侧提供（绑定当前场景 actors 的
+    离屏渲染，见 `star_gui_vtk.render_offscreen_image`），返回 HxWx3/4 图像
+    数组。渲染器不可调用时抛 `ValueError`；导出降级（GIF 缺 Pillow）抛
+    `RuntimeError`，由调用方诚实转成 `ok=False`。
+    """
+    if not callable(renderer):
+        raise ValueError("动画需要可调用的帧渲染器")
+    plan = animation_frame_plan(n_frames=n_frames, azimuth_total=azimuth_total,
+                                elevation=elevation, fps=fps, prefix=prefix,
+                                ext=fmt)
+    images = [np.asarray(renderer(float(az), float(el)), dtype=np.uint8)
+              for az, el in zip(plan["azimuths"], plan["elevations"])]
+    if out_dir is None:
+        out_dir = os.path.join(tempfile.gettempdir(), DEFAULT_EXPORT_DIR,
+                               "animation")
+    res = export_animation(images, out_dir, prefix=prefix, fps=fps, fmt=fmt,
+                           gif=gif, mp4=mp4)
+    res["plan"] = plan
+    return res
+
+
 def _op_animate(session, params):
-    frames = params.get("frames")
-    if not frames:
-        return _fail("animate", "动画需要帧序列（GUI 帧渲染待接）")
     out_dir = params.get("out_dir")
     out_dir = (os.path.join(session.export_dir, "animation")
                if out_dir is None else out_dir)
     gif = params.get("gif")
+    frames = params.get("frames")
+    if not frames:
+        renderer = params.get("renderer")
+        if not callable(renderer):
+            return _fail("animate", "动画需要帧序列或帧渲染器"
+                                   "（GUI 走 Post>Animate 渲染当前场景）")
+        try:
+            res = render_animation(
+                renderer, out_dir=out_dir,
+                n_frames=params.get("n_frames", 12),
+                azimuth_total=params.get("azimuth_total", 360.0),
+                elevation=params.get("elevation", 15.0),
+                fps=params.get("fps", 10), prefix=params.get("prefix", "frame"),
+                fmt=params.get("fmt", "png"), gif=gif, mp4=params.get("mp4"))
+        except (RuntimeError, ValueError) as exc:
+            return _fail("animate", "动画渲染降级：%s" % exc)
+        return _ok("animate", "已渲染 %d 帧 → %s" % (res["count"], out_dir), res)
     try:
         res = export_animation(frames, out_dir, prefix=params.get("prefix", "frame"),
                                fps=params.get("fps", 10), fmt=params.get("fmt", "png"),
