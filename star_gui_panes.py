@@ -379,6 +379,13 @@ class Star3DViewport(QWidget):
         self._safe_render()
         return 1
 
+    def overlay_keys(self, prefix=None):
+        """现有 2D 叠加键（可按前缀过滤），供 GUI 清理陈旧注记行。"""
+        keys = list(self._overlays2d.keys())
+        if prefix:
+            keys = [k for k in keys if str(k).startswith(prefix)]
+        return keys
+
     def remove_overlays(self, keys):
         """按 key 移除 2D 叠加 actor。"""
         removed = 0

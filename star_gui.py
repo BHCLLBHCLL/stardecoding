@@ -2201,6 +2201,8 @@ class StarMainWindow(QMainWindow):
             self._render_post_colorbar(payload)
         elif op == "legend" and payload:
             self._render_post_legend(payload)
+        elif op == "annotation" and isinstance(payload, dict):
+            self._render_post_annotation(payload)
         elif op == "xy" and isinstance(payload, dict):
             self._render_post_series("XY 曲线", payload.get("x"), payload.get("y"))
         elif op == "histogram" and isinstance(payload, dict):
@@ -2389,6 +2391,27 @@ class StarMainWindow(QMainWindow):
             except Exception:
                 continue
             added += vp.set_overlay2d("overlay:legend", box)
+        return added
+
+    def _render_post_annotation(self, payload):
+        """注记：文本条目 → 2D 叠加文本（逐行一个 vtkTextActor，同名替换）。"""
+        if HEADLESS or not isinstance(payload, dict):
+            return 0
+        from star_gui_vtk import text_actor
+        entries = payload.get("annotations") or []
+        if not entries:
+            return 0
+        added = 0
+        for vp in self._iter_viewports():
+            stale = vp.overlay_keys("overlay:annotation")
+            if stale:
+                vp.remove_overlays(stale)
+            for i, ent in enumerate(entries):
+                try:
+                    act = text_actor(ent)
+                except Exception:
+                    continue
+                added += vp.set_overlay2d("overlay:annotation:%d" % i, act)
         return added
 
     def _render_post_series(self, name, xs, ys):

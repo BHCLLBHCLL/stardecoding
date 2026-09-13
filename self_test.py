@@ -2649,9 +2649,9 @@ print("X 波 客户端体验收尾：X4 打包/版本发布（打包器探测 %s
 import star_gui_postprocess as _vg
 from fvm_core import FVM as _vgFVM, cube_tet_mesh as _vgcube
 
-assert len(_vg.ACTION_SPECS) == 19, "Vg 19 个后处理动作"
+assert len(_vg.ACTION_SPECS) == 20, "Vg 20 个后处理动作"
 _vgmenu = [k for k in _vg.POST_MENU_KEYS if k is not None]
-assert set(_vgmenu) == set(_vg.ACTION_SPECS) and len(_vgmenu) == 19, \
+assert set(_vgmenu) == set(_vg.ACTION_SPECS) and len(_vgmenu) == 20, \
     "Vg 菜单键与动作一致"
 assert _vg.action_op("Post>ColorBy") == "color" and \
     _vg.action_op("Post>ExportCGNS") == "export_cgns" and \
@@ -2754,10 +2754,22 @@ assert _vgbar.GetClassName() == "vtkScalarBarActor", "Vg 色标尺 2D 叠加 act
 _vglg = _vg.run_action(_vgsess, "Post>Legend")
 _vglgbox = _vglegend_actor(_vglg["payload"])
 assert _vglgbox.GetClassName() == "vtkLegendBoxActor", "Vg 图例 2D 叠加 actor"
-print("V 波 遗留项：后处理 GUI 接线（19 动作注册/菜单键一致/会话可用/color-isosurface-"
+_vgann = _vg.run_action(_vgsess, "Post>Annotation")
+assert _vgann["ok"] and _vgann["payload"]["count"] == 2 and \
+    _vgann["payload"]["annotations"][0]["text"] == "STAR-CCM+ 20.02 后处理", \
+    "Vg 注记载荷（缺省文本行）"
+_vgann2 = _vg.run_action(_vg.make_session(fv=None), "Post>Annotation")
+assert _vgann2["ok"] and \
+    _vgann2["payload"]["annotations"][1]["text"] == "无可用标量场", \
+    "Vg 注记无 FVM 亦可渲染"
+from star_gui_vtk import text_actor as _vgtext_actor
+_vgtxt = _vgtext_actor(_vgann["payload"]["annotations"][0])
+assert _vgtxt.IsA("vtkTextActor") and \
+    _vgtxt.GetInput() == "STAR-CCM+ 20.02 后处理", "Vg 注记 2D 叠加文本 actor"
+print("V 波 遗留项：后处理 GUI 接线（20 动作注册/菜单键一致/会话可用/color-isosurface-"
       "threshold-glyphs 载荷/求解器节点场补入与阈值折算/矢量符号线元几何/离屏帧图像/"
       "动画帧计划+注入渲染器 PNG 序列/线取样折线+面取样网格曲面+探针球体+等值体积外表面/"
-      "色标尺+图例 2D 叠加 actor/无 FVM 诚实降级）"
+      "色标尺+图例+注记 2D 叠加 actor/注记无 FVM 亦可渲染/无 FVM 诚实降级）"
       "全通过")
 
 print("ALL CHECKS PASSED")

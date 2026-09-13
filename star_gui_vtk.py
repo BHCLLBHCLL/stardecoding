@@ -761,6 +761,41 @@ def legend_box_actor(items, position=(0.74, 0.74), size=(0.22, 0.20),
     return box
 
 
+def text_actor(entry, default_position=(0.02, 0.95)):
+    """注记文本（2D 叠加）：annotation 载荷 → vtkTextActor。
+
+    `entry` 为 `postprocess.annotation` 的字典（text/position/color/size/align）；
+    位置为归一化视口坐标（VTK 2D prop），不随相机旋转。
+    """
+    import vtk
+    data = dict(entry or {})
+    actor = vtk.vtkTextActor()
+    actor.SetInput(str(data.get("text", "")))
+    pos = data.get("position") or default_position
+    try:
+        actor.SetPosition(float(pos[0]), float(pos[1]))
+    except Exception:
+        pass
+    try:
+        tp = actor.GetTextProperty()
+        col = tuple(float(x) for x in (data.get("color") or (1.0, 1.0, 1.0, 1.0)))
+        tp.SetColor(col[0], col[1], col[2])
+        if len(col) > 3:
+            tp.SetOpacity(col[3])
+        tp.SetFontSize(int(data.get("size", 14)))
+        tp.SetFontFamilyToArial()
+        align = str(data.get("align", "left")).lower()
+        if align == "center":
+            tp.SetJustificationToCentered()
+        elif align == "right":
+            tp.SetJustificationToRight()
+        else:
+            tp.SetJustificationToLeft()
+    except Exception:
+        pass
+    return actor
+
+
 def axes_actor(length=1.0):
     """全局坐标轴（RGB = XYZ）。"""
     import vtk

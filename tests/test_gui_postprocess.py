@@ -172,7 +172,7 @@ def test_color_payload_on_points():
 # 动作注册表
 # ---------------------------------------------------------------------------
 def test_action_specs_and_menu_keys_consistent():
-    assert len(ACTION_SPECS) == 19
+    assert len(ACTION_SPECS) == 20
     assert action_op("Post>ColorBy") == "color"
     assert action_op("Post>ExportCGNS") == "export_cgns"
     assert action_op("Post>Nope") is None
@@ -250,6 +250,30 @@ def test_run_action_xy_histogram_colorbar_legend():
     for item in lg["payload"]:
         assert len(item["label"]) >= 0
         assert np.asarray(item["rgba"]).reshape(-1).size >= 3
+
+
+def test_run_action_annotation_payload_and_no_fvm():
+    s = _session(2)
+    out = run_action(s, "Post>Annotation")
+    assert out["ok"] and out["op"] == "annotation"
+    entries = out["payload"]["annotations"]
+    assert out["payload"]["count"] == len(entries) == 2
+    assert entries[0]["text"] == "STAR-CCM+ 20.02 后处理"
+    assert "speed" in entries[1]["text"]
+    for e in entries:
+        assert len(e["position"]) == 2 and len(e["color"]) == 4
+        assert e["size"] == 14 and e["align"] == "left"
+    assert entries[0]["position"][1] > entries[1]["position"][1]
+    bare = run_action(make_session(fv=None), "Post>Annotation")
+    assert bare["ok"] and bare["payload"]["count"] == 2
+    assert bare["payload"]["annotations"][1]["text"] == "无可用标量场"
+    one = run_action(s, "Post>Annotation", text="hello", align="center", size=20)
+    assert one["ok"] and one["payload"]["count"] == 1
+    assert one["payload"]["annotations"][0]["text"] == "hello"
+    assert one["payload"]["annotations"][0]["align"] == "center"
+    assert one["payload"]["annotations"][0]["size"] == 20
+    empty = run_action(s, "Post>Annotation", lines=[])
+    assert empty["ok"] is False and "空" in empty["message"]
 
 
 def test_run_action_exports_and_animate_degradation():

@@ -45,6 +45,7 @@ ACTION_SPECS = {
     "Post>Histogram": {"op": "histogram", "label": "直方图", "icon": "plot"},
     "Post>Colorbar": {"op": "colorbar", "label": "色标尺", "icon": "field"},
     "Post>Legend": {"op": "legend", "label": "图例", "icon": "field"},
+    "Post>Annotation": {"op": "annotation", "label": "注记", "icon": "field"},
     "Post>ExportCSV": {"op": "export_csv", "label": "导出 CSV", "icon": "plot"},
     "Post>ExportEnSight": {"op": "export_ensight", "label": "导出 EnSight",
                            "icon": "plot"},
@@ -57,7 +58,8 @@ POST_MENU_KEYS = [
     "Post>Section", "Post>Clip", "Post>Threshold", "Post>Mirror",
     "Post>Glyphs", None,
     "Post>Probe", "Post>Line", "Post>PlaneSample", "Post>IsoVolume", None,
-    "Post>XY", "Post>Histogram", "Post>Colorbar", "Post>Legend", None,
+    "Post>XY", "Post>Histogram", "Post>Colorbar", "Post>Legend",
+    "Post>Annotation", None,
     "Post>ExportCSV", "Post>ExportEnSight", "Post>ExportCGNS", "Post>Animate",
 ]
 
@@ -504,6 +506,54 @@ def _op_legend(session, params):
     return _ok("legend", "图例 %d 项" % len(res), res)
 
 
+def _default_annotation_lines(session):
+    """缺省注记：场景标题 + 当前标量场与范围（无场时诚实标注）。"""
+    lines = ["STAR-CCM+ 20.02 后处理"]
+    name = getattr(session, "active_field", None)
+    if name and name in session.fields:
+        from postprocess import scalar_range
+        try:
+            lo, hi = scalar_range(np.asarray(session.fields[name], float))
+            lines.append("%s ∈ [%.4g, %.4g]" % (name, lo, hi))
+        except Exception:
+            lines.append(str(name))
+    else:
+        lines.append("无可用标量场")
+    return lines
+
+
+def _op_annotation(session, params):
+    """注记：文本行 → 归一化视口位置的文本条目（逐行下移，供 2D 叠加渲染）。
+
+    不需 FVM/场即可渲染（纯文本叠加）；`lines`/`text` 缺省时用场景标题 +
+    当前标量场范围合成。
+    """
+    lines = params.get("lines")
+    if lines is None:
+        text = params.get("text")
+        if text is None:
+            lines = _default_annotation_lines(session)
+        elif isinstance(text, (list, tuple)):
+            lines = list(text)
+        else:
+            lines = [text]
+    lines = [str(x) for x in lines]
+    if not lines:
+        return _fail("annotation", "注记内容为空")
+    from postprocess import annotation
+    position = params.get("position", (0.02, 0.95))
+    color = params.get("color", (1.0, 1.0, 1.0, 1.0))
+    size = params.get("size", 14)
+    align = params.get("align", "left")
+    dy = float(params.get("line_spacing", 0.06))
+    x0, y0 = float(position[0]), float(position[1])
+    entries = [annotation(ln, position=(x0, y0 - i * dy), color=color,
+                          size=size, align=align)
+               for i, ln in enumerate(lines)]
+    payload = {"annotations": entries, "count": len(entries)}
+    return _ok("annotation", "注记 %d 行" % len(entries), payload)
+
+
 def _op_export_csv(session, params):
     path = params.get("path")
     path = (os.path.join(session.export_dir, "post_fields.csv")
@@ -620,6 +670,7 @@ _OP_HANDLERS = {
     "glyphs": _op_glyphs, "probe": _op_probe, "line": _op_line,
     "plane": _op_plane, "iso_volume": _op_iso_volume, "xy": _op_xy,
     "histogram": _op_histogram, "colorbar": _op_colorbar, "legend": _op_legend,
+    "annotation": _op_annotation,
     "export_csv": _op_export_csv, "export_ensight": _op_export_ensight,
     "export_cgns": _op_export_cgns, "animate": _op_animate,
 }
@@ -640,7 +691,7 @@ def run_action(session, key, **params):
     if spec is None:
         return _fail(None, "未知后处理动作：%r" % (key,))
     op = spec["op"]
-    if session is None or not session.available():
+    if session is None or (op != "annotation" and not session.available()):
         return _fail(op, "后处理不可用：请加载四面体网格或用 FVM/压力求解器")
     handler = _OP_HANDLERS.get(op)
     if handler is None:

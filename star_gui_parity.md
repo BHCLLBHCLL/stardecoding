@@ -32,7 +32,7 @@
 | 场景>（本客户端保留，官方在 Vis 工具栏） | view |
 | 求解/连接 | disabled（Run/Pause/Step/Stop 与 Server 均 `setEnabled(False)`，测试锁定） |
 | 工具>诊断/选项 | view / session |
-| 后处理>（Post，绘图之后） | view（`star_gui_postprocess.py` 纯逻辑桥 + `star_gui.py` `cmd_post_action`：19 个 `Post>*` 动作 → 视口标量着色（`_render_post_color`）/ 等值面·剖面·裁剪·阈值·镜像三角面（`_render_post_geometry` → `Star3DViewport.add_actors`）/ 矢量符号线元（`_render_post_glyphs`）/ 探针球体·线取样折线·面取样网格曲面·等值体积外表面（`_render_post_probe`/`_render_post_line`/`_render_post_plane` + `iso_volume` 复用 `_render_post_geometry`）/ XY·直方图曲线（`_render_post_series` → `PlotPane.canvas.set_series`）/ Colorbar·Legend 2D 叠加（`_render_post_colorbar`/`_render_post_legend` → `Star3DViewport.set_overlay2d`，`vtkScalarBarActor`/`vtkLegendBoxActor` 经 `AddActor2D` 隔离出 3D `actors` 避免扰动 `bounds_of`/`_apply_rep`）/ `Post>Animate` 前置拦截 → `_cmd_post_animate` 帧序列离屏渲染；场来源 `resolve_fv` 三路径 + 默认求解器节点场补入；无 FVM/无场诚实降级） |
+| 后处理>（Post，绘图之后） | view（`star_gui_postprocess.py` 纯逻辑桥 + `star_gui.py` `cmd_post_action`：20 个 `Post>*` 动作 → 视口标量着色（`_render_post_color`）/ 等值面·剖面·裁剪·阈值·镜像三角面（`_render_post_geometry` → `Star3DViewport.add_actors`）/ 矢量符号线元（`_render_post_glyphs`）/ 探针球体·线取样折线·面取样网格曲面·等值体积外表面（`_render_post_probe`/`_render_post_line`/`_render_post_plane` + `iso_volume` 复用 `_render_post_geometry`）/ XY·直方图曲线（`_render_post_series` → `PlotPane.canvas.set_series`）/ Colorbar·Legend·Annotation 2D 叠加（`_render_post_colorbar`/`_render_post_legend`/`_render_post_annotation` → `Star3DViewport.set_overlay2d`，`vtkScalarBarActor`/`vtkLegendBoxActor`/`vtkTextActor`（`text_actor`，注记逐行下移、无 FVM 亦可经 `overlay_keys` 清陈旧行）经 `AddActor2D` 隔离出 3D `actors` 避免扰动 `bounds_of`/`_apply_rep`）/ `Post>Animate` 前置拦截 → `_cmd_post_animate` 帧序列离屏渲染；场来源 `resolve_fv` 三路径 + 默认求解器节点场补入；无 FVM/无场诚实降级） |
 | 窗口>树/属性/输出/绘图/CAD | view（checkable 开关） |
 | 帮助>帮助内容/文档目录/许可信息/关于 | view（X3：`star_gui_help.py` 解析 `doc_javadoc_catalog.md`（55 个 star.* 包总览 + 18 章节详解）并联动词义字典 `layer_of`/`LAYER_CN`/`resolve_class`；`HelpWindow`（`star_gui_helpwin.py`）检索框 + 主题列表 + 文本浏览。`cmd_help_contents`（F1）按仿真树选中对象 `ClassName` 给出**上下文语义帮助**（现名/包作用/语义层/相关条目），`cmd_help_documentation` 打开文档目录、`cmd_help_licensing` 弹诚实许可声明，`cmd_about` 复用 `about_text()`） |
 
@@ -66,7 +66,7 @@
 | 编辑：复制/粘贴/选择历史 | persist / session（选择历史 session） |
 | 网格生成：导入/修复/生成 | 导入 persist；修复 needs_kernel；生成 macro（同上宏桥） |
 | 求解 | session/persist（Run/Pause/Step/Stop + 控制器 + 残差实时曲线，P10） |
-| Vis：适配/视图/透明/网格开闭/派生零件/标量着色 | view + session；标量着色在**点数或面数吻合**的一维数组上生效（`cmd_scalar_color`），无候选数组时禁用并说明；V 波后处理的 19 个动作经**「后处理>」菜单**暴露（菜单驱动，未重复加入工具栏——与官方 displayer 由场景树/菜单创建一致；工具栏级仅保留已有的派生零件/标量着色按钮） |
+| Vis：适配/视图/透明/网格开闭/派生零件/标量着色 | view + session；标量着色在**点数或面数吻合**的一维数组上生效（`cmd_scalar_color`），无候选数组时禁用并说明；V 波后处理的 20 个动作经**「后处理>」菜单**暴露（菜单驱动，未重复加入工具栏——与官方 displayer 由场景树/菜单创建一致；工具栏级仅保留已有的派生零件/标量着色按钮） |
 | 选择：框选缩放 / 测距 / Parts 过滤器 | 框选=VTK rubber band 真实现；测距=两点真实现；Parts 过滤器=勾选 Part/PartSurface → `Collector.Keys` persist |
 | 3D-CAD | session 外壳（模式切换 + 三角化变换/显隐）；草图/拉伸/旋转/放样/管道（OCC 构造算子 `occ_builder.py`）+ 布尔/圆角/倒角/抽壳/阵列/镜像（OCC 编辑算子 `occ_edit.py`）+ 表面修复（hole fill/coarse/fine/质量指标 `occ_repair.py`）+ 表面包裹（收缩包裹/局部加密/特征捕捉 `occ_wrap.py`），产物三角化入图可显示、落 STEP/IGES/BREP |
 
