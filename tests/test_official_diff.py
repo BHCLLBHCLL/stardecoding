@@ -130,6 +130,36 @@ def test_corpus_official_reference():
     assert ref["residual"]["final"] < 1e-8
 
 
+# ---------------------------------------------------------------- 同工况结构化网格（自研瞬态用）
+def test_channel_tet_mesh_ogrid_volume_and_orientation():
+    m = od.channel_tet_mesh(0.04, n_theta=24, n_r=4)
+    assert m["ok"] and m["n_cells"] == 6 * 24 * 4
+    assert m["n_negative"] == 0 and m["quality_proxy"]["min_vol"] > 0
+    assert abs(m["volume"] / m["volume_exact"] - 1.0) < 0.05
+
+
+def test_channel_tet_mesh_cartesian_staircase():
+    m = od.channel_tet_mesh_cartesian(0.04, length_D=16.0, height_D=8.0,
+                                      thickness_D=0.5, h_factor=4.0)
+    assert m["ok"] and m["n_cells"] == 6 * m["n_hex"] and m["n_negative"] == 0
+    assert abs(m["volume"] / m["volume_exact"] - 1.0) < 0.005
+    assert m["h"] == pytest.approx(0.01) and m["blockage"] == pytest.approx(0.125)
+    assert m["stair_deviation"] == pytest.approx(0.005)
+    assert m["n_blocked"] > 0
+
+
+# ---------------------------------------------------------------- 实跑结论（离线段）
+def test_diff_metrics_flags_unresolved_shedding():
+    # 本轮实跑结论：粗网格 + 一阶上风在 Re=200 数值耗散抑制涡脱 → Cl 振幅 0.0043（官方 0.2805）
+    ours = {"st": None, "amplitude": 0.004257940242640512, "mean": 0.0010791142265866736}
+    ref = {"strouhal": {"st": 0.1752, "amplitude": 0.2805}}
+    d = od.diff_metrics(ours, ref)
+    assert d["items"]["strouhal"]["ok"] is None          # 无自研 St → 不假装比对
+    assert d["items"]["amplitude"]["ok"] is False         # 振幅比 0.015 → 带外
+    assert d["items"]["amplitude"]["ratio"] < 0.05
+    assert d["items"]["mean_lift"]["ok"] is True          # 无升力体平均升力≈0
+
+
 def test_run_case_requires_long_flag():
     os.environ.pop("STARDECODING_LONG", None)
     out = od.run_case(D=0.04, u_inf=0.05, steps=4)

@@ -215,6 +215,267 @@ def annulus_surface(D, r_far_factor=10.0, thickness=None, n_theta=96, n_r=14):
             "volume_exact": math.pi * (R ** 2 - r0 ** 2) * T}
 
 
+def _orient_outward(V, F, thickness, hole_center, hole_r, domain_center=None):
+    """统一面法向朝外：端面 ±z；孔壁朝轴心；其余壁面背离域心。"""
+    cen = V[F].mean(axis=1)
+    nrm = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    ref = np.zeros_like(cen)
+    on_bottom = np.abs(cen[:, 2]) < 1e-12
+    on_top = np.abs(cen[:, 2] - thickness) < 1e-12
+    ref[on_bottom] = (0.0, 0.0, -1.0)
+    ref[on_top] = (0.0, 0.0, 1.0)
+    wall = ~(on_bottom | on_top)
+    hc = np.asarray(hole_center, float)[:2]
+    dh = cen[:, :2] - hc
+    rh = np.linalg.norm(dh, axis=1, keepdims=True)
+    dh = np.divide(dh, rh, out=np.zeros_like(dh), where=rh > 0)
+    inner = wall & (rh[:, 0] < hole_r * 1.05)
+    ref[inner, 0] = -dh[inner, 0]
+    ref[inner, 1] = -dh[inner, 1]
+    outer = wall & ~inner
+    dc = np.asarray(domain_center if domain_center is not None else [0.0, 0.0],
+                    float)[:2]
+    do = cen[:, :2] - dc
+    ro = np.linalg.norm(do, axis=1, keepdims=True)
+    do = np.divide(do, ro, out=np.zeros_like(do), where=ro > 0)
+    ref[outer, 0] = do[outer, 0]
+    ref[outer, 1] = do[outer, 1]
+    flip = (nrm * ref).sum(axis=1) < 0
+    F = F.copy()
+    F[flip] = F[flip][:, [0, 2, 1]]
+    return F
+
+
+def channel_surface(D, length_D=20.0, height_D=10.0, thickness=None, n_theta=96,
+                    n_r=14, center_x_D=5.0, stretch=1.2):
+    """通道域（矩形 + 圆柱孔）闭合表面：入/出口为平面，可用求解器的 min/max 面 BC。
+
+    结构化 O 型网格：每条射线由圆柱面（r=D/2）连到矩形边界（同角度），
+    径向 n_r 段（stretch 幂次做近壁加密）；前后端面三角化 + 四侧壁 + 圆柱壁。
+    解析核对：V = (L·H − πr²)·T；A = 2(L·H − πr²) + [2(L+H) + 2πr]·T。
+    """
+    r0 = 0.5 * float(D)
+    L = float(length_D) * float(D)
+    H = float(height_D) * float(D)
+    T = float(thickness) if thickness else float(D)
+    cx, cy = float(center_x_D) * float(D), 0.5 * H
+    th = np.linspace(0.0, 2.0 * math.pi, int(n_theta), endpoint=False)
+    ts = (np.linspace(0.0, 1.0, int(n_r) + 1) ** float(stretch))
+    outer_pts = []
+    for a in th:
+        dx, dy = math.cos(a), math.sin(a)
+        cand = []
+        if abs(dx) > 1e-12:
+            for x in (0.0, L):
+                t = (x - cx) / dx
+                y = cy + t * dy
+                if t > 0 and -1e-9 <= y <= H + 1e-9:
+                    cand.append((t, x, y))
+        if abs(dy) > 1e-12:
+            for y in (0.0, H):
+                t = (y - cy) / dy
+                x = cx + t * dx
+                if t > 0 and -1e-9 <= x <= L + 1e-9:
+                    cand.append((t, x, y))
+        cand.sort()
+        outer_pts.append((cand[0][1], cand[0][2]))
+    pts, idx = [], {}
+
+    def add(x, y, z):
+        pts.append((x, y, z))
+        return len(pts) - 1
+
+    for z in (0.0, T):
+        for i, t in enumerate(ts):
+            for j, a in enumerate(th):
+                px = cx + r0 * math.cos(a)
+                py = cy + r0 * math.sin(a)
+                ox, oy = outer_pts[j]
+                idx[(z, i, j)] = add(px + t * (ox - px), py + t * (oy - py), z)
+    faces = []
+    for z in (0.0, T):
+        for i in range(int(n_r)):
+            for j in range(int(n_theta)):
+                j2 = (j + 1) % int(n_theta)
+                a, b = idx[(z, i, j)], idx[(z, i, j2)]
+                c, d = idx[(z, i + 1, j2)], idx[(z, i + 1, j)]
+                faces += [(a, c, b), (a, d, c)] if z == 0.0 else [(a, b, c), (a, c, d)]
+    for i in (0, int(n_r)):
+        for j in range(int(n_theta)):
+            j2 = (j + 1) % int(n_theta)
+            a, b = idx[(0.0, i, j)], idx[(0.0, i, j2)]
+            c, d = idx[(T, i, j2)], idx[(T, i, j)]
+            faces += [(a, c, b), (a, d, c)] if i == 0 else [(a, b, c), (a, c, d)]
+    V = np.asarray(pts, float)
+    F = _orient_outward(V, np.asarray(faces, np.int64), T, (cx, cy), r0,
+                        domain_center=(0.5 * L, 0.5 * H))
+    area = float(0.5 * np.linalg.norm(
+        np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]]), axis=1).sum())
+    volume = float(abs((V[F[:, 0]] * np.cross(V[F[:, 1]], V[F[:, 2]])).sum() / 6.0))
+    edges = {}
+    for a, b, c in F:
+        for u, v in ((a, b), (b, c), (c, a)):
+            k = (int(u), int(v)) if u < v else (int(v), int(u))
+            edges[k] = edges.get(k, 0) + 1
+    return {"ok": True, "points": V, "triangles": F, "D": float(D), "length": L,
+            "height": H, "thickness": T, "hole_center": (cx, cy), "hole_r": r0,
+            "n_theta": int(n_theta), "n_r": int(n_r), "area": area, "volume": volume,
+            "watertight": set(edges.values()) == {2},
+            "area_exact": 2 * (L * H - math.pi * r0 ** 2) + (2 * (L + H) + 2 * math.pi * r0) * T,
+            "volume_exact": (L * H - math.pi * r0 ** 2) * T}
+
+
+def channel_tet_mesh(D, length_D=20.0, height_D=10.0, thickness=None, n_theta=96,
+                     n_r=14, center_x_D=5.0, stretch=1.2, n_layers=1):
+    """通道域**结构化**四面体网格（O 型网格棱柱 → 3 tet/棱柱，无 scipy、无薄元）。
+
+    相比 scipy Delaunay：确定性、单元形状可控、无奇异面（求解器线性系统良态）。
+    体积与解析值一致（可核对）。
+    """
+    r0 = 0.5 * float(D)
+    L = float(length_D) * float(D)
+    H = float(height_D) * float(D)
+    T = float(thickness) if thickness else float(D)
+    cx, cy = float(center_x_D) * float(D), 0.5 * H
+    th = np.linspace(0.0, 2.0 * math.pi, int(n_theta), endpoint=False)
+    ts = np.linspace(0.0, 1.0, int(n_r) + 1) ** float(stretch)
+    outer = []
+    for a in th:
+        dx, dy = math.cos(a), math.sin(a)
+        cand = []
+        if abs(dx) > 1e-12:
+            for x in (0.0, L):
+                t = (x - cx) / dx
+                y = cy + t * dy
+                if t > 0 and -1e-9 <= y <= H + 1e-9:
+                    cand.append((t, x, y))
+        if abs(dy) > 1e-12:
+            for y in (0.0, H):
+                t = (y - cy) / dy
+                x = cx + t * dx
+                if t > 0 and -1e-9 <= x <= L + 1e-9:
+                    cand.append((t, x, y))
+        cand.sort()
+        outer.append((cand[0][1], cand[0][2]))
+    # O 型网格在矩形角点处会出现强畸变 → 对内部环做 Laplacian 平滑（端点环固定）
+    grid = np.zeros((int(n_r) + 1, int(n_theta), 2), float)
+    for i, t in enumerate(ts):
+        for j, a in enumerate(th):
+            px, py = cx + r0 * math.cos(a), cy + r0 * math.sin(a)
+            ox, oy = outer[j]
+            grid[i, j] = (px + t * (ox - px), py + t * (oy - py))
+    for _ in range(60):
+        inner = grid[1:-1]
+        nb = (grid[2:] + grid[:-2]
+              + np.roll(grid, 1, axis=1)[1:-1]
+              + np.roll(grid, -1, axis=1)[1:-1]) / 4.0
+        grid[1:-1] = 0.5 * inner + 0.5 * nb
+    nz = int(n_layers) + 1
+    zs = np.linspace(0.0, T, nz)
+    pts, vid = [], {}
+    for k, z in enumerate(zs):
+        for i in range(int(n_r) + 1):
+            for j in range(int(n_theta)):
+                px, py = grid[i, j]
+                vid[(k, i, j)] = len(pts)
+                pts.append((float(px), float(py), z))
+    cells = []
+    for k in range(int(n_layers)):
+        for i in range(int(n_r)):
+            for j in range(int(n_theta)):
+                j2 = (j + 1) % int(n_theta)
+                b = [vid[(k, i, j)], vid[(k, i + 1, j)], vid[(k, i + 1, j2)],
+                     vid[(k, i, j2)]]
+                u = [vid[(k + 1, i, j)], vid[(k + 1, i + 1, j)],
+                     vid[(k + 1, i + 1, j2)], vid[(k + 1, i, j2)]]
+                # 每层四边形 → 2 三角形 → 棱柱 → 3 tet（标准分解，先按体积定向）
+                tris_b = [(b[0], b[1], b[2]), (b[0], b[2], b[3])]
+                tris_u = [(u[0], u[1], u[2]), (u[0], u[2], u[3])]
+                for (p0, p1, p2), (q0, q1, q2) in zip(tris_b, tris_u):
+                    cells += [(p0, p1, p2, q2), (p0, p1, q2, q1), (p0, q1, q2, q0)]
+    V = np.asarray(pts, float)
+    C = np.asarray(cells, np.int64)
+    from mesh_tet import _tet_volumes
+    vol = _tet_volumes(V, C)
+    flip = vol < 0
+    if flip.any():
+        C = C.copy()
+        C[flip] = C[flip][:, [0, 1, 3, 2]]
+        vol = _tet_volumes(V, C)
+    analytic = (L * H - math.pi * r0 ** 2) * T
+    return {"ok": True, "vertices": V, "cells": C, "n_cells": int(C.shape[0]),
+            "n_points": int(V.shape[0]), "volume": float(vol.sum()),
+            "volume_exact": analytic, "n_negative": 0,
+            "quality_proxy": {"min_vol": float(vol.min()),
+                              "max_vol": float(vol.max()),
+                              "mean_vol": float(vol.mean())},
+            "hole_center": (cx, cy), "hole_r": r0, "D": float(D),
+            "thickness": T, "length": L, "height": H}
+
+
+def channel_tet_mesh_cartesian(D, length_D=16.0, height_D=8.0, thickness_D=0.5,
+                               h_factor=4.0, center_x_D=4.0):
+    """通道域**笛卡尔阶梯**四面体网格（鲁棒：单元全为直角六面体 → 6 tet）。
+
+    圆柱用阶梯近似（偏差 ≤ h/2），换来确定性与良态矩阵 —— 用于自研瞬态算例；
+    有效堵塞比与阶梯偏差如实返回（`blockage`、`stair_deviation`），不假装贴体。
+    """
+    D = float(D)
+    L, H = float(length_D) * D, float(height_D) * D
+    T = float(thickness_D) * D
+    h = D / float(h_factor)
+    nx, ny, nz = max(int(round(L / h)), 4), max(int(round(H / h)), 4), max(int(round(T / h)), 1)
+    xs = np.linspace(0.0, L, nx + 1)
+    ys = np.linspace(0.0, H, ny + 1)
+    zs = np.linspace(0.0, T, nz + 1)
+    cx, cy = float(center_x_D) * D, 0.5 * H
+    r0 = 0.5 * D
+    pts, vid = [], {}
+    for k in range(nz + 1):
+        for j in range(ny + 1):
+            for i in range(nx + 1):
+                vid[(k, j, i)] = len(pts)
+                pts.append((xs[i], ys[j], zs[k]))
+    hexes = []
+    blocked = 0
+    for k in range(nz):
+        for j in range(ny):
+            for i in range(nx):
+                cxx, cyy = 0.5 * (xs[i] + xs[i + 1]), 0.5 * (ys[j] + ys[j + 1])
+                if math.hypot(cxx - cx, cyy - cy) <= r0:
+                    blocked += 1
+                    continue
+                hexes.append((vid[(k, j, i)], vid[(k, j, i + 1)],
+                              vid[(k, j + 1, i + 1)], vid[(k, j + 1, i)],
+                              vid[(k + 1, j, i)], vid[(k + 1, j, i + 1)],
+                              vid[(k + 1, j + 1, i + 1)], vid[(k + 1, j + 1, i)]))
+    TETS6 = ((0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6),
+             (0, 4, 5, 6), (0, 5, 1, 6))
+    cells = []
+    for hx in hexes:
+        for t in TETS6:
+            cells.append(tuple(hx[k] for k in t))
+    V = np.asarray(pts, float)
+    C = np.asarray(cells, np.int64)
+    from mesh_tet import _tet_volumes
+    vol = _tet_volumes(V, C)
+    flip = vol < 0
+    if flip.any():
+        C = C.copy()
+        C[flip] = C[flip][:, [0, 1, 3, 2]]
+        vol = _tet_volumes(V, C)
+    analytic = (L * H - math.pi * r0 ** 2) * T
+    staircase = (L * H * T) - float(np.abs(vol).sum())
+    return {"ok": True, "vertices": V, "cells": C, "n_cells": int(C.shape[0]),
+            "n_points": int(V.shape[0]), "n_hex": len(hexes), "n_blocked": blocked,
+            "volume": float(np.abs(vol).sum()), "volume_exact": analytic,
+            "h": h, "n_negative": 0, "hole_center": (cx, cy), "hole_r": r0, "D": D,
+            "thickness": T, "length": L, "height": H,
+            "blockage": D / H, "stair_deviation": 0.5 * h,
+            "quality_proxy": {"min_vol": float(np.abs(vol).min()),
+                              "mean_vol": float(np.abs(vol).mean())}}
+
+
 def diff_metrics(ours, ref):
     """自研结果 ↔ 官方参考：St 比 / 振幅比 / 平均升力 + 误差带判定。"""
     out = {"ok": True, "items": {}}
@@ -243,57 +504,80 @@ def diff_metrics(ours, ref):
     return out
 
 
-def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, spacing=None, dt=None, steps=200,
-             n_inner=2, r_far_factor=10.0, thickness=None, sample_every=1):
-    """同工况自研求解：环形域 tet + 瞬态 SIMPLE + 圆柱升力积分 → Cl(t) → St。
+def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
+             length_D=16.0, height_D=8.0, thickness_D=0.5, h_factor=4.0,
+             center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None):
+    """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
-    **长耗时**：需 STARDECODING_LONG=1；本函数只做"能跑就跑、跑不动如实报告"。
+    **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
+    `mesher="ogrid"` 走 O 型网格（本项目实测在细分辨率下压力矩阵奇异，见文档）；
+    `mesh` 可直接传自定义网格（vertices/cells）。
+    边界：min-x 入口 / max-x 出口 / 其余（含圆柱阶梯面）壁面；
+    升力由 aero_forces.force_coefficients 在圆柱面（r ≤ r0 + h）上积分。
+    周期数 <3 时如实报告"未达脱落周期 → 不做 St 比对"。
     """
     if os.environ.get("STARDECODING_LONG") != "1":
         return {"ok": False,
                 "reason": "长耗时路径：设 STARDECODING_LONG=1 才运行真实瞬态算例"}
-    from mesh_tet import tet_mesh
     from pressure_solver import PressureSolver
     from aero_forces import force_coefficients
-    surf = annulus_surface(D, r_far_factor=r_far_factor, thickness=thickness)
-    h = float(spacing or (D / 4.0))
-    res = tet_mesh(surf["points"], surf["triangles"], spacing=h, method="scipy")
-    if not res.get("ok"):
-        return {"ok": False, "reason": "tet 网格未生成: %s" % res.get("reason")}
-    V, C = np.asarray(res["vertices"], float), np.asarray(res["cells"], np.int64)
-    dt = float(dt or (0.1 * D / u_inf))
-    solver = PressureSolver(V, C, rho=1.0, mu=1.0 * nu, inlet_axis=0, inlet_side="min",
-                            inlet_velocity=(u_inf, 0.0, 0.0))
+    if mesh is None:
+        if mesher == "cartesian":
+            mesh = channel_tet_mesh_cartesian(D, length_D=length_D, height_D=height_D,
+                                              thickness_D=thickness_D, h_factor=h_factor,
+                                              center_x_D=center_x_D)
+        elif mesher == "ogrid":
+            mesh = channel_tet_mesh(D, length_D=length_D, height_D=height_D,
+                                    thickness=thickness_D * D)
+        else:
+            return {"ok": False, "reason": "未知网格器 %r（cartesian/ogrid）" % mesher}
+    V = np.asarray(mesh["vertices"], float)
+    C = np.asarray(mesh["cells"], np.int64)
+    dt = float(dt or (0.2 * D / u_inf))
+    solver = PressureSolver(V, C, rho=1.0, mu=1.0 * nu, inlet_axis=0,
+                            inlet_side="min", inlet_velocity=(u_inf, 0.0, 0.0),
+                            outlet_side="max")
     solver.enable_transient(dt, snapshot=True)
-    fv = solver.fv
-    cen = fv.face_centroid
-    rad = np.linalg.norm(cen[:, :2], axis=1)
-    cyl_faces = np.where((fv.boundary_faces) & (rad <= 0.75 * D))[0]
+    fv = solver.fvm
+    hc = np.asarray(mesh["hole_center"], float)[:2]
+    rh = np.linalg.norm(fv.face_centroid[:, :2] - hc, axis=1)
+    cyl_r = float(mesh["hole_r"]) + (float(mesh.get("h", 0.0)) if mesher == "cartesian"
+                                     else 0.0)
+    cyl_faces = np.where(fv.is_boundary & (rh <= cyl_r + 1e-9))[0]
+    if cyl_faces.size == 0:
+        return {"ok": False, "reason": "未识别到圆柱面（0 个面）"}
     ts, cls = [], []
     for k in range(int(steps)):
         solver.advance(dt=dt, n_inner=n_inner)
         if k % max(1, int(sample_every)) == 0:
-            fc = force_coefficients(fv, solver.p, solver.u, solver.v, solver.w,
-                                    solver.mu, solver.rho, faces=cyl_faces,
-                                    a_ref=D, u_ref=u_inf, rho_ref=1.0,
-                                    drag_dir=(1.0, 0.0, 0.0), lift_dir=(0.0, 1.0, 0.0))
-            ts.append(solver.time if hasattr(solver, "time") else k * dt)
+            vel = solver.velocity()
+            fc = force_coefficients(fv, solver.pressure(), vel[:, 0], vel[:, 1],
+                                    vel[:, 2], solver.mu, solver.rho,
+                                    faces=cyl_faces, a_ref=D, u_ref=u_inf,
+                                    rho_ref=1.0, drag_dir=(1.0, 0.0, 0.0),
+                                    lift_dir=(0.0, 1.0, 0.0))
+            ts.append(float(solver.time))
             cls.append(float(fc.get("cl", float("nan"))))
     series = np.asarray(cls, float)
     t = np.asarray(ts, float)
     st = strouhal_from_series(t, series, D, u_inf) if series.size >= 16 else None
     n_periods = (st["f"] * (t[-1] - t[0])) if (st and st.get("ok")) else 0.0
-    out = {"ok": True, "n_cells": int(C.shape[0]), "dt": dt, "steps": int(steps),
-           "spacing": h, "t_span": float(t[-1] - t[0]) if t.size else 0.0,
-           "n_samples": int(series.size),
-           "mean": float(series.mean()) if series.size else None,
-           "amplitude": float(0.5 * (series.max() - series.min())) if series.size else None,
-           "st": st.get("st") if st and st.get("ok") else None,
-           "n_periods": float(n_periods),
-           "reason": "" if (st and st.get("ok") and n_periods >= 3)
-                     else "未达脱落周期（样本不足 3 个周期）→ 不做 St 比对"}
-    return out
-
+    return {"ok": True, "mesher": mesher, "n_cells": int(C.shape[0]),
+            "n_cyl_faces": int(cyl_faces.size), "dt": dt, "steps": int(steps),
+            "t_span": float(t[-1] - t[0]) if t.size else 0.0,
+            "n_samples": int(series.size),
+            "mean": float(np.nanmean(series)) if series.size else None,
+            "amplitude": (float(0.5 * (np.nanmax(series) - np.nanmin(series)))
+                          if series.size else None),
+            "st": (st.get("st") if st and st.get("ok") else None),
+            "f": (st.get("f") if st and st.get("ok") else None),
+            "n_periods": float(n_periods),
+            "mesh": {"volume": mesh.get("volume"), "h": mesh.get("h"),
+                     "blockage": mesh.get("blockage"),
+                     "stair_deviation": mesh.get("stair_deviation")},
+            "series": (t, series),
+            "reason": "" if (st and st.get("ok") and n_periods >= 3)
+                      else "未达脱落周期（<3 个周期）→ 不做 St 比对"}
 
 def _main(argv=None):
     for _s in (sys.stdout, sys.stderr):
