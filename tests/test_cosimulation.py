@@ -21,9 +21,9 @@ sys.path.insert(0, ROOT)
 import pytest  # noqa: E402
 
 from cosimulation import (  # noqa: E402
-    CONCURRENCY_MODES, CONNECTION_METHODS, COSIM_TYPES, LAUNCH_OPTIONS,
-    PROFILE_METHODS, URF_STRATEGIES, CoSimZone, CoSimulationLink, _main,
-    extract_cosimulation, make_link, render_macro, resolve_profile_method,
+    CONCURRENCY_MODES, CONNECTION_METHODS, COSIM_TYPES, JAVADOC_ROOT, LAUNCH_OPTIONS,
+    PROFILE_METHODS, URF_STRATEGIES, VERIFIED_METHODS, CoSimZone, CoSimulationLink,
+    _main, extract_cosimulation, make_link, render_macro, resolve_profile_method,
     resolve_type, template, type_defaults,
 )
 
@@ -227,13 +227,30 @@ def test_corpus_has_no_cosim_link():
 
 
 # ---------------------------------------------------------------- 宏 / CLI
-def test_render_macro_best_effort_marker():
+def test_render_macro_uses_only_verified_signatures():
     text = render_macro(good_link())
-    assert "[best-effort]" in text and "AmesimCoSimulationType" in text
-    assert 'createCoSimulation("amesim")' in text
-    assert "CoSimHeatFluxProfileMethod" not in text
+    # 头部声明与 Javadoc 路径
+    assert "[verified-signatures]" in text and JAVADOC_ROOT in text
+    assert "AmesimCoSimulationType" in text
+    # 只出现官方 Javadoc 核对过的方法
+    for verified in ("getCoSimulations()", "getCoSimulationZoneManager()",
+                     "createEmptyCoSimulationZone()", "getCoSimulationValues()",
+                     "isSolverStarted()", "getCoSimulationZoneValues()"):
+        assert verified.replace("()", "(") in text or verified in text
+    # 首版编造的 API 必须消失
+    assert "createCoSimulation(" not in text
+    assert "// TODO" in text                      # 写侧缺口显式标注
     assert "区域 valve" in text and "CoSimPressureProfileMethod" in text
     assert text.rstrip().endswith("}")
+
+
+def test_verified_methods_table_matches_javadoc():
+    for cls, methods in VERIFIED_METHODS.items():
+        assert methods, cls
+        for m in methods:
+            assert m.endswith("()") and m[0].islower(), m
+    assert "createEmptyCoSimulationZone()" in VERIFIED_METHODS["CoSimulationZoneManager"]
+    assert "getCoSimulations()" in VERIFIED_METHODS["CoSimulationManager"]
 
 
 def test_cli_template_and_validate():

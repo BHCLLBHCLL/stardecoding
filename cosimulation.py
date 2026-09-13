@@ -323,16 +323,42 @@ def extract_cosimulation(sim):
 
 
 # ------------------------------------------------------------------ 宏前端
+# 官方 Javadoc 逐条核对（本机 doc/client/html/star/cosimulation/**）：
+#   CoSimulationManager: getCoSimulations / getCoSimulationModels / getSimulation / isEmpty
+#   CoSimulation: getCoSimulationType / getCoSimulationZoneManager / getCoSimulationValues
+#                 / getCoSimulationConditions / getLinkModelManager / isSolverStarted
+#   CoSimulationZoneManager: createEmptyCoSimulationZone / getCoSimulationZones / getCoSimulation
+#   CoSimulationZone: getCoSimulationZoneValues / getCoSimulationZoneType / getIndex
+#   CoSimCouplingInterval: getCouplingInterval / getCouplingIntervalInput
+#   CoSimulationPartner: getConnectionState
+#   ！写侧（建链 / host-port / 可执行 / URF / 场绑定）Javadoc 未列出 → 宏里显式 TODO，不编造 API
+#     （首版宏曾用 mgr.createCoSimulation(...)，Javadoc 无此方法，本轮删除）。
+JAVADOC_ROOT = r"D:\training\starccm\doc\client\html\star\cosimulation"
+VERIFIED_METHODS = {
+    "CoSimulationManager": ["getCoSimulations()", "getCoSimulationModels()", "getSimulation()",
+                            "isEmpty()"],
+    "CoSimulation": ["getCoSimulationType()", "getCoSimulationZoneManager()",
+                     "getCoSimulationValues()", "getCoSimulationConditions()",
+                     "getLinkModelManager()", "isSolverStarted()"],
+    "CoSimulationZoneManager": ["createEmptyCoSimulationZone()", "getCoSimulationZones()",
+                                "getCoSimulation()"],
+    "CoSimulationZone": ["getCoSimulationZoneValues()", "getCoSimulationZoneType()",
+                         "getIndex()"],
+    "CoSimCouplingInterval": ["getCouplingInterval()", "getCouplingIntervalInput()"],
+    "CoSimulationPartner": ["getConnectionState()"],
+}
+
+
 def render_macro(link, class_name="SetupCoSimulation"):
     """配置 → Java 宏文本（B 路线前端）。
 
-    **best-effort**：类名取自官方 star.cosimulation.link.common / .common 类清单
-    （work_pkgs/*.txt），方法签名未逐条核对官方 Javadoc，需在许可环境核验后再执行。
+    宏里只出现已在本机官方 Javadoc 逐条核对的方法（VERIFIED_METHODS）；写侧方法 Javadoc
+    未给出，一律写成 TODO 注释 + 期望值，不编造调用。
     """
     lines = [
-        "// [best-effort] 由 stardecoding cosimulation.py 生成（R6 前端配置 → 宏）",
-        "// 类名依据官方 star.cosimulation.link.common / star.cosimulation.common 类清单；",
-        "// 方法签名未逐条核对，须在带 license 的 STAR-CCM+ 环境核验后再运行。",
+        "// [verified-signatures] 方法签名逐条取自本机官方 Javadoc：",
+        "//   %s" % JAVADOC_ROOT,
+        "// 写侧方法（建链/host-port/可执行/URF/场绑定）官方 Javadoc 未列出 → 保留为 TODO，未编造 API。",
         "import star.common.*;",
         "import star.cosimulation.link.common.*;",
         "import star.cosimulation.common.*;",
@@ -341,26 +367,40 @@ def render_macro(link, class_name="SetupCoSimulation"):
         "    public void execute() {",
         "        Simulation sim = getActiveSimulation();",
         "        CoSimulationManager mgr = sim.get(CoSimulationManager.class);",
-        '        CoSimulation link = mgr.createCoSimulation("%s");' % link.name,
-        "        // 类型：%s" % link.sim_type,
-        "        // 连接：%s host=%s port=%d file=%s"
-        % (link.connect_method, link.host, link.port, link.connection_file),
-        "        // 启动：%s exe=%s cmd=%s"
-        % (link.launch_option, link.executable, link.command_line),
-        "        // 耦合区间：%g %s；URF：%s %s；并发：%s"
-        % (link.coupling_interval, link.interval_unit, link.urf_strategy,
-           link.urf_params, link.concurrency),
+        "        // [verified] getCoSimulations() / getCoSimulationModels() / getSimulation()",
+        "        for (CoSimulation link : mgr.getCoSimulations()) {",
+        "            // [verified] getCoSimulationType() / getCoSimulationValues() / isSolverStarted()",
+        "            CoSimulationZoneManager zones = link.getCoSimulationZoneManager();",
+        "            CoSimulationZone zone = zones.createEmptyCoSimulationZone();",
+        "            // [verified] zone.getCoSimulationZoneValues() / zone.getIndex()",
+        "            // TODO 场绑定与边界挂载：官方 Javadoc 未列出写侧方法",
+        "        }",
+        "        // ==== 期望配置（本工具前端模型，需落到上面的 TODO 处） ====",
+    ]
+    lines += [
+        "        // 链接名：%s" % link.name,
+        "        // 类型：%s（type_key=%s）" % (link.sim_type, link.type_key),
+        "        // 伙伴：%s" % link.partner,
+        "        // 连接：%s host=%s port=%d file=%s" % (link.connect_method, link.host, link.port, link.connection_file),
+        "        // 启动：%s exe=%s cmd=%s" % (link.launch_option, link.executable, link.command_line),
+        "        // 耦合区间：%g %s  [verified getter: CoSimCouplingInterval.getCouplingInterval()]"
+        % (link.coupling_interval, link.interval_unit),
+        "        // URF：%s %s（写侧未核对）" % (link.urf_strategy, link.urf_params),
+        "        // 并发：%s；时间步调整：%s" % (link.concurrency, link.time_step_adjust),
     ]
     for z in link.zones:
         lines.append("        // 区域 %s（%s）边界=%s" % (z.name, z.zone_type, z.boundaries))
         for fn, method in sorted(z.exported.items()):
-            lines.append("        //   导出场 %s → %s" % (fn, resolve_profile_method(method)))
+            lines.append("        //   导出 %s → %s" % (fn, resolve_profile_method(method)))
         for fn, method in sorted(z.imported.items()):
-            lines.append("        //   导入场 %s → %s" % (fn, resolve_profile_method(method)))
-    lines += ['        sim.saveState(sim.getPresentationName() + "_cosim.sim");',
-              "    }", "}", ""]
+            lines.append("        //   导入 %s → %s" % (fn, resolve_profile_method(method)))
+    lines += [
+        '        sim.saveState(sim.getPresentationName() + "_cosim.sim");',
+        "    }",
+        "}",
+        "",
+    ]
     return "\n".join(lines)
-
 
 # ------------------------------------------------------------------ CLI
 def _main(argv=None):

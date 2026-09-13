@@ -3075,7 +3075,12 @@ assert any("连接文件" in p for p in _r6prob), "R6 连接文件必填"
 _r6rt = _r6.CoSimulationLink.from_json(_r6ok.to_json())
 assert _r6rt.summary() == _r6ok.summary(), "R6 JSON 往返摘要一致"
 _r6macro = _r6.render_macro(_r6ok)
-assert "[best-effort]" in _r6macro and "CoSimPressureProfileMethod" in _r6macro
+assert "[verified-signatures]" in _r6macro and _r6.JAVADOC_ROOT in _r6macro
+assert "getCoSimulations()" in _r6macro and "createEmptyCoSimulationZone()" in _r6macro
+assert "createCoSimulation(" not in _r6macro, "R6 宏不得含未核对的编造 API"
+assert "CoSimPressureProfileMethod" in _r6macro and "// TODO" in _r6macro
+assert _r6.VERIFIED_METHODS["CoSimulationZoneManager"] == [
+    "createEmptyCoSimulationZone()", "getCoSimulationZones()", "getCoSimulation()"]
 
 
 class _R6Obj(object):
@@ -3099,7 +3104,8 @@ _r6res = _r6.extract_cosimulation(_R6Sim2())
 assert _r6res["ok"] and _r6res["links"][0]["name"] == "AMESim", "R6 抽取根对象"
 
 print("R 波 R6 协同仿真链接配置前段（类型表 %d 项/别名与未知拒绝/连接-启动-耦合区间-URF-区域校验/"
-      "JSON 往返摘要一致/无对象诚实拒绝/宏前端 best-effort 标注）全通过" % len(_r6.COSIM_TYPES))
+      "JSON 往返摘要一致/无对象诚实拒绝/宏前端仅含官方 Javadoc 核对过的方法 + 写侧 TODO 标注）全通过"
+      % len(_r6.COSIM_TYPES))
 
 # --- R 波 R5：教程尺度网格对标（合成表面统计；语料对标在 tests/test_mesh_benchmark.py 独立进程跑） ---
 import mesh_benchmark as _r5
