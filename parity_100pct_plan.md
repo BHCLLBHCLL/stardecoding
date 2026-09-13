@@ -37,7 +37,7 @@
 | 12 | 求解器/运行控制 | Run/Initialize/步进/停止准则 | **L3（自验证）** | P4–P12 全谱 + P10 Run/Step/Stop 闭环 + R1 教程工况数值验收框架（`tests/test_solver_regression.py`：瞬态不变量 + 直管/台阶物理标度锚定）；**官方解数据差分（真实 NACA 翼型/圆柱/歧管）待气动几何生成器 + 官方解语料** |
 | 13 | 报告/监视器/绘图 | 报告族/XY/直方/残差 | **L2** | G6 曲线数据 + V4/V6 绘图 + F6 重建；场景内嵌绘图面板参数未解码 |
 | 14 | 场景/可视化/派生零件 | scalar/vector/streamline/iso/clip/threshold | **L2–L3** | G8 显示参数 + V1–V7 全谱 + 20 个 Post 动作接线；**V7 ✅**（官方 23 类派生零件类型表 + ClipPlane/PlaneManager 谱系发现 + 树 folder/图标接线） |
-| 15 | 数据映射插值 | interpolator | **L0** | 全缺 → 目标 R2 |
+| 15 | 数据映射插值 | interpolator | **L2** | **R2 ✅** `field_mapper.py`：跨网格重心一阶映射（`FieldMapper`/`MapperManager`/`FieldTreatment`/`locate_points`/`build_weights`/`apply_weights`）+ 一维 `TableInterpolator`（LINEAR/SPLINE）；官方 `.sim` 中 `FieldMapper` 对象的落盘读写不做（语料亦无该对象） |
 | 16 | 自动化 | Java 宏录播/脚本 API/Design Manager/伴随优化 | **L1–L2** | A1 宏录播 + A2 `star_api` + A3 DOE 已落地；A4 伴随 / A5 协同 / A6 远程 HPC 挂起（B 路线） |
 | 17 | 协同仿真/远程 HPC | 链接配置/作业提交 | **L0** | 协议私有；目标 R6 仅做配置解析前段（不依赖三方求解器） |
 | 18 | 客户端体验 | undo/搜索/单位/i18n/主题/多窗口/帮助/打包 | **L2** | X1–X4 + F0–F8 全绿（会话生命周期/多窗口跨仿真粘贴/帮助/打包脚本）；打包诚实降级（无打包器） |
@@ -49,7 +49,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 ## 1.1 12 维度完整度 / 深度汇总（第 8 批后）
 
 口径：`完整度` = L0→L2 覆盖度；`深度` = L3 数值/语义正确性（非内核域为落盘保真度）。
-八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波（R1 教程工况数值验收）✅（框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）。
+八波执行度：G/W/C/N/P/V 六波全 ✅，A1–A3 ✅（A4–A6 挂起），X1–X4 ✅；R 波 R1 ✅（教程工况数值验收框架 + 物理标度锚定，官方解差分待气动几何与官方解语料）、R2 ✅（跨网格数据映射与插值器）。
 
 | # | 维度 | 完整度 | 深度 | 代表落地 | 主要剩余缺口 |
 | --- | --- | --- | --- | --- | --- |
@@ -59,7 +59,7 @@ NameManager/校验和**（见 `function_gap_analysis.md` §2–§4）。
 | 4 | 网格内核 | 90% | 85% | N1–N6：tet/poly/trimmer/prism/extruder/thin + 控制/质量/interface/AMR；水密与体积守恒定点断言 | 教程尺度对标（R5）；interface 教程语料缺 |
 | 5 | 区域 / 边界 / 界面与对象图 | 92% | 82% | G4 体网格 22 边界/11642 面精确闭合；Region→Part→三角数 | 面网格 patch 识别仍启发式；跨 part 边界面聚合待细化 |
 | 6 | 物理 / 材料 / 模型谱系 | 88% | 80% | G7+P1：物理量/选项/嵌套组/材料链/运动参数可编辑可落盘 | 22+ 模型族未逐一解码；材料库/EOS 仅常数量级 |
-| 7 | 场函数 / 初始化 / 数据映射插值 | 75% | 70% | P2 完整表达式求值器（词法-语法-求值+插值器+张量）、P3 初始化器 | **跨网格数据映射/插值器 L0（R2）**；DerivedDataSet FileTable 仅标注不取数 |
+| 7 | 场函数 / 初始化 / 数据映射插值 | 80% | 74% | P2 完整表达式求值器（词法-语法-求值+插值器+张量）、P3 初始化器、**R2 跨网格数据映射与插值器**（`field_mapper.py`：FieldMapper/MapperManager/FieldTreatment + TableInterpolator） | DerivedDataSet FileTable 仅标注不取数；官方 `.sim` FieldMapper 对象落盘不做 |
 | 8 | 求解器内核 | 93% | 82% | P4–P12：FVM/SIMPLE/SA·k-ε·SST·LES/能量·CHT·辐射/多相 VOF·Mixture·DPM·Eulerian/燃烧/运动/可压缩；**R1**：瞬态后向欧拉时间推进 + 力系数表面积分 + 非凸域 tet 网格 | **官方解差分待气动几何 + 官方解语料**；VOF 密度差重力源受限 |
 | 9 | 求解运行控制与监视 | 95% | 85% | P10：Run/Pause/Step/Stop + 监视器/报告/停止准则/Update Events/残差实时曲线闭环 | B 路宏模板就绪但无许可实测 |
 | 10 | 后处理与场景可视化 | 95% | 88% | V1–V7 + Post 菜单 20 动作全接线；G8 官方色表/灯光/注记；CSV/EnSight/CGNS 写出；离屏动画 | 场景内嵌绘图面板参数未解码；mp4 无 ffmpeg 降级 |
@@ -175,6 +175,15 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 - **r1-5 全量回归 + 双文档门禁**：`tests/run_all.py` 63 文件全绿（`test_solver_regression.py` 11 passed 1 skipped、`test_pressure_solver.py` 28、`test_mesh_tet.py` 5）+ `self_test.py` ALL CHECKS PASSED + `batch_parse.py` 21 文件全 OK + `tests/test_mesh_index.py` 9 passed（直升机不回退）。
 
 **验收边界（诚实）**：本仓库无翼型/圆柱几何生成器，亦无官方解语料，故 R1 交付的是**误差带验收框架 + 物理标度锚定**（直管层流 Δp/壁面阻力线性标度、突缩钝体压力阻力主导、力系数归一化、瞬态质量守恒/流向发展/残差衰减）；**真实气动外形（NACA 翼型升阻力、圆柱涡脱 St、歧管三维压降）与官方 STAR-CCM+ 解数据的逐点差分尚未做**，待气动几何生成器 + 官方解数据到位后在同一 `test_solver_regression.py` 内补差分用例（长耗时用例仍标 skip 条件）。
+
+**R 波 · R2 —— 跨网格数据映射与插值器 ✅ 2026-09-13**：新增纯 numpy 模块 `field_mapper.py`（无 Qt，对齐官方 `star.cosimulation.common` 的 `FieldMapper`/`MapperManager`/`FieldTreatment`，见 `doc_javadoc_catalog.md` §15；语义层 `star.mapping`→`mapping`/数据映射）——
+- **重心定位与权重**：`locate_points`（逐目标点四面体重心定位，域外 `cells=-1`/权重全 0，多点命中共享面/棱/顶点时取**最小单元索引**保确定性）+ `build_weights`（返 `cells`/`weights`/`inside`/`n_inside`/`n_outside`/`n_points`）+ `apply_weights`（权重作用于源场：逐顶点场直用、逐单元中心场按**体积加权**折算到顶点，标量/矢量皆可）+ `nearest_cells`。
+- **`FieldMapper`**：`map_scalar`/`map_vector`（→ 目标点，载荷 `values`/`inside`/`cells`/`weights`/`n_*`/`treatment`/`field`）+ `map_to_cells`/`map_to_vertices`/`map_vector_to_cells`；权重**只依赖几何，一次构建可复用于多个场**（`set_target`/`weights`/`clear_target`）；未设目标点诚实 `ValueError`。
+- **`FieldTreatment`**：`nan`（默认保留，不伪造）/`constant`/`zero`/`nearest` 四策略，域外回退均单独计入 `n_outside`（诚实区分「插值所得」与「回退填充」）；未知策略 `ValueError`。
+- **`MapperManager`**：按名注册/检索/注销/枚举（`register`/`get`/`has`/`names`/`unregister`/`map_*`/`__len__`/`__contains__`/`__iter__`）；非 `FieldMapper` `TypeError`、缺失 `KeyError`。
+- **`TableInterpolator`**：复用 `field_fn.Table` 的 LINEAR / SPLINE（自然三次）内核（与 P2 表达式 `interpolateTable` **同一实现**，越界钳位到端点）+ `from_arrays`/`value`/`values`/`range`/`summary`；类型/列缺失/空表如实拒绝。
+- **验收**：`tests/test_field_mapper.py` **26 项全绿**；`self_test.py` R2 锚点（**R 波首个锚点段**）ALL CHECKS PASSED —— 粗 nx=2 顶点线性场 `2x+3y−z+1` → 细 nx=3 顶点 **64 点域内全命中且一阶精确复原**（err ~1e-15）、权重缓存复用与 `clear_target`、四策略（nan/zero/constant(−7)/nearest→4.375）、线性矢量场精确 `(64,3)`、MapperManager 注册-检索-注销-类型与缺失拒绝、未设目标点诚实拒绝、TableInterpolator LINEAR 钳位 与 自然三次样条 `0.5→0.3125`。
+- **诚实边界**：源网格为四面体（`FVM`），故跨网格插值为**一阶重心线性**（非高阶/守恒型映射，未做积分守恒与截断误差控制）；官方 `.sim` 中 `FieldMapper` 对象的落盘读写不做（三份语料 grep 无该对象），只提供与官方同一命名空间的计算内核；不新增 scipy 依赖（范数走 `solver_run._safe_norm`）。
 
 ## 8. V 波 —— 后处理深度（依赖 G5 或 P10 的解场来源）
 

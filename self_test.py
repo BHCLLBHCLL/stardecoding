@@ -2851,4 +2851,123 @@ print("V 波 遗留项：派生零件谱系（官方类型表 %d 类/正向负�
       "ClipPlane 谱系显现/树 folder layer=derived 与子节点回指/parent=PlaneManager "
       "scene=Scene）全通过" % len(_vd.DERIVED_TYPES))
 
+# ---------------- R 波 R2：跨网格数据映射与插值器（FieldMapper / MapperManager /
+#   FieldTreatment / TableInterpolator，对齐官方 star.cosimulation.common）---------
+import field_mapper as _r2
+import numpy as _r2np
+from fvm_core import FVM as _r2FVM, cube_tet_mesh as _r2cube
+
+
+def _r2lin(pts):
+    p = _r2np.atleast_2d(_r2np.asarray(pts, float))
+    return 2.0 * p[:, 0] + 3.0 * p[:, 1] - p[:, 2] + 1.0
+
+
+_r2src = _r2FVM(*_r2cube(nx=2))
+_r2dst = _r2FVM(*_r2cube(nx=3))
+
+# 跨网格：粗网格顶点线性场 → 细网格顶点，一阶重心插值精确复现（域内全命中）
+_r2exact = _r2lin(_r2dst.vertices)
+_r2res = _r2.FieldMapper(_r2src).map_scalar(_r2lin(_r2src.vertices),
+                                            points=_r2dst.vertices)
+assert _r2res["n_points"] == _r2dst.n_vertices and _r2res["n_outside"] == 0, \
+    "R2 跨网格应全命中: %s" % _r2res
+assert _r2np.allclose(_r2res["values"], _r2exact, atol=1e-9), \
+    "R2 粗 nx=2→细 nx=3 线性场应精确复原: %g" % _r2np.abs(
+        _r2res["values"] - _r2exact).max()
+assert _r2res["field"] == "scalar" and _r2res["treatment"] == "nan", "R2 载荷口径"
+
+# 权重只依赖几何：预置目标点后缓存复用，两次映射一致
+_r2m = _r2.FieldMapper(_r2src, target_points=_r2dst.centroids)
+_r2a = _r2m.map_scalar(_r2lin(_r2src.vertices))
+_r2b = _r2m.map_scalar(_r2lin(_r2src.vertices))
+assert _r2np.allclose(_r2a["values"], _r2b["values"]) and \
+    _r2m.weights["n_points"] == _r2dst.n_cells and \
+    _r2m.summary()["source_cells"] == _r2src.n_cells, "R2 权重缓存复用"
+_r2m.clear_target()
+assert _r2m.weights is None, "R2 clear_target 应清空权重"
+
+# 域外处理四策略：域外点 (5,5,5) + 源常值场 4.375
+_r2far = _r2np.array([[5.0, 5.0, 5.0]])
+_r2const = _r2np.full(_r2src.n_cells, 4.375)
+assert _r2np.isnan(_r2.map_scalar(_r2src, _r2const, _r2far)["values"][0]), \
+    "R2 默认 nan 策略应保留 NaN"
+assert _r2.map_scalar(_r2src, _r2const, _r2far,
+                      treatment="zero")["values"][0] == 0.0, "R2 zero 策略"
+assert _r2.map_scalar(_r2src, _r2const, _r2far,
+                      treatment=_r2.FieldTreatment("constant", -7.0)
+                      )["values"][0] == -7.0, "R2 constant 策略"
+_r2near = _r2.map_scalar(_r2src, _r2const, _r2far,
+                         treatment="nearest")["values"][0]
+assert abs(_r2near - 4.375) < 1e-12, "R2 nearest 应取最近源值: %g" % _r2near
+for _r2bad in ("bogus", "extrapolate"):
+    try:
+        _r2.FieldTreatment(_r2bad)
+        raise AssertionError("R2 未知策略应拒绝 %s" % _r2bad)
+    except ValueError:
+        pass
+
+# 矢量场：线性速度场 (2x, 3y, -z) 粗→细顶点精确复现
+_r2sv, _r2dv = _r2src.vertices, _r2dst.vertices
+_r2vel = _r2np.column_stack([2.0 * _r2sv[:, 0], 3.0 * _r2sv[:, 1],
+                             -_r2sv[:, 2]])
+_r2vres = _r2.FieldMapper(_r2src).map_vector(_r2vel, points=_r2dv)
+_r2vexact = _r2np.column_stack([2.0 * _r2dv[:, 0], 3.0 * _r2dv[:, 1],
+                                -_r2dv[:, 2]])
+assert _r2vres["values"].shape == (_r2dst.n_vertices, 3), "R2 矢量映射形状"
+assert _r2np.allclose(_r2vres["values"], _r2vexact, atol=1e-9), \
+    "R2 线性矢量场应精确复原"
+
+# 映射器注册表 MapperManager：register/get/has/names/len/contains/iter + 诚实拒绝
+_r2mm = _r2.MapperManager()
+_r2mm.register("wake", _r2m)
+assert _r2mm.has("wake") and "wake" in _r2mm and len(_r2mm) == 1 and \
+    list(_r2mm) == ["wake"] and _r2mm.get("wake") is _r2m, "R2 注册表检索"
+assert _r2np.allclose(_r2mm.map_scalar("wake", _r2lin(_r2src.vertices),
+                                       points=_r2dst.centroids)["values"],
+                      _r2lin(_r2dst.centroids), atol=1e-9), "R2 注册表映射"
+assert _r2mm.unregister("wake") is _r2m and not _r2mm.has("wake") and \
+    len(_r2mm) == 0, "R2 注销"
+try:
+    _r2mm.register("bad", object())
+    raise AssertionError("R2 注册表应拒绝非 FieldMapper")
+except TypeError:
+    pass
+try:
+    _r2mm.get("missing")
+    raise AssertionError("R2 注册表缺失应 KeyError")
+except KeyError:
+    pass
+try:
+    _r2.FieldMapper(_r2src).map_scalar(_r2const)
+    raise AssertionError("R2 未设目标点应诚实拒绝")
+except ValueError:
+    pass
+
+# 一维表格插值：LINEAR（越界钳位）与自然三次 SPLINE（与 P2 interpolateTable 同内核）
+from field_fn import Table as _r2Table
+_r2tp = _r2.TableInterpolator(
+    _r2Table("ramp", [0.0, 1.0, 2.0], {"load": [0.0, 10.0, 20.0]}), "load")
+assert _r2tp.value(0.5) == 5.0 and _r2tp.value(-1.0) == 0.0 and \
+    _r2tp.value(5.0) == 20.0 and _r2tp.range() == (0.0, 2.0) and \
+    _r2tp.summary()["n_points"] == 3, "R2 LINEAR 表格插值/钳位"
+assert _r2np.allclose(_r2tp.values([0.0, 1.5, 3.0]), [0.0, 15.0, 20.0])
+_r2sp = _r2.TableInterpolator.from_arrays([0.0, 1.0, 2.0], [0.0, 1.0, 4.0],
+                                          method="SPLINE")
+assert abs(_r2sp.value(0.5) - 0.3125) < 1e-12 and \
+    abs(_r2sp.value(1.0) - 1.0) < 1e-12 and \
+    _r2sp.summary()["table"] == "inline", "R2 自然三次样条 0.5→0.3125"
+try:
+    _r2.TableInterpolator(_r2Table("t", [0.0], {"a": [1.0]}), "a",
+                          method="CUBIC")
+    raise AssertionError("R2 未知插值法应拒绝")
+except ValueError:
+    pass
+
+print("R 波 R2 跨网格数据映射与插值器（重心定位+权重缓存复用/域内线性精确复原 "
+      "粗 nx=2→细 nx=3 共 %d 点/FieldTreatment nan-zero-constant-nearest 四策略+"
+      "未知拒绝/线性矢量场精确 (%d,3)/MapperManager 注册-检索-注销-类型与缺失拒绝/"
+      "未设目标点诚实拒绝/TableInterpolator LINEAR 钳位 与自然三次样条 0.5→0.3125）"
+      "全通过" % (_r2res["n_points"], _r2dst.n_vertices))
+
 print("ALL CHECKS PASSED")
