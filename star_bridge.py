@@ -158,6 +158,89 @@ public class StarBridgeResave extends StarMacro {
 """
 
 
+# ------------------------------------------------------------------ S6：受控官方运行（生成参考数据）
+# 以下 API 均已在本机官方 Javadoc 中核对（star/common/Simulation.html、SimulationIterator.html、
+# meshing/MeshPipelineController.html）：
+#   sim.getSimulationIterator() / it.run() / it.runAndWait() / it.stop() / it.getCurrentIteration()
+#   it.isIterating() / it.getNumberOfSteps() / sim.clearSolution() / mpc.generateVolumeMesh()
+# 注意：sim.getSolver() 在本版本**不存在**（实测编译失败），不要再写。
+RUN_CASE_MACRO = """
+package macro;
+
+import star.common.*;
+import star.meshing.MeshPipelineController;
+
+public class StarBridgeRunCase extends StarMacro {
+  public void execute() {
+    Simulation sim = getActiveSimulation();
+    String out = "%(out)s";
+    long target = %(target)d;
+    sim.println("BRIDGE_RUN begin mesh=%(mesh)d target=" + target);
+    if (%(mesh)d == 1) {
+      try {
+        MeshPipelineController mpc = sim.get(MeshPipelineController.class);
+        mpc.generateVolumeMesh();
+        sim.println("BRIDGE_RUN mesh done");
+      } catch (Exception ex) {
+        sim.println("BRIDGE_RUN mesh failed: " + ex);
+      }
+    }
+    if (%(clear)d == 1) {
+      try {
+        sim.clearSolution();
+        sim.println("BRIDGE_RUN solution cleared");
+      } catch (Exception ex) {
+        sim.println("BRIDGE_RUN clear failed: " + ex);
+      }
+    }
+    SimulationIterator it = sim.getSimulationIterator();
+    sim.println("BRIDGE_RUN iterations before=" + it.getCurrentIteration());
+    it.run();
+    while (it.isIterating()) {
+      if (target > 0 && it.getCurrentIteration() >= target) {
+        it.stop();
+        sim.println("BRIDGE_RUN stopped at " + it.getCurrentIteration());
+        break;
+      }
+      try { Thread.sleep(200); } catch (Exception ex) { }
+    }
+    sim.println("BRIDGE_RUN iterations after=" + it.getCurrentIteration());
+    sim.saveState(out);
+    sim.println("BRIDGE_RUN_DONE " + out);
+  }
+}
+"""
+
+
+def official_run_case(src_sim, out_path, do_mesh=False, max_iterations=0,
+                      clear_solution=False, class_name="StarBridgeRunCase",
+                      timeout=1800, on_line=None):
+    """在**工作副本**上跑官方求解（受控）：可选生成网格/清解，跑到目标迭代数即停，然后 Save As。
+
+    max_iterations=0 → 交给算例自身停止准则（runAndWait 语义由宏内轮询实现）。
+    返回 {ok, out_path, iterations_before/after, log, reason}。
+    """
+    out = os.path.abspath(out_path)
+    out_java = out.replace("\\", "/")
+    macro = RUN_CASE_MACRO % {"out": out_java, "mesh": 1 if do_mesh else 0,
+                             "clear": 1 if clear_solution else 0,
+                             "target": int(max_iterations or 0)}
+    res = official_run(src_sim, macro, class_name, timeout=timeout, on_line=on_line)
+    if res.get("skipped"):
+        return res
+    log = res.get("log") or ""
+    def _num(pattern):
+        m = re.search(pattern, log)
+        return int(m.group(1)) if m else None
+    res["out_path"] = out
+    res["iterations_before"] = _num(r"BRIDGE_RUN iterations before=(\d+)")
+    res["iterations_after"] = _num(r"BRIDGE_RUN iterations after=(\d+)")
+    res["ok"] = bool(res.get("ok") and "BRIDGE_RUN_DONE" in log and os.path.isfile(out))
+    if not res["ok"] and not res.get("reason"):
+        res["reason"] = "运行标记缺失或输出未生成"
+    return res
+
+
 # ------------------------------------------------------------------ 运行器
 def official_run(src_sim, macro_text, class_name="StarBridgeMacro", timeout=600,
                  on_line=None, workdir=None):

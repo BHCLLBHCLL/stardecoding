@@ -1,0 +1,23 @@
+{
+  "note": "S2 自研圆柱结果（诚实记录：七组配置均未复现脱落）",
+  "cases": {
+    "cyl_re200_u005": {
+      "st": null,
+      "amplitude": 0.0061,
+      "n_periods": 1.99,
+      "reason": "未达脱落周期（PISO(2)+limited+slip，220 步 ≈21.9 s ≈4.8 周期，振幅单调衰减 0.00643→0.00008）",
+      "config": {
+        "mesher": "cartesian",
+        "h_factor": 4,
+        "convection": "limited",
+        "wall_slip_axes": [
+          1,
+          2
+        ],
+        "piso_correctors": 2,
+        "n_inner": 1
+      },
+      "source": "s_wave_plan.md S2 / _s2_piso_result.json"
+    }
+  }
+}

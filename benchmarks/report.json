@@ -1,0 +1,127 @@
+{
+ "ok": true,
+ "n_cases": 3,
+ "n_pass": 0,
+ "n_fail": 0,
+ "n_not_applicable": 3,
+ "cases": [
+  {
+   "id": "cyl_re200_u005",
+   "title": "二维圆柱绕流 Re=200（官方瞬态 300000 迭代 / 200 s）",
+   "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502.sim",
+   "params": {
+    "U": 0.05,
+    "D": 0.04,
+    "nu": 1e-05
+   },
+   "provenance": "官方 .sim 内嵌升力监视器 + 残差（G6 抽取）",
+   "reference": {
+    "ok": true,
+    "u_ref": 0.05,
+    "diameter": 0.04,
+    "reynolds": 200.0,
+    "st": 0.17521835738772795,
+    "st_fft": 0.17600000000016008,
+    "st_cross": 0.17443671477529585,
+    "amplitude": 0.28052445504510237,
+    "n_samples": 20000,
+    "t_span": 199.9899999999631,
+    "residual_final": 3.2058431917344407e-10,
+    "lift_name": "升力系数 Monitor",
+    "reason": ""
+   },
+   "ours": {
+    "st": null,
+    "amplitude": 0.0061,
+    "n_periods": 1.99,
+    "reason": "未达脱落周期（PISO(2)+limited+slip，220 步 ≈21.9 s ≈4.8 周期，振幅单调衰减 0.00643→0.00008）",
+    "config": {
+     "mesher": "cartesian",
+     "h_factor": 4,
+     "convection": "limited",
+     "wall_slip_axes": [
+      1,
+      2
+     ],
+     "piso_correctors": 2,
+     "n_inner": 1
+    },
+    "source": "s_wave_plan.md S2 / _s2_piso_result.json"
+   },
+   "verdict": {
+    "verdict": "不可比",
+    "ok": null,
+    "items": {},
+    "reason": "未达脱落周期（PISO(2)+limited+slip，220 步 ≈21.9 s ≈4.8 周期，振幅单调衰减 0.00643→0.00008）"
+   }
+  },
+  {
+   "id": "cyl_re100_u0025",
+   "title": "二维圆柱绕流 Re=100（官方瞬态，U=0.025 m/s）",
+   "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.025.sim",
+   "params": {
+    "U": 0.025,
+    "D": 0.04,
+    "nu": 1e-05
+   },
+   "provenance": "官方 .sim 内嵌监视器；体网格抽取存在已知缺口（S3 共享存储变体）",
+   "reference": {
+    "ok": true,
+    "u_ref": 0.025,
+    "diameter": 0.04,
+    "reynolds": 100.0,
+    "st": 0.1406842670101901,
+    "st_fft": 0.14400000000013097,
+    "st_cross": 0.13736853402024923,
+    "amplitude": 0.8125924138888281,
+    "n_samples": 20000,
+    "t_span": 199.9899999999631,
+    "residual_final": 2.5211145825334587e-12,
+    "lift_name": "升力系数 Monitor",
+    "reason": ""
+   },
+   "ours": null,
+   "verdict": {
+    "verdict": "未提供",
+    "ok": null,
+    "items": {},
+    "reason": "自研未提供该算例结果（不计通过）"
+   }
+  },
+  {
+   "id": "cyl_re200_seg",
+   "title": "二维圆柱绕流 Re=200（官方分段 247590 迭代 / 165 s）",
+   "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502_seg.sim",
+   "params": {
+    "U": 0.05,
+    "D": 0.04,
+    "nu": 1e-05
+   },
+   "provenance": "官方 .sim 内嵌监视器（分段运行）",
+   "reference": {
+    "ok": true,
+    "u_ref": 0.05,
+    "diameter": 0.04,
+    "reynolds": 200.0,
+    "st": 0.1748614814289694,
+    "st_fft": 0.17448200654298598,
+    "st_cross": 0.17524095631495282,
+    "amplitude": 0.28901713594712874,
+    "n_samples": 16506,
+    "t_span": 165.04999999999487,
+    "residual_final": 1.7741152868646084e-10,
+    "lift_name": "升力系数 Monitor",
+    "reason": ""
+   },
+   "ours": null,
+   "verdict": {
+    "verdict": "未提供",
+    "ok": null,
+    "items": {},
+    "reason": "自研未提供该算例结果（不计通过）"
+   }
+  }
+ ],
+ "note": "「未提供/不可比」不计通过；官方参考量现场抽取，不写死",
+ "reason": ""
+}

@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "note": "S6 官方参考语料库清单：条目指向官方 STAR-CCM+ 产出的 .sim（含解场/监视器），参考量由 --extract 现场抽取（不写死）",
+  "cases": [
+    {
+      "id": "cyl_re200_u005",
+      "title": "二维圆柱绕流 Re=200（官方瞬态 300000 迭代 / 200 s）",
+      "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502.sim",
+      "kind": "official-reference",
+      "params": {
+        "U": 0.05,
+        "D": 0.04,
+        "nu": 0.00001
+      },
+      "expected": {
+        "st": 0.175,
+        "st_rel": 0.02,
+        "amplitude": 0.28
+      },
+      "tolerances": {
+        "st_rel": 0.15,
+        "amplitude_ratio": [
+          0.3,
+          3
+        ]
+      },
+      "provenance": "官方 .sim 内嵌升力监视器 + 残差（G6 抽取）"
+    },
+    {
+      "id": "cyl_re100_u0025",
+      "title": "二维圆柱绕流 Re=100（官方瞬态，U=0.025 m/s）",
+      "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.025.sim",
+      "kind": "official-reference",
+      "params": {
+        "U": 0.025,
+        "D": 0.04,
+        "nu": 0.00001
+      },
+      "expected": {
+        "st": null,
+        "amplitude": null
+      },
+      "tolerances": {
+        "st_rel": 0.15,
+        "amplitude_ratio": [
+          0.3,
+          3
+        ]
+      },
+      "provenance": "官方 .sim 内嵌监视器；体网格抽取存在已知缺口（S3 共享存储变体）"
+    },
+    {
+      "id": "cyl_re200_seg",
+      "title": "二维圆柱绕流 Re=200（官方分段 247590 迭代 / 165 s）",
+      "sim": "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502_seg.sim",
+      "kind": "official-reference",
+      "params": {
+        "U": 0.05,
+        "D": 0.04,
+        "nu": 0.00001
+      },
+      "expected": {
+        "st": null,
+        "amplitude": null
+      },
+      "tolerances": {
+        "st_rel": 0.15,
+        "amplitude_ratio": [
+          0.3,
+          3
+        ]
+      },
+      "provenance": "官方 .sim 内嵌监视器（分段运行）"
+    }
+  ],
+  "ours": {
+    "note": "自研结果由 run_case 输出 JSON 提供；缺结果时报告标「未提供（不计通过）」",
+    "results": []
+  }
+}

@@ -166,7 +166,27 @@
 - **目标**：① Mesh>清除/转 2D 本地实现（消除 needs_kernel 两项）；② 3D-CAD 界内 B-Rep 建模接 GUI（OCC 内核已在 C2/C3）；③ 打包：装 PyInstaller 或走官方 installer 生成真实二进制。
 - **验收**：star_gui_parity.md 对应行从 needs_kernel/降级 变为 persist/view；GUI 测试全绿 + 新增 3 项动作测试。
 
-### S6 官方参考数据语料库与自动对标（P2，依赖 F1）
+### S6 官方参考数据语料库与自动对标（P2，依赖 F1）—— ⚠️ 第一轮达成（清单+抽取+判定+报告；官方"受控运行"已验证）
+
+**已交付**：
+- `benchmarks/manifest.json`：**3 个官方算例**（Re=200 主算例 / Re=100 / Re=200 分段），含参数、容差（`st_rel`/振幅比带）、出处；官方参考量**不写死**，由 `--extract` 现场从 .sim 抽取。
+- `bench_report.py`：`load_manifest`（校验）/ `extract_reference`（现场抽取 St·振幅·残差，内存不足诚实跳过）/ `compare`（四条判定路径：**通过 / 未通过 / 未提供 / 不可比**）/ `run_bench` / `render_report` / CLI（`--manifest --ours --no-extract --out --json`）。
+- `benchmarks/ours_cylinder.json`：S2 自研结果的**诚实记录**（未达周期 → St=null + 原因），使报告能真实演示"不可比"。
+
+**实测（`python bench_report.py --ours benchmarks/ours_cylinder.json --out benchmarks/report.json`）**：
+
+| 算例 | 官方参考（现场抽取） | 自研 | 判定 |
+| --- | --- | --- | --- |
+| `cyl_re200_u005`（U=0.05/200 s） | **St=0.1752**（FFT 0.1760 / 过零 0.1744）、振幅 0.2805、残差 3.206e-10、Re=200 | 未达脱落周期（PISO(2)+limited+slip） | **不可比**（不计通过） |
+| `cyl_re100_u0025`（U=0.025） | **St=0.1407**（FFT 0.1440 / 过零 0.1374）、振幅 0.8126、残差 2.521e-12、Re=100 | 未提供 | **未提供** |
+| `cyl_re200_seg`（分段 247590 迭代） | **St=0.1749**（FFT 0.1745 / 过零 0.1752）、振幅 0.289、残差 1.774e-10 | 未提供 | **未提供** |
+
+**顺带得到的官方内部一致性证据**：两个独立 Re=200 官方运行（主算例 vs 分段算例）的 St 相差 **0.17%**（0.1752 vs 0.1749）→ 官方参考量本身可靠，可直接作为对标基准。
+
+**官方"受控运行"能力（本轮实测打通，S6 生成侧）**：`star_bridge.official_run_case` —— 在**工作副本**上跑官方求解：可选 `generateVolumeMesh()` / `clearSolution()`，跑到目标迭代数即 `stop()` 再 `saveState()`。宏内只用**已核对 API**（`sim.getSimulationIterator()` / `it.run()/isIterating()/stop()/getCurrentIteration()`）；实测 `pipeBlockage` 副本 0→100 迭代后落盘成功（`BRIDGE_RUN_DONE`）。**粒度如实说明**：轮询间隔 200 ms，快速算例会过冲（目标 5 → 实际 100 迭代）；另注 `sim.getSolver()` 在本版本**不存在**（实测编译失败），已在模块注释中固化，避免再写错。
+
+**仍开放**：① 用 `official_run_case` 批量产出 ≥3 工况的官方参考（含我们自己的通道域算例，需官方侧建模宏）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做。
+### S6 原始目标（存档）
 - **目标**：用官方 STAR-CCM+ 批量生成参考语料（同几何的网格尺寸/质量、稳态/瞬态解、报告值、重存文件），落成 benchmarks/ + 自动对标脚本，把 R4/R5 的"对标"从一次性变为可重复。
 - **手段**：宏模板（建网格/求解/导出报告/保存）+ 清单 JSON（工况、期望指标、容差）+ bench_report.py（跑批 + 汇总 + 对比）。
 - **验收**：≥3 个工况（圆柱/直管/翼型）有官方参考与自研对比报告；容差表固定进文档。
