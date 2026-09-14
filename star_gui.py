@@ -334,11 +334,11 @@ class StarMainWindow(QMainWindow):
         self._add("Mesh>GenerateTrimmer", tr("Generate Trimmer Mesh"),
                   self.cmd_generate_trimmer_mesh, "mesh")
         self._add("Mesh>Clear", tr("Clear Generated Meshes"),
-                  lambda: self._kernel_nyi("清除已生成网格"), "mesh")
+                  self.cmd_clear_mesh, "mesh")
         self._add("Mesh>Scale", tr("Scale Mesh..."), self.cmd_scale_mesh, "mesh")
         self._add("Mesh>Diagnostics", tr("Mesh Diagnostics"), self.cmd_mesh_diag, "ruler")
         self._add("Mesh>Convert2D", tr("Convert to 2D"),
-                  lambda: self._kernel_nyi("转换为 2D"), "mesh")
+                  self.cmd_convert_2d, "mesh")
         self._add("Mesh>Repair", tr("Surface Repair"), self.cmd_cad_repair, "mesh")
         self._add("Plot>NYI", tr("Plot"), self.cmd_show_plots, "plot")
         from star_gui_postprocess import ACTION_SPECS
@@ -634,6 +634,69 @@ class StarMainWindow(QMainWindow):
                     apply_actor_transform(actor, t[:3], t[3:6])
             if hasattr(vp, "render"):
                 vp.render()
+
+    def cmd_clear_mesh(self):
+        """Mesh>Clear：清除**本会话**生成的网格（生成结果 + 相关显示 actor）。
+
+        诚实边界（S5）：只清会话状态 —— **不改对象图、不改 .sim**；文件里的官方网格
+        可随时重新抽取显示。真正"从网格模型里删除体网格"属内核操作（needs_kernel）。
+        """
+        cleared = []
+        for attr in ("_volume_mesh_result", "_poly_mesh_result", "_trimmer_mesh_result"):
+            if getattr(self, attr, None) is not None:
+                setattr(self, attr, None)
+                cleared.append(attr.strip("_").replace("_result", ""))
+        removed = 0
+        vp = getattr(self, "viewport", None)
+        if vp is not None and hasattr(vp, "remove_actors"):
+            keys = [k for k, _n, _pid, _a in getattr(vp, "actors", [])
+                    if str(k).startswith(("volume", "session"))]
+            if keys:
+                removed = vp.remove_actors(keys)
+            if hasattr(vp, "render"):
+                vp.render()
+        doc = getattr(self, "document", None)
+        if doc is not None:
+            doc.session_meshes_cleared = True
+        self.msg("已清除本会话网格（生成结果：%s；显示 actor：%d 个）。"
+                 "对象图与 .sim 未改动 —— 官方网格可重新显示。"
+                 % (", ".join(cleared) or "无", removed), "info")
+
+    def cmd_convert_2d(self):
+        """Mesh>Convert2D（**显示层**）：沿当前视图最小跨度轴压平，得到 2D 视图。
+
+        诚实边界（S5）：只改显示（会话），**对象图与文件的维度不变**；无 3D 视图
+        （无头模式/未加载）或视图内无 actor 时如实拒绝，不假装完成内核级 2D 转换。
+        """
+        vp = getattr(self, "viewport", None)
+        if vp is None or not hasattr(vp, "renderer") or not hasattr(vp, "actors"):
+            self.msg("转换为 2D：无 3D 视图（无头模式或未加载），未执行。", "nyi")
+            return
+        actors = [a for _k, _n, _pid, a in vp.actors]
+        if not actors:
+            self.msg("转换为 2D：当前视图没有可投影的 actor（诚实拒绝）。", "nyi")
+            return
+        try:
+            bounds = vp.renderer.ComputeVisiblePropBounds()
+        except Exception:
+            bounds = None
+        if not bounds or not all(abs(b) < 1e30 for b in bounds):
+            self.msg("转换为 2D：视图包围盒不可用（诚实拒绝）。", "nyi")
+            return
+        spans = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
+        axis = int(min(range(3), key=lambda i: spans[i]))
+        scale = [1.0, 1.0, 1.0]
+        scale[axis] = 1e-3                      # 压平最小跨度轴 → 视觉上成为平面
+        from star_gui_vtk import apply_actor_transform
+        for a in actors:
+            apply_actor_transform(a, scale=tuple(scale))
+        doc = getattr(self, "document", None)
+        if doc is not None:
+            doc.display_2d = True
+        vp.render()
+        self.msg("已转 2D（显示层）：沿 %s 轴压平（span=%.4g）。"
+                 "对象图与 .sim 维度未改（内核级 2D 转换仍标 needs_kernel）。"
+                 % ("XYZ"[axis], spans[axis]), "info")
 
     def _kernel_nyi(self, what):
         self.msg("%s 需要网格/CAD 内核或 STAR-CCM+ 宏，当前禁用。见 star_gui_parity.md" % what,
