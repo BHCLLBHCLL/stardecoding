@@ -61,6 +61,8 @@
 
 **落地**：`star_bridge.py`（探测 / 宏模板 / 工作副本运行 / 视图对照 / 重存 / 名字键差分）；`sim_writer.try_official_resave` 接入安装探测（W6 的 auto-skip 在本机变为真跑）；`tests/test_star_bridge.py`（9 离线 + 3 官方门控，需 STARDECODING_OFFICIAL=1）；`self_test.py` S1 离线锚点 ALL CHECKS PASSED。
 
+**W6 官方差分转真跑（本轮附带修复）**：`tests/test_diff_regression.py::test_w6_official_resave_gated` 现在**真的调用官方 starccmw**（`returncode=0`，17 s 内跑完 4 项）——修复两处：① 子进程必须 `encoding="utf-8", errors="replace"`（官方输出含非 cp1252 字节，旧代码在读取线程抛 UnicodeDecodeError 导致 stdout=None）；② `resave_sim.java` 改为写**相对路径**（cwd 下的 `resaved_<name>.sim`），不再写死仓库绝对路径，便于在临时副本目录做差分。
+
 **诚实边界**：① Part 类计数口径未对齐（官方 getPartManager() ≠ 对象图 *Part），不计入判定；② 官方对对象模型有归一化（物化/替换类、丢弃预定义表内联值），**不等于"文件逐字节往返"**；③ 官方集成测试默认跳过，需显式开启（每次 1–3 分钟）。
 ### S1 目标（存档）
 - **目标**：把 B 路线从"就绪未测"变成实测闭环：① 官方批量宏冒烟（读取/统计/保存）；② 写入器输出经官方打开 + 官方重存后与本仓库重读逐项一致（W6 的 auto-skip 变真差分）；③ GUI 宏动作（生成网格/求解）在工作副本上真跑。

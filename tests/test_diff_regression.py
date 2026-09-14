@@ -140,13 +140,18 @@ def test_w6_official_resave_gated():
         # 官方重存路径由 resave_sim.java 生成 resaved_<name>.sim；此处直接调用宏外壳探测
         import subprocess, sys as _sys
         macro = hook["macro"]
+        # 官方客户端输出含非 cp1252 字节（许可 banner 等）→ 必须显式 utf-8 + replace，
+        # 否则 Windows 默认解码会在读取线程抛 UnicodeDecodeError，stdout 变 None。
         p = subprocess.run(
             [hook["exe"], "-batch", macro, out],
-            cwd=tmp, capture_output=True, text=True, timeout=300)
+            cwd=tmp, capture_output=True, text=True, timeout=900,
+            encoding="utf-8", errors="replace")
         assert "RESAVE_DONE" in ((p.stdout or "") + (p.stderr or "")), \
             "官方应重存成功（RESAVE_DONE 标记）"
-        official = os.path.join(tmp, "resaved_edited.sim")
-        assert os.path.isfile(official), "官方重存应产出文件"
+        import glob as _glob
+        cands = _glob.glob(os.path.join(tmp, "resaved_*.sim"))
+        assert cands, "官方重存应产出文件（cwd 下的 resaved_<name>.sim）"
+        official = cands[0]
         ref = SimFile(official)
         # 结构自检 + 官方重存后重读一致（比较关键字段差分）
         s2 = _structural_snapshot(ref)
