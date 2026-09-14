@@ -57,12 +57,25 @@ def extract_reference(case, fields=False):
     if not ref.get("ok"):
         return {"ok": False, "reason": ref.get("reason") or "无参考量"}
     st = ref.get("strouhal") or {}
+    mc = sim.extract_monitor_curves()
+    monitors, forces = {}, {}
+    if mc.get("ok"):
+        for m in mc.get("monitors") or []:
+            name = str(m.get("name"))
+            monitors[name] = {"n": m.get("n"), "last": m.get("cur_value"),
+                              "min": m.get("y_min"), "max": m.get("y_max")}
+            low = name.lower()
+            if "cl" in low and "cl" not in forces:
+                forces["cl"] = m.get("y_max") if m.get("cur_value") is None else m.get("cur_value")
+            if "cd" in low and "cd" not in forces:
+                forces["cd"] = m.get("y_max") if m.get("cur_value") is None else m.get("cur_value")
     return {"ok": True, "u_ref": ref.get("u_ref"), "diameter": ref.get("diameter"),
             "reynolds": ref.get("reynolds"), "st": st.get("st"),
             "st_fft": st.get("st_fft"), "st_cross": st.get("st_cross"),
             "amplitude": st.get("amplitude"), "n_samples": st.get("n"),
             "t_span": st.get("t_span"), "residual_final": (ref.get("residual") or {}).get("final"),
-            "lift_name": (ref.get("lift") or {}).get("name"), "reason": ""}
+            "lift_name": (ref.get("lift") or {}).get("name"),
+            "monitors": monitors, "forces": forces, "reason": ""}
 
 def compare(case, ref, ours):
     """按清单容差判定：返回 {verdict, ok, items}。
@@ -75,12 +88,36 @@ def compare(case, ref, ours):
     if not ours:
         return {"verdict": "未提供", "ok": None, "items": {},
                 "reason": "自研未提供该算例结果（不计通过）"}
+    metrics = case.get("metrics") or ["st", "amplitude"]
+    tol = case.get("tolerances") or {}
+    if "cl" in metrics or "cd" in metrics:
+        # 稳态力系数类（翼型等）：按 cl/cd 相对容差判定
+        ref_f = ref.get("forces") or {}
+        items, ok_all, any_item = {}, True, False
+        for key, rel_key in (("cl", "cl_rel"), ("cd", "cd_rel")):
+            if key not in metrics:
+                continue
+            rv, ov = ref_f.get(key), ours.get(key)
+            if rv is None or ov is None:
+                continue
+            rel = float(tol.get(rel_key, 0.15))
+            band = (1.0 - rel, 1.0 + rel)
+            ratio = float(ov) / float(rv) if rv else float("nan")
+            ok = band[0] <= ratio <= band[1]
+            items[key] = {"ours": float(ov), "official": float(rv), "ratio": ratio,
+                          "ok": ok, "band": list(band)}
+            ok_all = ok_all and ok
+            any_item = True
+        if not any_item:
+            return {"verdict": "未提供", "ok": None, "items": {},
+                    "reason": "官方参考或自研缺 %s" % "/".join(metrics)}
+        return {"verdict": "通过" if ok_all else "未通过", "ok": ok_all, "items": items,
+                "reason": ""}
     periods = ours.get("n_periods")
     if ours.get("st") is None:
         why = ours.get("reason") or ("未达脱落周期（周期数 %s < 3）" % periods
                                      if periods is not None else "自研无 St")
         return {"verdict": "不可比", "ok": None, "items": {}, "reason": why}
-    tol = case.get("tolerances") or {}
     st_rel = float(tol.get("st_rel", 0.15))
     band = (1.0 - st_rel, 1.0 + st_rel)
     items, ok_all = {}, True
@@ -123,6 +160,12 @@ def run_bench(manifest_path=DEFAULT_MANIFEST, ours_path=None, do_extract=True,
     for case in man["cases"]:
         ref = extract_reference(case, fields=fields) if do_extract else {"ok": False,
                                                                         "reason": "未抽取"}
+        metrics = case.get("metrics") or ["st", "amplitude"]
+        if ref.get("ok") and "st" not in metrics:
+            # 非脱落型（稳态力系数）：不报 St/振幅，避免把按迭代索引的曲线当成脱落频率
+            ref = dict(ref)
+            ref["st"] = ref["st_fft"] = ref["st_cross"] = None
+            ref["amplitude"] = None
         ours = ours_map.get(case["id"])
         cmp_ = compare(case, ref, ours)
         rows.append({"id": case["id"], "title": case.get("title"), "sim": case.get("sim"),
@@ -147,6 +190,20 @@ def render_report(report):
     for r in report["cases"]:
         v, ref, ours = r["verdict"], r["reference"], r["ours"] or {}
         lines.append("  [%s] %s" % (v["verdict"], r["id"]))
+        if ref.get("ok") and (ref.get("forces") or {}):
+            f = ref["forces"]
+            lines.append("      官方(稳态力): Cl=%s Cd=%s（残差 %s，监视器 %d 个）"
+                         % (_fmt(f.get("cl")), _fmt(f.get("cd")),
+                            _fmt(ref.get("residual_final")), len(ref.get("monitors") or {})))
+            if v.get("items"):
+                for key, item in v["items"].items():
+                    lines.append("      对标 %s: 自研 %s vs 官方 %s → 比 %s（带 %s）%s"
+                                 % (key, _fmt(item["ours"]), _fmt(item["official"]),
+                                    _fmt(item["ratio"]), item["band"],
+                                    "达标" if item["ok"] else "未达标"))
+            elif v.get("reason"):
+                lines.append("      结论: %s" % v["reason"])
+            continue
         if ref.get("ok"):
             lines.append("      官方: U=%s D=%s Re=%s St=%s（FFT %s / 过零 %s）振幅 %s 残差 %s"
                          % (ref.get("u_ref"), ref.get("diameter"), ref.get("reynolds"),

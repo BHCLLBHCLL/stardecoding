@@ -26,13 +26,17 @@ CYL = "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502.sim"
 
 def test_load_manifest_real():
     man = br.load_manifest(MANIFEST)
-    assert man["ok"] and len(man["cases"]) == 3
+    assert man["ok"] and len(man["cases"]) == 4
     ids = [c["id"] for c in man["cases"]]
-    assert ids == ["cyl_re200_u005", "cyl_re100_u0025", "cyl_re200_seg"]
+    assert ids == ["cyl_re200_u005", "cyl_re100_u0025", "cyl_re200_seg",
+                   "airfoil_multielement_official"]
     for c in man["cases"]:
-        assert c["params"]["U"] and c["params"]["D"] and c["params"]["nu"]
-        assert "st_rel" in c["tolerances"]
+        assert "params" in c and "tolerances" in c
         assert "provenance" in c and c["provenance"]
+    cyl = [c for c in man["cases"] if c["id"] == "cyl_re200_u005"][0]
+    assert cyl["params"]["U"] == 0.05 and "st_rel" in cyl["tolerances"]
+    af = [c for c in man["cases"] if c["id"] == "airfoil_multielement_official"][0]
+    assert af["metrics"] == ["cl", "cd"] and "cl_rel" in af["tolerances"]
 
 
 def test_load_manifest_missing_and_invalid():
@@ -99,11 +103,28 @@ def test_run_bench_without_extract_on_real_manifest():
     rep = br.run_bench(MANIFEST, ours_path=os.path.join(ROOT, "benchmarks",
                                                        "ours_cylinder.json"),
                        do_extract=False)
-    assert rep["ok"] and rep["n_cases"] == 3
-    assert rep["n_pass"] == 0 and rep["n_not_applicable"] == 3
+    assert rep["ok"] and rep["n_cases"] == 4
+    assert rep["n_pass"] == 0 and rep["n_not_applicable"] == 4
     by_id = {c["id"]: c for c in rep["cases"]}
     assert by_id["cyl_re200_u005"]["ours"] is not None
     assert by_id["cyl_re100_u0025"]["ours"] is None
+
+
+def test_compare_steady_forces_path():
+    case = {"id": "af", "metrics": ["cl", "cd"],
+            "tolerances": {"cl_rel": 0.15, "cd_rel": 0.15}}
+    ref = {"ok": True, "forces": {"cl": 2.2445, "cd": 0.0756}, "st": None, "amplitude": None}
+    ok = br.compare(case, ref, {"cl": 2.30, "cd": 0.079})
+    assert ok["verdict"] == "通过" and ok["ok"] is True
+    assert ok["items"]["cl"]["ratio"] == pytest.approx(2.30 / 2.2445, rel=1e-6)
+    bad = br.compare(case, ref, {"cl": 3.5, "cd": 0.079})
+    assert bad["verdict"] == "未通过" and bad["items"]["cl"]["ok"] is False
+    none = br.compare(case, ref, None)
+    assert none["verdict"] == "未提供"
+    partial = br.compare(case, ref, {"cl": 2.30})
+    assert partial["items"]["cl"]["ok"] is True
+    no_ref = br.compare(case, {"ok": True, "forces": {}}, {"cl": 2.3})
+    assert no_ref["verdict"] == "未提供"
 
 
 @pytest.mark.skipif(not os.path.isfile(CYL), reason="官方语料缺失")

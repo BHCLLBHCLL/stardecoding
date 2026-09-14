@@ -185,7 +185,13 @@
 
 **官方"受控运行"能力（本轮实测打通，S6 生成侧）**：`star_bridge.official_run_case` —— 在**工作副本**上跑官方求解：可选 `generateVolumeMesh()` / `clearSolution()`，跑到目标迭代数即 `stop()` 再 `saveState()`。宏内只用**已核对 API**（`sim.getSimulationIterator()` / `it.run()/isIterating()/stop()/getCurrentIteration()`）；实测 `pipeBlockage` 副本 0→100 迭代后落盘成功（`BRIDGE_RUN_DONE`）。**粒度如实说明**：轮询间隔 200 ms，快速算例会过冲（目标 5 → 实际 100 迭代）；另注 `sim.getSolver()` 在本版本**不存在**（实测编译失败），已在模块注释中固化，避免再写错。
 
-**仍开放**：① 用 `official_run_case` 批量产出 ≥3 工况的官方参考（含我们自己的通道域算例，需官方侧建模宏）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做。
+
+**本轮追加（官方桥生成侧）**：
+- `star_bridge.official_run_case`（受控官方运行，仅用 Javadoc 核对过的 API）实测：`pipeBlockage` 副本 0→100 迭代落盘成功；轮询间隔收窄到 **50 ms**（如实记录粒度）。**实测否证**：`sim.getSolver()` 在本版本不存在（编译失败），已在模块注释固化。
+- **新生成的官方参考**：`optimate/data/airfoil.sim`（三元素翼型，原本无解）经官方桥 `clearSolution` → `SimulationIterator.run()` 跑到**算例自身停止准则 600 迭代**（90 s）→ `benchmarks/official/airfoil_official_2000.sim`。末段：**Cl=2.2445（±0.0047）、Cd=0.0756（±0.0028）、Cl/Cd=29.73、Continuity 1.07e-3** —— 这批数据原先在本项目里是"缺失的官方翼型解"。
+- 清单扩到 **4 算例**（3 官方 .sim + 1 官方桥现场生成），新增**稳态力系数类**判定（`metrics: ["cl","cd"]` + `cl_rel/cd_rel` 容差）；非脱落型算例**不报 St**（避免把按迭代索引的曲线当脱落频率）。
+- `tests/test_bench_report.py` 增至 **7 项**（含稳态力系数四路径）。
+**仍开放**：① 官方侧建模宏（把我们自己的通道域算例喂给官方跑，做真正的同网格对照）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做；④ 官方生成件的**解场抽取失败**（`extract_solution_fields` ok=False）—— 官方重存后的解场存储布局与教程自带文件不同，属 S3/G5 新缺口。
 ### S6 原始目标（存档）
 - **目标**：用官方 STAR-CCM+ 批量生成参考语料（同几何的网格尺寸/质量、稳态/瞬态解、报告值、重存文件），落成 benchmarks/ + 自动对标脚本，把 R4/R5 的"对标"从一次性变为可重复。
 - **手段**：宏模板（建网格/求解/导出报告/保存）+ 清单 JSON（工况、期望指标、容差）+ bench_report.py（跑批 + 汇总 + 对比）。

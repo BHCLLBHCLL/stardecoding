@@ -202,7 +202,7 @@ public class StarBridgeRunCase extends StarMacro {
         sim.println("BRIDGE_RUN stopped at " + it.getCurrentIteration());
         break;
       }
-      try { Thread.sleep(200); } catch (Exception ex) { }
+      try { Thread.sleep(%(poll)d); } catch (Exception ex) { }
     }
     sim.println("BRIDGE_RUN iterations after=" + it.getCurrentIteration());
     sim.saveState(out);
@@ -214,7 +214,7 @@ public class StarBridgeRunCase extends StarMacro {
 
 def official_run_case(src_sim, out_path, do_mesh=False, max_iterations=0,
                       clear_solution=False, class_name="StarBridgeRunCase",
-                      timeout=1800, on_line=None):
+                      timeout=1800, on_line=None, poll_ms=50):
     """在**工作副本**上跑官方求解（受控）：可选生成网格/清解，跑到目标迭代数即停，然后 Save As。
 
     max_iterations=0 → 交给算例自身停止准则（runAndWait 语义由宏内轮询实现）。
@@ -224,7 +224,8 @@ def official_run_case(src_sim, out_path, do_mesh=False, max_iterations=0,
     out_java = out.replace("\\", "/")
     macro = RUN_CASE_MACRO % {"out": out_java, "mesh": 1 if do_mesh else 0,
                              "clear": 1 if clear_solution else 0,
-                             "target": int(max_iterations or 0)}
+                             "target": int(max_iterations or 0),
+                             "poll": max(int(poll_ms), 10)}
     res = official_run(src_sim, macro, class_name, timeout=timeout, on_line=on_line)
     if res.get("skipped"):
         return res

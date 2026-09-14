@@ -1,9 +1,9 @@
 {
  "ok": true,
- "n_cases": 3,
+ "n_cases": 4,
  "n_pass": 0,
  "n_fail": 0,
- "n_not_applicable": 3,
+ "n_not_applicable": 4,
  "cases": [
   {
    "id": "cyl_re200_u005",
@@ -28,6 +28,45 @@
     "t_span": 199.9899999999631,
     "residual_final": 3.2058431917344407e-10,
     "lift_name": "升力系数 Monitor",
+    "monitors": {
+     "Physical Time": {
+      "n": 20000,
+      "last": null,
+      "min": 0.01,
+      "max": 199.99999999996308
+     },
+     "Iteration": {
+      "n": 300000,
+      "last": null,
+      "min": 1.0,
+      "max": 300000.0
+     },
+     "Continuity": {
+      "n": 300000,
+      "last": 3.2058431917344407e-10,
+      "min": 1.751376409876935e-11,
+      "max": 3.2887577522837736e-06
+     },
+     "X-momentum": {
+      "n": 300000,
+      "last": 1.1728833207308121e-11,
+      "min": 6.112545645284881e-13,
+      "max": 3.7308786429202517e-06
+     },
+     "Y-momentum": {
+      "n": 300000,
+      "last": 6.873692293817943e-12,
+      "min": 1.8551812195406217e-13,
+      "max": 3.610404162949063e-06
+     },
+     "升力系数 Monitor": {
+      "n": 20000,
+      "last": null,
+      "min": -0.27194598261323194,
+      "max": 0.28910292747697286
+     }
+    },
+    "forces": {},
     "reason": ""
    },
    "ours": {
@@ -78,6 +117,45 @@
     "t_span": 199.9899999999631,
     "residual_final": 2.5211145825334587e-12,
     "lift_name": "升力系数 Monitor",
+    "monitors": {
+     "Physical Time": {
+      "n": 20000,
+      "last": null,
+      "min": 0.01,
+      "max": 199.99999999996308
+     },
+     "Iteration": {
+      "n": 300000,
+      "last": null,
+      "min": 1.0,
+      "max": 300000.0
+     },
+     "Continuity": {
+      "n": 300000,
+      "last": 2.5211145825334587e-12,
+      "min": 8.538840630113778e-13,
+      "max": 1.6443788761418868e-06
+     },
+     "X-momentum": {
+      "n": 300000,
+      "last": 6.165874956060842e-14,
+      "min": 2.2905134185776512e-14,
+      "max": 1.756941540348846e-06
+     },
+     "Y-momentum": {
+      "n": 300000,
+      "last": 1.987235005246553e-14,
+      "min": 6.757796806231e-15,
+      "max": 1.6773430519243141e-06
+     },
+     "升力系数 Monitor": {
+      "n": 20000,
+      "last": null,
+      "min": -0.547151304818588,
+      "max": 1.078033522959068
+     }
+    },
+    "forces": {},
     "reason": ""
    },
    "ours": null,
@@ -111,6 +189,152 @@
     "t_span": 165.04999999999487,
     "residual_final": 1.7741152868646084e-10,
     "lift_name": "升力系数 Monitor",
+    "monitors": {
+     "Physical Time": {
+      "n": 16506,
+      "last": null,
+      "min": 0.01,
+      "max": 165.05999999999486
+     },
+     "Iteration": {
+      "n": 247590,
+      "last": null,
+      "min": 1.0,
+      "max": 247590.0
+     },
+     "Continuity": {
+      "n": 247590,
+      "last": 1.7741152868646084e-10,
+      "min": 3.271930008149637e-12,
+      "max": 3.3126288616954804e-06
+     },
+     "X-momentum": {
+      "n": 247590,
+      "last": 7.989093700269314e-11,
+      "min": 3.306402770745837e-12,
+      "max": 4.328826010014896e-06
+     },
+     "Y-momentum": {
+      "n": 247590,
+      "last": 6.110908969656632e-11,
+      "min": 2.2337253953325928e-12,
+      "max": 4.186484630365721e-06
+     },
+     "升力系数 Monitor": {
+      "n": 16506,
+      "last": null,
+      "min": -0.2822032605743206,
+      "max": 0.29583101131993683
+     }
+    },
+    "forces": {},
+    "reason": ""
+   },
+   "ours": null,
+   "verdict": {
+    "verdict": "未提供",
+    "ok": null,
+    "items": {},
+    "reason": "自研未提供该算例结果（不计通过）"
+   }
+  },
+  {
+   "id": "airfoil_multielement_official",
+   "title": "三元素翼型稳态（官方桥现场生成：清解 → 600 迭代，算例自身停止准则）",
+   "sim": "benchmarks/official/airfoil_official_2000.sim",
+   "params": {},
+   "provenance": "本仓库官方桥 B 路线生成（star_bridge.official_run_case：clearSolution + SimulationIterator.run + saveState）；源文件 optimate/data/airfoil.sim 原本无解；末段 Cl=2.2445±0.0047、Cd=0.0756±0.0028、Continuity 1.07e-3",
+   "reference": {
+    "ok": true,
+    "u_ref": 51.0430272,
+    "diameter": 1.0,
+    "reynolds": 5104302.72,
+    "st": null,
+    "st_fft": null,
+    "st_cross": null,
+    "amplitude": null,
+    "n_samples": 600,
+    "t_span": 599.0,
+    "residual_final": 0.0014517742784819984,
+    "lift_name": "Cl Monitor",
+    "monitors": {
+     "Iteration": {
+      "n": 600,
+      "last": null,
+      "min": 1.0,
+      "max": 600.0
+     },
+     "Continuity": {
+      "n": 600,
+      "last": 0.0014517742784819984,
+      "min": 0.0004772384849343382,
+      "max": 1.071643322286006
+     },
+     "X-momentum": {
+      "n": 600,
+      "last": 0.0709163459469811,
+      "min": 0.029348908289002485,
+      "max": 216.0111276954366
+     },
+     "Y-momentum": {
+      "n": 600,
+      "last": 0.051132140094103634,
+      "min": 0.020611139384452207,
+      "max": 107.16662941588272
+     },
+     "Energy": {
+      "n": 600,
+      "last": 438.29403068402473,
+      "min": 143.84699687221638,
+      "max": 324229.5807752896
+     },
+     "Cl Monitor": {
+      "n": 600,
+      "last": null,
+      "min": -0.00024344407776173075,
+      "max": 2.250534834775362
+     },
+     "Cd Monitor": {
+      "n": 600,
+      "last": null,
+      "min": 0.0035524442812420506,
+      "max": 0.3436347828199668
+     },
+     "Mass Cons Monitor": {
+      "n": 600,
+      "last": null,
+      "min": -75.05311030066919,
+      "max": 39.952604103342665
+     },
+     "Tke": {
+      "n": 600,
+      "last": 0.15683150488316253,
+      "min": 0.004062512096441854,
+      "max": 0.5596001579140114
+     },
+     "Sdr": {
+      "n": 600,
+      "last": 2.7026809481852148,
+      "min": 0.8292174774985913,
+      "max": 2458.7074510655675
+     },
+     "Cl over Cd Monitor": {
+      "n": 600,
+      "last": null,
+      "min": -0.06852861255197921,
+      "max": 32.351878241848
+     },
+     "Avg Cl over Cd Monitor": {
+      "n": 600,
+      "last": null,
+      "min": -0.06852861255197921,
+      "max": 24.86355930127456
+     }
+    },
+    "forces": {
+     "cl": 2.250534834775362,
+     "cd": 0.3436347828199668
+    },
     "reason": ""
    },
    "ours": null,

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "S6 官方参考语料库清单：条目指向官方 STAR-CCM+ 产出的 .sim（含解场/监视器），参考量由 --extract 现场抽取（不写死）",
+  "note": "S6 官方参考语料库清单：条目指向官方 STAR-CCM+ 产出的 .sim（含解场/监视器），参考量由 --extract 现场抽取（不写死）；含 1 个由官方桥现场生成的稳态翼型参考（kind=official-generated）",
   "cases": [
     {
       "id": "cyl_re200_u005",
@@ -71,6 +71,26 @@
         ]
       },
       "provenance": "官方 .sim 内嵌监视器（分段运行）"
+    },
+    {
+      "id": "airfoil_multielement_official",
+      "title": "三元素翼型稳态（官方桥现场生成：清解 → 600 迭代，算例自身停止准则）",
+      "sim": "benchmarks/official/airfoil_official_2000.sim",
+      "kind": "official-generated",
+      "metrics": [
+        "cl",
+        "cd"
+      ],
+      "params": {},
+      "expected": {
+        "cl": 2.2445,
+        "cd": 0.0756
+      },
+      "tolerances": {
+        "cl_rel": 0.15,
+        "cd_rel": 0.15
+      },
+      "provenance": "本仓库官方桥 B 路线生成（star_bridge.official_run_case：clearSolution + SimulationIterator.run + saveState）；源文件 optimate/data/airfoil.sim 原本无解；末段 Cl=2.2445±0.0047、Cd=0.0756±0.0028、Continuity 1.07e-3"
     }
   ],
   "ours": {
