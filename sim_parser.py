@@ -2011,11 +2011,15 @@ class SimFile:
         if _np is None:
             return {"ok": False, "n_fields": 0, "cell_count": 0,
                     "fields": [], "data": {}, "reason": "需要 numpy"}
+        # 根节点两类（S3 新缺口修复）：
+        #   ① star.post.SolutionRepresentation（教程/历史文件，携带 FunctionNames 字段清单）
+        #   ② star.common.FvRepresentation（**官方新求解并保存**的文件：解场直接挂在网格表示上，
+        #      无 SolutionRepresentation —— 实测官方桥生成的 airfoil_official*.sim 即此形态）
         srs = [o for o in self.objects
                if (o.class_name or "") == "star.post.SolutionRepresentation"]
         if not srs:
-            return {"ok": False, "n_fields": 0, "cell_count": 0,
-                    "fields": [], "data": {}, "reason": "无解场表示（SolutionRepresentation）"}
+            srs = [o for o in self.objects
+                   if (o.class_name or "").endswith("FvRepresentation")]
         stor_by_id = {o.id: o for o in self.objects
                       if (o.class_name or "").startswith(
                           ("SimpleStorage", "ListStorage"))}

@@ -122,7 +122,16 @@
 - **验收**：新增 tests/test_shedding.py（fast：稳定性与格式对比；long：St 带内）；R1 回归与 P4–P12 全量不回归。
 - **诚实边界**：四项手段仍不达标 → 明确记录"当前内核在 Re=200 无法复现涡脱"并给出算力/格式结论，不调参造假。
 
-### S3 解析语义深化：字段级归属（P1）
+### S3 解析字段级语义（P1）—— ⚠️ 第一轮达成（解场根节点变体修复；T 串归属与校验和仍开放）
+
+**本轮交付（真缺口 + 真修复）**：
+- **缺口**：`extract_solution_fields` 原先只认 `star.post.SolutionRepresentation`；而**官方新求解并保存**的 `.sim` 不创建该对象 —— 解场直接挂在 `star.common.FvRepresentation` 的 cells DUP 组上。上一轮官方桥生成的 `airfoil_official_2000.sim` 因此 `ok=False`（诚实拒绝，但能力缺失）。
+- **修复**：根节点泛化为两类（SolutionRepresentation 优先，缺失时回退 FvRepresentation），下游链路（Objects → TypedObjectManager → FvRegionManager → FvRegion.cells DUP → map 字段）不变。
+- **实测**：官方生成翼型件现在抽出 **21 个字段 / 16987 单元 / region=Domain**（Pressure −3230~1121 Pa、Density 1.143–1.186 可压缩理想气体、EffectiveViscosity 2.09e-5~6.59e-2、PrismLayerCells、Solidity…）；`v3_0.05` 对照**结果不变**（10 字段 / 20245 单元）→ 零回归；未求解文件仍诚实拒绝（"解场 FvRegion 无字段存储"）。
+- `tests/test_solution_roots.py` **3 项**：生成件走 FvRepresentation 根（且断言其确实不含 SolutionRepresentation）、教程件走 SolutionRepresentation 根（回归）、未求解件诚实拒绝。
+
+**仍开放（诚实标注）**：① T 载荷**字段级归属**（双精度串 39.5% / u16 串 42% 仍未绑定到对象/属性）；② 数组字段级余量（121 块）；③ 状态表尾部校验和；④ `v3_0.025` 体网格抽取缺口（共享存储变体，2780/20245 单元有面）。
+### S3 原始目标（存档）
 - **目标**：把 T 载荷的双精度串 39.5% / u16 串 42% 从"结构可分解"推进到"可归属"（绑定到对象/属性），并补齐数组字段级（余 121 块）。
 - **手段**：① 对象图数值/引用集合做假设检验框架（命中率 + 反例）；② 数组标注加规模自洽 + 引用图双证据；③ 状态表尾部校验和（用官方重存对照）；④ NameManager 存储定位。
 - **验收**：T 串字段级归属率 ≥60%（带反例证伪）；数组标注 ≥95%；尾部记录语义定论；v3_0.025 体网格抽取修复（benchmark 文件普查）。
@@ -191,7 +200,7 @@
 - **新生成的官方参考**：`optimate/data/airfoil.sim`（三元素翼型，原本无解）经官方桥 `clearSolution` → `SimulationIterator.run()` 跑到**算例自身停止准则 600 迭代**（90 s）→ `benchmarks/official/airfoil_official_2000.sim`。末段：**Cl=2.2445（±0.0047）、Cd=0.0756（±0.0028）、Cl/Cd=29.73、Continuity 1.07e-3** —— 这批数据原先在本项目里是"缺失的官方翼型解"。
 - 清单扩到 **4 算例**（3 官方 .sim + 1 官方桥现场生成），新增**稳态力系数类**判定（`metrics: ["cl","cd"]` + `cl_rel/cd_rel` 容差）；非脱落型算例**不报 St**（避免把按迭代索引的曲线当脱落频率）。
 - `tests/test_bench_report.py` 增至 **7 项**（含稳态力系数四路径）。
-**仍开放**：① 官方侧建模宏（把我们自己的通道域算例喂给官方跑，做真正的同网格对照）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做；④ 官方生成件的**解场抽取失败**（`extract_solution_fields` ok=False）—— 官方重存后的解场存储布局与教程自带文件不同，属 S3/G5 新缺口。
+**仍开放**：① 官方侧建模宏（把我们自己的通道域算例喂给官方跑，做真正的同网格对照）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做。
 ### S6 原始目标（存档）
 - **目标**：用官方 STAR-CCM+ 批量生成参考语料（同几何的网格尺寸/质量、稳态/瞬态解、报告值、重存文件），落成 benchmarks/ + 自动对标脚本，把 R4/R5 的"对标"从一次性变为可重复。
 - **手段**：宏模板（建网格/求解/导出报告/保存）+ 清单 JSON（工况、期望指标、容差）+ bench_report.py（跑批 + 汇总 + 对比）。
