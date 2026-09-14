@@ -8,7 +8,7 @@
 
 | # | 事实 | 证据 | 影响 |
 | --- | --- | --- | --- |
-| F1 | **官方 STAR-CCM+ 2502 带 license 可用**，批量宏在工作副本上真跑（license 检出 + Java 编译执行） | starccmw.exe -version 返回 20.02.007；star_macro 桥探针日志含 License build date: 28 October 2024（失败点是我自造的 sim.getVersion()，非环境） | **B 路线从"就绪未测"变为"实测可用"**：官方差分/官方参考数据/宏桥都变为可执行 |
+| F1 | **官方 STAR-CCM+ 2502 带 license 完全可用**：批量宏在工作副本上跑通并回传结果（`returncode=0`） | `starccmw.exe -version` → 20.02.007；`star_macro.run_star_macro_on_copy` 探针日志：`License build date: 28 October 2024` + `STARDECODING_PROBE_OK name=work` + `STARDECODING_PROBE_REGIONS 1` | **B 路线从"就绪未测"变为"实测可用"**：官方差分/官方参考数据/宏桥均可执行 |
 | F2 | 语料比文档所述更富：openfoam/benchmark 下约 25 个含真实解场的 .sim（20245 单元 2D 圆柱 + 升力监视器 + 残差） | G5/G6 抽取；R4 解出官方 St=0.1752 / Re=200 / 残差 3.2e-10 | 求解侧"官方对标"不缺数据，缺的是**我们的复现能力** |
 | F3 | mesh_tet 分辨率由输入表面离散主导（spacing 只控内部填充点） | 管道域 h=0.04/0.08/0.12 实测均 8118 单元 | R5 的 tet 对标提速必须先粗化表面 |
 | F4 | 结构化网格（O 型/笛卡尔阶梯）秒级生成、体积守恒 0.03–0.11% | R4 channel_tet_mesh*，24432 单元 | 自研算例的网格瓶颈已解除 |
