@@ -290,7 +290,11 @@ print("G5 solution: %s 单元=20245 字段=%d 区域=%s"
 
 # 无解场文件诚实拒绝（教程 *_start / 未求解）
 _g5n = SimFile(_find("pipeBlockage.sim")).extract_solution_fields()
-assert not _g5n.get("ok") and "SolutionRepresentation" in _g5n.get("reason")
+# 该文件有 FvRepresentation（其 cells 组只挂几何索引字段）→ 必须诚实拒绝，
+# 不得把 CellGeometryPartIndex/ProstarCellIndex 当解场（S3 假通过修复）。
+assert not _g5n.get("ok") and _g5n.get("n_fields") == 0
+assert "无解场数据" in _g5n.get("reason"), _g5n.get("reason")
+assert _g5n.get("geometry_only_fields"), _g5n
 print("G5 solution: pipeBlockage.sim 诚实拒绝（%s）" % _g5n.get("reason"))
 
 # GUI 解场着色冒烟（真解场 → 单元标量）

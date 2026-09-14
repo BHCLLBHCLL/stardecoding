@@ -19,6 +19,7 @@ from sim_parser import SimFile  # noqa: E402
 GENERATED = os.path.join(ROOT, "benchmarks", "official", "airfoil_official_2000.sim")
 TUTORIAL_SOLVED = "D:/training/openfoam/benchmark/vortexShed_tutor_v3_0.05_2502.sim"
 NO_SOLUTION = os.path.join(ROOT, "adjointWing_start.sim")
+PIPE_BLOCKAGE = "D:/training/starccm/startutorialsdata/optimate/data/pipeBlockage.sim"
 
 
 def test_generated_file_uses_fvrepresentation_root():
@@ -56,3 +57,25 @@ def test_no_solution_is_honest():
     assert ("无字段存储" in sf["reason"]) or ("无解场表示" in sf["reason"])
     if "无解场表示" in sf["reason"]:
         assert "SolutionRepresentation" in sf["reason"] and "FvRepresentation" in sf["reason"]
+
+
+@pytest.mark.skipif(not os.path.isfile(PIPE_BLOCKAGE), reason="官方语料缺失")
+def test_geometry_only_fields_are_not_a_solution():
+    """未求解文件的 cells 组只挂几何索引字段 → 不构成解场（S3 假通过修复）。
+
+    实测 pipeBlockage.sim：虽有 star.common.FvRepresentation(id=130)，其 cells DUP
+    组只含 CellGeometryPartIndex / ProstarCellIndex（无 Pressure/Velocity 等物理量）。
+    根节点回退到 FvRepresentation 后曾把这两个几何字段当成解场 → ok=True（假通过）。
+    现在：全部字段命中几何索引模式时按诚实拒绝返回，fields/data 置空，
+    几何字段名另列在 geometry_only_fields（便于诊断，不冒充解场）。
+    """
+    sim = SimFile(PIPE_BLOCKAGE)
+    assert [o for o in sim.objects
+            if (o.class_name or "") == "star.common.FvRepresentation"], \
+        "该文件按设计只有 FvRepresentation 根（正是本用例要覆盖的变体）"
+    sf = sim.extract_solution_fields()
+    assert sf["ok"] is False and sf["n_fields"] == 0 and sf["data"] == {}
+    assert "无解场数据" in sf["reason"], sf["reason"]
+    geom = sf.get("geometry_only_fields") or []
+    assert "CellGeometryPartIndex" in geom and "ProstarCellIndex" in geom
+    assert sf["cell_count"] == 14882 and sf.get("region_name") == "Region 1"

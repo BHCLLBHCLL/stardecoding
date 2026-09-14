@@ -143,7 +143,7 @@
 | --- | --- | --- |
 | 文件元信息 | ✅ 版本/时间/对象数 | — |
 | CAD 几何（cadmodeler 顶点/边/面/名称引用） | ⚠️ 对象已解析，坐标在状态表 T 块/数组 | 未能重建 B-Rep/几何拓扑 |
-| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3）；**R5 教程尺度对标**（域表面水密/面积/散度体积 ↔ 自研重网格化 面数-面积-边尺度-质量四项，pipeBlockage 实测达标）；体网格已抽取（G3：DuplicateStorageManager 存储体系驱动 + 面→单元反演 → VTK_POLYHEDRON，21 文件 4 个体网格文件单元数精确、VTU 导出）；体网格边界↔Boundary 映射精确闭合（G4：22 边界/11642 面，psi==PartSurface.Index，GUI 2D/3D 着色） | — |
+| 网格（顶点/面/体表） | ✅ 面网格已抽取+STL（§3）；**R5 教程尺度对标**（域表面水密/面积/散度体积 ↔ 自研重网格化 面数-面积-边尺度-质量四项，pipeBlockage 实测达标）；体网格已抽取（G3：DuplicateStorageManager 存储体系驱动 + 面→单元反演 → VTK_POLYHEDRON，21 文件 4 个体网格文件单元数精确、VTU 导出）；体网格边界↔Boundary 映射精确闭合（G4：22 边界/11642 面，psi==PartSurface.Index，GUI 2D/3D 着色）；**二维网格语义（S3 第二轮）**：`vortexShed_tutor_v3_0.05`/`airfoil` 实测为 z 恒定的**二维**网格（每"面"恰 2 顶点=边）→ `extract_volume_mesh` 返回 `dim/planar/planar_axes/face_kind`，`assemble_planar_cell_loops` 重建单元多边形环（显式闭合 + 隐式闭合；隐式闭合边正是边界 patch 组里的真实边界边），`export_volume_vtu` 对二维件自动改导 **VTK_POLYGON(7)**（三维件仍 41） | — |
 | Region/Boundary/Interface | ✅ 已关联网格表（改进⑦ --report：Region→Part→三角数）；体网格边界↔Boundary↔PartSurface 对象链闭合（G4：`extract_boundary_faces`/`--volume-boundaries`/`--boundary-csv`） | 面网格路径 patch 数组识别仍为启发式（跨 part 边界面聚合待细化） |
 | 场景/视图/Display/注记 | ✅ 已重建摘要（Scene→Displayer→视图，改进⑦） | 显示参数未解码 |
 | 绘图/监视器/报告 | ✅ 监视器曲线数据重建（G6：XAxisData/MultiYAxisData 双 MasterArray（G3 `_storage_array` 复用），YAxisValues 两代子格式兼容（新版 values 列表/旧版 map.YAxisData）；Continuity CurrentValue==y[-1] 端到端闭合；Plot→AxisTitle/Units/MonitorDataSet 标注关联 + 对齐 XY CSV 导出；CLI `--curves`/`--curves-csv`，GUI 真曲线 X 定位降采样） | DerivedDataSet 表数据（FileTable 载荷）仅标注不取数；场景内嵌绘图面板参数未解码 |

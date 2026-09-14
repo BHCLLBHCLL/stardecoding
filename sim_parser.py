@@ -998,6 +998,108 @@ def compact_face_indices(faces, nverts):
 
 
 # ----------------------------------------------------------------------------
+# S3：网格维度判定 + 二维（边-单元）单元环重建
+# ----------------------------------------------------------------------------
+def mesh_dimensionality(points, tol=1e-9):
+    """判定点集的有效维度，返回 (dim, 常量轴列表, 各轴跨度)。
+
+    跨度 <= tol * 最大跨度 的轴视为常量轴。STAR-CCM+ 的**二维网格**在 .sim
+    里同样以「面(边)-单元」存储体系保存（z 恒为常量），若只按多面体解释会
+    把二维网格当成体网格（vortexShed_tutor_v3_0.05 即此情形：20245 个
+    z≡0 的二维单元，59811 条边，每条边恰好 2 个顶点）。
+    """
+    if _np is None or points is None or len(points) == 0:
+        return 0, [], []
+    ext = [float(points[:, i].max() - points[:, i].min()) for i in range(3)]
+    span = max(ext) if max(ext) > 0 else 1.0
+    axes = [i for i, e in enumerate(ext) if e <= tol * span]
+    return 3 - len(axes), axes, ext
+
+
+def assemble_planar_cell_loops(cell_faces, edge_pairs):
+    """二维网格：把单元关联的边拼成有序顶点环，返回 (loops, stats)。
+
+    edge_pairs 为 (nface, 2) 顶点对。单元边集有两种合法形态：
+      - 闭合环（显式闭合：所有顶点度数 2）；
+      - **缺一条边的路径**（恰两个端点度数为 1）：二维网格的边界边存放在
+        边界 patch 组而不是主面组，故贴壁单元在主面组里少一条边
+        （vortexShed v3_0.05 实测 474 个贴壁单元，缺边均为边界边）。
+        VTK 多边形按定义隐式闭合顶点环，所以路径可直接当多边形环用。
+    其余形态（分叉/多路径/未用尽边）该单元环置空并计入 failed，不编造顺序。
+    返回 stats={"ok","closed","implicit","failed"}。
+    """
+    loops, closed, implicit, failed = [], 0, 0, 0
+    if edge_pairs is None:
+        return [], {"ok": False, "closed": 0, "implicit": 0,
+                    "failed": len(cell_faces)}
+    for fs in cell_faces:
+        inc = {}
+        for k, fi in enumerate(fs):
+            a = int(edge_pairs[fi][0])
+            b = int(edge_pairs[fi][1])
+            inc.setdefault(a, []).append((k, b))
+            inc.setdefault(b, []).append((k, a))
+        if not inc:
+            failed += 1
+            loops.append([])
+            continue
+        used = [False] * len(fs)
+        deg1 = [v for v, e in inc.items() if len(e) == 1]
+        if len(deg1) == 2:
+            start = deg1[0]           # 路径：从一端出发
+        elif deg1:
+            failed += 1
+            loops.append([])
+            continue
+        else:
+            start = next(iter(inc))   # 环：任意起点
+        cur, path = start, []
+        while True:
+            nxt = None
+            for k, w in inc.get(cur, ()):
+                if not used[k]:
+                    nxt = (k, w)
+                    break
+            if nxt is None:
+                break
+            k, w = nxt
+            used[k] = True
+            path.append(w)
+            cur = w
+        if not all(used):
+            failed += 1
+            loops.append([])
+            continue
+        if cur == start:               # 环：末次到达即起点
+            cand = [start] + path[:-1]
+        elif len(deg1) == 2:           # 路径：n 条边 -> n+1 个顶点
+            cand = [start] + path
+        else:
+            cand = []
+        if len(cand) < 3:              # 少于 3 顶点不成多边形
+            failed += 1
+            loops.append([])
+            continue
+        loops.append(cand)
+        if cur == start:
+            closed += 1
+        else:
+            implicit += 1
+    stats = {"ok": failed == 0, "closed": closed, "implicit": implicit,
+             "failed": failed}
+    return loops, stats
+
+# 几何/索引类字段：未求解文件的 cells 组只挂这些（实测 pipeBlockage.sim 的
+# FvRepresentation 只给 CellGeometryPartIndex / ProstarCellIndex）。
+# 只有**全部**字段都命中此模式才判为"无解场数据"——未知物理量字段仍按解场处理，
+# 避免把真实解场误拒绝。
+GEOMETRY_ONLY_FIELD_RE = re.compile(
+    r"^(cellgeometrypartindex|prostarcell(index|type|faceid|vertexid)"
+    r"|cellindex|cellid|vertexindex|vertexid|partindex|faceid|simh.*)$",
+    re.IGNORECASE)
+
+
+# ----------------------------------------------------------------------------
 # 5. 顶层 SimFile
 # ----------------------------------------------------------------------------
 class SimFile:
@@ -1614,6 +1716,9 @@ class SimFile:
 
         返回 {ok, kind:"poly", count, points, face_verts, face_cells,
               cell_faces, cell_loops, cells, groups, reason[, elem_types]}
+        外加维度信息：dim(2/3)、planar、planar_axes、extents、face_kind
+        （"edge" 表示每面恰 2 顶点=二维边）。二维网格额外给 loops2d /
+        loops2d_ok（单元边界顶点环，供 VTK_POLYGON 导出）。
         """
         if _np is None:
             return {"ok": False, "kind": None, "count": 0, "reason": "需要 numpy"}
@@ -1747,6 +1852,20 @@ class SimFile:
             cells.append(nodes)
             cell_loops.append(loops)
 
+        dim, planar_axes, extents = mesh_dimensionality(pts)
+        planar = (dim == 2 and len(planar_axes) == 1)
+        face_kind = "edge" if (vcounts.size and bool((vcounts == 2).all())) \
+            else "poly"
+        dim_extra = {"dim": dim, "planar": planar,
+                     "planar_axes": planar_axes, "extents": extents,
+                     "face_kind": face_kind}
+        if planar and face_kind == "edge":
+            loops2d, loops2d_stats = assemble_planar_cell_loops(
+                cell_faces, vlist.reshape(-1, 2))
+            dim_extra["loops2d"] = loops2d
+            dim_extra["loops2d_stats"] = loops2d_stats
+            dim_extra["loops2d_ok"] = bool(loops2d_stats["ok"])
+
         groups = {"verts": str(vert_d.dict.get("groupTag")),
                   "faces": str(face_d.dict.get("groupTag")),
                   "cells": str(cell_d.dict.get("groupTag"))}
@@ -1760,13 +1879,16 @@ class SimFile:
         return {"ok": True, "kind": "poly", "count": ncell,
                 "points": pts, "face_verts": vlist, "face_cells": fci,
                 "cell_faces": cell_faces, "cell_loops": cell_loops,
-                "cells": cells, "groups": groups, "reason": "", **extra}
+                "cells": cells, "groups": groups, "reason": "",
+                **dim_extra, **extra}
 
     def export_volume_vtu(self, path, vol=None):
-        """把体网格写为 VTK XML UnstructuredGrid（VTK_POLYHEDRON 任意多面体）。
+        """把网格写为 VTK XML UnstructuredGrid，ParaView 可直接打开。
 
-        单元以"面环"定义（每个面一个顶点索引环），ParaView 可直接打开。
-        抽取失败返回 None，成功返回 path。
+        三维：单元以"面环"定义 → VTK_POLYHEDRON(42) 任意多面体。
+        二维（dim==2 且面为边、loops2d 全部闭合）：单元是面 →
+        VTK_POLYGON(7)，此时按多面体写会得到退化的 2 顶点"面"。
+        抽取失败（或无二维环）返回 None，成功返回 path。
         """
         if vol is None:
             vol = self.extract_volume_mesh()
@@ -1780,13 +1902,23 @@ class SimFile:
         ncell = int(vol.get("count") or len(loops))
         conn, offs = [], []
         acc = 0
-        for cell in loops:
-            conn.append(len(cell))          # 面数
-            for loop in cell:
-                conn.append(len(loop))      # 该面顶点数
+        loops2d = vol.get("loops2d") or []
+        if (vol.get("dim") == 2 and vol.get("loops2d_ok") and loops2d
+                and all(loops2d)):
+            vtk_type = "7"                 # VTK_POLYGON：二维单元即面
+            for loop in loops2d:
                 conn.extend(int(v) for v in loop)
-            acc += 1 + sum(1 + len(l) for l in cell)
-            offs.append(acc)
+                acc += len(loop)
+                offs.append(acc)
+        else:
+            vtk_type = "41"                # VTK_POLYHEDRON
+            for cell in loops:
+                conn.append(len(cell))          # 面数
+                for loop in cell:
+                    conn.append(len(loop))      # 该面顶点数
+                    conn.extend(int(v) for v in loop)
+                acc += 1 + sum(1 + len(l) for l in cell)
+                offs.append(acc)
         L = []
         L.append('<?xml version="1.0"?>')
         L.append('<VTKFile type="UnstructuredGrid" version="1.0" '
@@ -1808,7 +1940,7 @@ class SimFile:
         L.append("          " + " ".join(str(v) for v in offs))
         L.append('        </DataArray>')
         L.append('        <DataArray type="UInt8" Name="types" format="ascii">')
-        L.append("          " + " ".join(["41"] * ncell))
+        L.append("          " + " ".join([vtk_type] * ncell))
         L.append('        </DataArray>')
         L.append('      </Cells>')
         L.append('    </Piece>')
@@ -2083,9 +2215,20 @@ class SimFile:
         if not out_fields:
             return {"ok": False, "n_fields": 0, "cell_count": ncell,
                     "fields": [], "data": {}, "reason": "解场 FvRegion 无字段存储"}
+        # 有字段存储但**全是几何/索引字段**：未求解文件（教程 pipeBlockage.sim
+        # 的 FvRepresentation 只挂 CellGeometryPartIndex/ProstarCellIndex）。
+        # 这类文件不构成解场，按诚实拒绝返回（fields/data 置空，几何字段另列）。
+        sol = [f["name"] for f in out_fields
+               if not GEOMETRY_ONLY_FIELD_RE.match(f["name"])]
+        if not sol:
+            return {"ok": False, "n_fields": 0, "cell_count": ncell,
+                    "region_name": region, "fields": [], "data": {},
+                    "geometry_only_fields": sorted(f["name"] for f in out_fields),
+                    "reason": "无解场数据（仅几何索引字段：%s）" % ", ".join(
+                        sorted(f["name"] for f in out_fields))}
         return {"ok": True, "n_fields": len(out_fields), "cell_count": ncell,
                 "region_name": region, "fields": out_fields,
-                "data": out_data, "reason": ""}
+                "data": out_data, "solution_fields": sol, "reason": ""}
 
     def export_solution_csv(self, path, sf=None, field=None):
         """G5 解场 → CSV（逐单元一行）。field 缺省取第一个标量字段。"""
@@ -4376,6 +4519,17 @@ def main(argv=None):
             print("  顶点: %d  面: %d  单元: %d" % (pts.shape[0], nfaces,
                                                     vol.get("count")))
             print("  存储组: %s" % vol.get("groups"))
+            if vol.get("dim"):
+                _ax = "".join("xyz"[i] for i in (vol.get("planar_axes") or []))
+                print("  维度: %dD%s  面类型: %s  跨度(x,y,z)=%s" % (
+                    vol["dim"], ("（常量轴 %s）" % _ax) if _ax else "",
+                    vol.get("face_kind"),
+                    [round(e, 6) for e in (vol.get("extents") or [])]))
+            if vol.get("dim") == 2 and vol.get("loops2d") is not None:
+                _st = vol.get("loops2d_stats") or {}
+                print("  二维单元环重建: %s（显式闭合 %s / 隐式闭合 %s / 失败 %s）" % (
+                    "全部成功" if vol.get("loops2d_ok") else "部分失败",
+                    _st.get("closed"), _st.get("implicit"), _st.get("failed")))
             if fv is not None:
                 print("  面顶点跨度: 0..%d  索引总数: %d" % (int(fv.max()) if fv.size else -1,
                                                         int(fv.size)))
