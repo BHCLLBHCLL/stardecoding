@@ -596,6 +596,14 @@ def _main(argv=None):
                     help="由 Cylinder 边界环实测直径（较慢）")
     ap.add_argument("--run", action="store_true", help="跑同工况自研瞬态（需 STARDECODING_LONG=1）")
     ap.add_argument("--steps", type=int, default=200)
+    # S2/S4 实验旋钮（可复现文档里的每组实验）
+    ap.add_argument("--dt", type=float, default=None, help="时间步（缺省 0.2·D/U）")
+    ap.add_argument("--n-inner", type=int, default=2, help="每时间步内迭代次数（S2：1 更少隐式平滑）")
+    ap.add_argument("--h-factor", type=float, default=4.0, help="网格分辨率（D/h，S2：8 = 8 单元/直径）")
+    ap.add_argument("--convection", choices=("upwind", "central", "limited"), default="upwind",
+                    help="对流格式（S2：limited = 二阶受限中心）")
+    ap.add_argument("--slip-walls", action="store_true",
+                    help="侧壁滑移（wall_slip_axes=(1,2)，准二维绕流）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sim_parser import SimFile
@@ -604,7 +612,10 @@ def _main(argv=None):
     rep = {"reference": ref}
     if ref.get("ok") and args.run:
         ours = run_case(D=ref.get("diameter") or 0.04, u_inf=ref.get("u_ref") or 0.05,
-                        nu=args.nu, steps=args.steps)
+                        nu=args.nu, steps=args.steps, dt=args.dt,
+                        n_inner=args.n_inner, h_factor=args.h_factor,
+                        convection=args.convection,
+                        wall_slip_axes=(1, 2) if args.slip_walls else ())
         rep["ours"] = ours
         if ours.get("ok"):
             rep["diff"] = diff_metrics(ours, ref)
