@@ -578,12 +578,29 @@ def audit_write_references(sim, patches=None, created=None, deleted=None):
 
 
 def try_official_resave(src_sim, dest_dir):
-    """有 starccmw 时用 resave_sim.java 重存；否则返回 skipped。"""
-    exe = os.environ.get("STARCCM_HOME")
+    """有 starccmw（S1 桥探测：STARCCM_HOME → 常见安装根）时用 resave_sim.java 重存。
+
+    返回 status="ready"（含 exe/macro/来源）或 "skipped"（含原因）。
+    S1 起优先走 star_bridge 的安装探测（本机 Siemens 安装可直接命中），
+    无 exe 时保持既有 auto-skip 契约。
+    """
     java = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resave_sim.java")
-    if not exe or not os.path.isfile(java):
-        return {"status": "skipped", "reason": "no STARCCM_HOME or resave_sim.java"}
-    cand = os.path.join(exe, "star", "bin", "starccmw.exe")
-    if not os.path.isfile(cand):
-        return {"status": "skipped", "reason": "starccmw.exe not found"}
-    return {"status": "ready", "exe": cand, "macro": java}
+    if not os.path.isfile(java):
+        return {"status": "skipped", "reason": "no resave_sim.java"}
+    try:
+        from star_bridge import bridge_status
+        st = bridge_status()
+    except Exception as exc:  # noqa: BLE001
+        st = {"available": False, "reason": "star_bridge 不可用: %s" % exc}
+    if st.get("available"):
+        return {"status": "ready", "exe": st["exe"], "macro": java,
+                "source": "star_bridge", "candidates": st.get("candidates", [])}
+    home = os.environ.get("STARCCM_HOME")
+    if home:
+        cand = os.path.join(home, "star", "bin", "starccmw.exe")
+        if os.path.isfile(cand):
+            return {"status": "ready", "exe": cand, "macro": java,
+                    "source": "STARCCM_HOME"}
+    return {"status": "skipped",
+            "reason": st.get("reason") or "no starccmw.exe"}
+

@@ -3161,5 +3161,26 @@ print("R 波 R4 官方解差分（合成 0.22Hz 正弦 → St=%.4f（FFT %.4f/�
       "语料 vortexShed 官方参考 St=0.1752/Re=200/Continuity 3.2e-10 见 tests/test_official_diff.py）全通过"
       % (_r4st["st"], _r4st["st_fft"], _r4st["st_cross"], _r4st["amplitude"]))
 
+# --- S 波 S1：官方桥（离线锚点；官方集成在 tests/test_star_bridge.py 门控） ---
+import star_bridge as _s1
+
+_s1st = _s1.bridge_status()
+assert set(_s1st) == {"available", "exe", "candidates", "reason"}, "S1 状态字段"
+assert _s1.candidate_exes([r"Z:\\nope"]) == [], "S1 探测不存在的根应为空"
+assert _s1.SMOKE_MACRO.count("getActiveSimulation()") == 1, "S1 冒烟宏"
+for _s1m in (_s1.SMOKE_MACRO, _s1.OPEN_STATS_MACRO, _s1.RESAVE_MACRO):
+    assert "extends StarMacro" in _s1m and "sim.println(" in _s1m
+    assert "getStarVersion" not in _s1m and "createCoSimulation(" not in _s1m, "S1 不得含未核对 API"
+_s1small = _find9("adjointWing_start.sim")
+_s1diff = _s1.compare_official_resave(_s1small, _s1small)
+assert _s1diff["ok"] and _s1diff["n_value_diffs"] == 0, "S1 自比对应零差异"
+assert _s1diff["verdicts"]["structure_survived"] and _s1diff["verdicts"]["value_fields_stable"]
+_s1multi = _s1.SMOKE_MACRO + _s1.OPEN_STATS_MACRO + _s1.RESAVE_MACRO
+assert all(m in _s1multi for m in ("getPartManager().getObjects()",
+                                    "getMonitorManager().getObjects()", "saveState(")), "S1 官方 API 覆盖"
+
+print("S 波 S1 官方桥（离线：探测字段/空根/宏仅含核对 API/自比对零差异；"
+      "官方集成 = 打开我们的产物 + 视图 6 类计数相等 + 重存 + 编辑穿过重存，见 tests/test_star_bridge.py）全通过")
+
 print("ALL CHECKS PASSED")
 
