@@ -506,7 +506,8 @@ def diff_metrics(ours, ref):
 
 def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
              length_D=16.0, height_D=8.0, thickness_D=0.5, h_factor=4.0,
-             center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None):
+             center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None,
+             convection="upwind", wall_slip_axes=()):
     """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
     **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
@@ -536,7 +537,8 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     dt = float(dt or (0.2 * D / u_inf))
     solver = PressureSolver(V, C, rho=1.0, mu=1.0 * nu, inlet_axis=0,
                             inlet_side="min", inlet_velocity=(u_inf, 0.0, 0.0),
-                            outlet_side="max")
+                            outlet_side="max", convection=convection,
+                            wall_slip_axes=wall_slip_axes)
     solver.enable_transient(dt, snapshot=True)
     fv = solver.fvm
     hc = np.asarray(mesh["hole_center"], float)[:2]

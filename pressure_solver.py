@@ -189,7 +189,17 @@ class PressureSolver:
                  compressible_model=None, compressible_gamma=1.4,
                  compressible_mw=28.96, compressible_p_ref=101325.0,
                  compressible_t_ref=300.0, compressible_dt=1.0e-3,
-                 compressible_relax=0.5, unsteady=False, dt=None):
+                 compressible_relax=0.5, unsteady=False, dt=None,
+                 convection="upwind", wall_slip_axes=()):
+        # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
+        # （法向速度=0、切向自由 → 动量装配对流与扩散均无贡献，面通量恒 0）：
+        # 典型用法 wall_slip_axes=(1,2) 得到准二维绕流，消除薄板侧壁摩擦耗散。
+        self.wall_slip_axes = tuple(int(a) for a in (wall_slip_axes or ()))
+        if convection not in ("upwind", "central", "limited"):
+            raise ValueError("未知对流格式 %r（可选 upwind/central/limited）" % (convection,))
+        # S2：对流格式。upwind=一阶上风（默认，隐式矩阵对角占优，零回归）；
+        # central/limited=二阶（延迟修正：隐式仍上风，高阶差值作为显式源进 RHS）。
+        self.convection = convection
         self.name = name
         self._rho0 = float(rho)
         self._mu0 = float(mu)
@@ -268,6 +278,7 @@ class PressureSolver:
         self._inlet_faces = None
         self._outlet_faces = None
         self._wall_faces = None
+        self._slip_faces = np.zeros(0, dtype=int)
         self._dirichlet_cell = None
         self._inlet_mdot_scale = 1.0
         self._last_residual = float("nan")
@@ -318,6 +329,16 @@ class PressureSolver:
             outlet &= ax <= cut_min + 1e-10
         outlet &= ~inlet
         wall = bnd & ~inlet & ~outlet
+        # S2：滑移壁 —— 指定轴的极值平面（法向速度=0、切向自由）
+        slip = np.zeros_like(wall)
+        for ax in getattr(self, "wall_slip_axes", ()):
+            coord = fv.face_centroid[:, ax]
+            lo = float(coord[bnd].min()) if bnd.any() else 0.0
+            hi = float(coord[bnd].max()) if bnd.any() else 0.0
+            span = max(hi - lo, 1e-30)
+            slip |= wall & ((coord <= lo + 1e-9 * span) | (coord >= hi - 1e-9 * span))
+        wall = wall & ~slip
+        self._slip_faces = np.where(slip)[0]
         self._inlet_faces = np.where(inlet)[0]
         self._outlet_faces = np.where(outlet)[0]
         self._wall_faces = np.where(wall)[0]
@@ -418,6 +439,8 @@ class PressureSolver:
             self._mdot[self._inlet_faces] = self._face_rho()[self._inlet_faces] * un * A
         if len(self._wall_faces):
             self._mdot[self._wall_faces] = 0.0
+        if len(self._slip_faces):
+            self._mdot[self._slip_faces] = 0.0
         # 出口零梯度外推：由修正后单元速度重构（保证全局质量守恒一致）
         if len(self._outlet_faces) and self._u is not None:
             oo = fv.owner[self._outlet_faces]
@@ -448,6 +471,8 @@ class PressureSolver:
         if self._u is not None:
             comp_arr = {0: self._u, 1: self._v, 2: self._w}[comp]
             b[self._outlet_faces] = comp_arr[fv.owner[self._outlet_faces]]
+            if len(self._slip_faces):
+                b[self._slip_faces] = comp_arr[fv.owner[self._slip_faces]]
         return b
 
     # -- 场 / 迭代 -------------------------------------------------
@@ -866,6 +891,33 @@ class PressureSolver:
             pass
 
     # -- 动量装配 -------------------------------------------------
+    def _deferred_convection_source(self, comp, is_int, o, nb, m):
+        """S2：高阶对流延迟修正源（仅内部面；隐式矩阵保持上风 → 稳定）。
+
+        φ_f^HO：central = 反距离线性插值；limited = φ_up + ψ_up·(φ_central − φ_up)
+        （ψ 为 Barth-Jespersen TVD 限制器，逐单元）。
+        源项：RHS[owner] -= m(φ_HO − φ_up,owner 侧)，RHS[neighbor] += m(φ_HO − φ_up,nb 侧)。
+        """
+        fv = self._fv
+        phi = np.asarray((self._u, self._v, self._w)[comp], float)
+        if phi.size == 0 or not np.any(phi):
+            return None
+        central = fv.face_value(phi)[is_int]
+        up_o = np.where(m >= 0.0, phi[o], phi[nb])
+        up_n = np.where(m >= 0.0, phi[nb], phi[o])
+        if self.convection == "limited":
+            grad = fv.grad_gauss(phi)
+            psi = fv.limiter(phi, grad)
+            psi_up = np.where(m >= 0.0, psi[o], psi[nb])
+            phi_ho = up_o + psi_up * (central - up_o)
+        else:
+            phi_ho = central
+        blend = float(getattr(self, "convection_blend", 1.0))
+        src = np.zeros(fv.n_cells, float)
+        np.add.at(src, o, -blend * m * (phi_ho - up_o))
+        np.add.at(src, nb, blend * m * (phi_ho - up_n))
+        return src
+
     def _assemble_momentum(self, comp):
         fv = self._fv
         mdot = self._mdot
@@ -881,6 +933,7 @@ class PressureSolver:
         o = fv.owner[is_int]
         nb = fv.neighbor[is_int]
         m = mdot[is_int]
+        ho_src = None
         nu_face = self._face_nu_t()
         D = (mu_face[is_int] + rho_face[is_int] * nu_face[is_int]) * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
         pos = m >= 0.0
@@ -893,6 +946,9 @@ class PressureSolver:
         rows.extend(nb); cols.extend(nb); vals.extend(D)
         rows.extend(o); cols.extend(nb); vals.extend(-D)
         rows.extend(nb); cols.extend(o); vals.extend(-D)
+        # S2 延迟修正：把「高阶面值 − 上风面值」的差值作为显式源（隐式矩阵不变，稳定）
+        if self.convection in ("central", "limited"):
+            ho_src = self._deferred_convection_source(comp, is_int, o, nb, m)
         # 边界面（np.where(~is_int)[0] 给出边界面全局索引，与 bo/mb/Db 同序）
         bo = fv.owner[~is_int]
         bnd_face = np.where(~is_int)[0]
@@ -915,12 +971,16 @@ class PressureSolver:
                 rhs[bcell] -= mb[i] * bvals[i]
         # 扩散 Dirichlet（入口/壁面固定速度）：对角 += Db，RHS += Db*bval；
         # 出口零梯度：不贡献扩散
-        diff_b = ~outlet_mask
+        slip_mask = (np.isin(bnd_face, self._slip_faces, assume_unique=False)
+                     if len(self._slip_faces) else np.zeros(len(bo), dtype=bool))
+        diff_b = ~outlet_mask & ~slip_mask
         rows.extend(bo[diff_b]); cols.extend(bo[diff_b]); vals.extend(Db[diff_b])
         for i in range(len(bo)):
-            if not outlet_mask[i]:
+            if not outlet_mask[i] and not slip_mask[i]:
                 bcell = bo[i]
                 rhs[bcell] += Db[i] * bvals[i]
+        if ho_src is not None:
+            rhs = rhs + ho_src
         # 压力梯度源：-V ∇p
         grad_p = self._grad_pressure(self._p)
         rhs += -fv.volumes * grad_p[:, comp]
