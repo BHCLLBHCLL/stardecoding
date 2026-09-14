@@ -9,6 +9,8 @@
   语料：vortexShed_tutor_v3_0.05_2502（U=0.05/ρ=1/A=0.04 → D=0.04、Re=200、
         St≈0.176、Continuity 末值 3.2e-10）—— 内存不足时诚实跳过
   门控：run_case 未设 STARDECODING_LONG=1 时拒绝并说明
+  O 型网格（S4 修复）：棱柱→tet 对角线按全局编号规范化 → 网格协调（开口边/重复面/T 型
+        全 0、边界面数符合几何），细网格（96×14 / 192×28）求解器可稳定推进
 """
 import os
 import sys
@@ -20,6 +22,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 import official_diff as od  # noqa: E402
+from mesh_amr import mesh_conformity  # noqa: E402
 
 BENCH = r"D:/training/openfoam/benchmark"
 VORTEX = os.path.join(BENCH, "vortexShed_tutor_v3_0.05_2502.sim")
@@ -136,6 +139,76 @@ def test_channel_tet_mesh_ogrid_volume_and_orientation():
     assert m["ok"] and m["n_cells"] == 6 * 24 * 4
     assert m["n_negative"] == 0 and m["quality_proxy"]["min_vol"] > 0
     assert abs(m["volume"] / m["volume_exact"] - 1.0) < 0.05
+
+
+def test_channel_ogrid_is_conforming_and_seam_faces_are_shared():
+    """S4 修复回归守卫：棱柱→tet 的三条侧面对角线必须按**全局顶点编号**规范化。
+
+    修复前按局部次序取对角线 → θ 周期缝合面两侧取到不同对角线（
+    bottom(i,0)–top(i+1,0) vs bottom(i+1,0)–top(i,0)）→ 内部面配不上
+    （n_theta=48 实测 1348 个内部单侧面）→ 细网格压力矩阵奇异（dgstrf info/NaN）。
+    """
+    from mesh_amr import _cell_faces
+    for nth, nr in ((24, 4), (48, 7), (96, 14)):
+        m = od.channel_tet_mesh(0.04, n_theta=nth, n_r=nr)
+        conf = mesh_conformity(m["vertices"], m["cells"])
+        assert conf["conforming"] is True, (nth, nr, conf)
+        assert conf["n_open_edges"] == 0 and conf["n_dup_faces"] == 0
+        assert conf["n_hanging_edges"] == 0
+        # 边界面 = 圆柱面 2nθ + 外边界 2nθ + 上下端面 2·(2·n_r·n_θ)
+        assert conf["n_boundary"] == 2 * nth * (2 + 2 * nr)
+    # θ=0 缝合面上的内部侧面必须被两个单元共享（修复前为 1）
+    m = od.channel_tet_mesh(0.04, n_theta=24, n_r=4)
+    V, C = m["vertices"], m["cells"]
+    cx, cy = m["hole_center"]
+    T, r0 = m["thickness"], m["hole_r"]
+    faces = _cell_faces(C)
+    # 缝合面上的棱柱侧面：三点都在 θ=0 射线平面（y=cy 且 x>cx），且跨越 z 层
+    seam = [k for k, cs in faces.items() if len(cs) == 2
+            and all(abs(V[v][1] - cy) < 1e-12 and V[v][0] > cx for v in k)
+            and len({round(float(V[v][2]), 12) for v in k}) > 1]
+    assert seam, "未找到 θ=0 缝合面上的内部侧面（用例失效）"
+    assert max(np.hypot(V[k[1]][0] - cx, V[k[1]][1] - cy) for k in seam) > r0
+
+
+def test_channel_ogrid_is_poorly_orthogonal_contrast_with_staircase():
+    """S2/S4 贴体路线的**当前阻断点**（定量，本轮实测）：
+
+    O 型网格虽已协调（拓扑合法、细网格不再奇异），但单元高度非正交/畸变 →
+    压力-速度耦合的非正交修正不稳：稳态 60 步残差 0.009→0.386、|u|max 8.4e8；
+    瞬态 40 步四种格式（upwind/limited/central，含无扰动）全部发散。
+    对照阶梯网格：非正交角中位 0°、稳态残差 1.9e-6、|u|max 0.07 稳定。
+    """
+    from mesh_quality import orthogonality_report
+    og = od.channel_tet_mesh(0.04, n_theta=96, n_r=14)
+    r_og = orthogonality_report(og["vertices"], og["cells"])
+    assert r_og["ok"] and r_og["verdict"] == "poor", r_og
+    assert r_og["ortho_deg"]["median"] > 45.0
+    assert r_og["ortho_deg"]["p95"] > 70.0
+    assert r_og["skew"]["p95"] > 0.8
+    st = od.channel_tet_mesh_cartesian(0.04, length_D=16.0, height_D=8.0,
+                                       thickness_D=0.25, h_factor=4.0)
+    r_st = orthogonality_report(st["vertices"], st["cells"])
+    assert r_st["verdict"] == "good"
+    assert r_st["ortho_deg"]["median"] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_channel_ogrid_solver_runs_on_fine_mesh():
+    """修复前：细 O 型网格压力矩阵奇异（dgstrf info / NaN）无法求解。"""
+    from pressure_solver import PressureSolver
+    for nth, nr, steps in ((96, 14, 3), (192, 28, 2)):
+        m = od.channel_tet_mesh(0.04, n_theta=nth, n_r=nr)
+        s = PressureSolver(m["vertices"], m["cells"], rho=1.0, mu=1e-5,
+                           inlet_axis=0, inlet_side="min",
+                           inlet_velocity=(0.05, 0.0, 0.0), outlet_side="max",
+                           convection="central", wall_slip_axes=(1, 2),
+                           piso_correctors=1)
+        s.enable_transient(0.04, snapshot=True)
+        for _ in range(steps):
+            out = s.advance(dt=0.04, n_inner=1)
+            assert np.isfinite(float(out["residual"])), (nth, nr, out)
+        u = s.velocity()
+        assert np.all(np.isfinite(u)) and float(np.abs(u).max()) > 0.0
 
 
 def test_channel_tet_mesh_cartesian_staircase():

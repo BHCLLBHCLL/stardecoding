@@ -39,10 +39,22 @@
    "evidence": "benchmarks/s2_dt_sweep.json（A 600 步完整 (t, cl) 序列 + B 500 步 + 分窗振幅）",
    "source": "s_wave_plan.md S2 第二轮"
   },
-  "cyl_re200_h8_in_progress": {
+  "cyl_re200_h8": {
    "st": null,
-   "state": "running",
-   "reason": "h=D/8（48,840 单元、单层准二维）空间分辨率提升实验进行中；175/1500 步（9 个对流时间单位）分窗振幅 0.00368→0.00045→0.00052→0.00053→0.00017，暂不足判据",
+   "reason": "h=D/8（48,840 单元、单层准二维）跑满 1500 步 = 75 个对流时间单位：窗振幅单调衰减 4.21e-3 → 5.2e-4 → 1.6e-4 → 7.1e-5 → 3.7e-5 → 2.1e-5 → 1.3e-5 → 9e-6，后半段/前半段 = 0.0086 → 收敛到对称定常解，仍未脱落；报告里的 St=0.1099 是衰减暂态的 FFT 假峰（振幅比 0.015，判定未通过）",
+   "amplitude": 0.0042100427200132415,
+   "official_amplitude": 0.28052445504510237,
+   "amplitude_ratio": 0.015007756522818504,
+   "window_amplitude": [
+    0.00421004,
+    0.00051586,
+    0.0001604,
+    7.083e-05,
+    3.691e-05,
+    2.074e-05,
+    1.296e-05,
+    9.09e-06
+   ],
    "config": {
     "mesher": "cartesian",
     "h_factor": 8,
@@ -59,8 +71,26 @@
     "dt": 0.04,
     "steps": 1500
    },
-   "checkpoint": "_s2_C_h8.json（每 25 步落盘，中断不丢证据）",
-   "timing": "实测 1.8 s/步（无争用）→ 全程约 45 分钟"
+   "evidence": "_s2_C_h8.json（750 个采样点，每 25 步落盘）",
+   "source": "s_wave_plan.md S2 第三路"
+  },
+  "cyl_re200_ogrid_bodyfitted": {
+   "st": null,
+   "state": "failed-diverged",
+   "reason": "贴体 O 型网格（8,064 单元）首次接入：dt=0.04 s（CFL≈1.5）与 dt=0.01 s（CFL=0.19）都在 40 步内发散；upwind/limited/central（含无扰动）四种组合全部发散 → 排除 CFL/格式/扰动。定量根因：orthogonality_report 显示非正交角 median 56.6°/p95 81.9°、偏斜 p95 0.97/max 1.25（阶梯网格 0°/35.3°、0.289）→ 网格正交性 + 求解器非正交修正能力是阻断点",
+   "config": {
+    "mesher": "ogrid",
+    "n_theta": 96,
+    "n_r": 14,
+    "n_cells": 8064,
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 1
+   },
+   "source": "s_wave_plan.md S2 第四路 / S4 O 型网格节"
   }
  }
 }

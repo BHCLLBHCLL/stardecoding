@@ -329,8 +329,11 @@ def channel_tet_mesh(D, length_D=20.0, height_D=10.0, thickness=None, n_theta=96
                      n_r=14, center_x_D=5.0, stretch=1.2, n_layers=1):
     """通道域**结构化**四面体网格（O 型网格棱柱 → 3 tet/棱柱，无 scipy、无薄元）。
 
-    相比 scipy Delaunay：确定性、单元形状可控、无奇异面（求解器线性系统良态）。
-    体积与解析值一致（可核对）。
+    相比 scipy Delaunay：确定性、单元形状可控。体积与解析值一致（可核对）。
+    注意（S4 修复记录）：外边界是**内接多边形**（外环点取自矩形边界的射线交点，
+    相邻点之间的弦切掉角部）→ 体积略小于解析值（n_theta=48 时 −1.4%，192 时 −0.06%）；
+    棱柱→tet 的对角线必须按**全局顶点编号**规范化，否则 θ 周期缝合面三角剖分不一致
+    （曾导致细网格压力矩阵奇异）。
     """
     r0 = 0.5 * float(D)
     L = float(length_D) * float(D)
@@ -392,6 +395,17 @@ def channel_tet_mesh(D, length_D=20.0, height_D=10.0, thickness=None, n_theta=96
                 tris_b = [(b[0], b[1], b[2]), (b[0], b[2], b[3])]
                 tris_u = [(u[0], u[1], u[2]), (u[0], u[2], u[3])]
                 for (p0, p1, p2), (q0, q1, q2) in zip(tris_b, tris_u):
+                    # S4 修复：**按全局顶点编号规范化底面三角形顺序**（顶面同序跟随）。
+                    # 棱柱→3 tet 的三个侧面各取一条对角线，局部规则下对角线取决于
+                    # 三角形顶点在局部的次序：θ 周期缝合面上两侧的同一四边形来自
+                    # "第 1 个三角形"与"第 2 个三角形"，局部次序相反 → 一侧取
+                    # bottom(i,0)–top(i+1,0)、另一侧取 bottom(i+1,0)–top(i,0)，
+                    # 内部面配不上（实测 n_theta=48 有 1348 个内部单侧面）→ 细网格
+                    # 压力矩阵奇异（dgstrf info / NaN）。按全局编号排序后对角线只由
+                    # 全局编号决定（"小号底面点连它自己的顶面点"），两侧一致 → 协调。
+                    _tri = sorted(((p0, q0), (p1, q1), (p2, q2)),
+                                  key=lambda t: t[0])
+                    (p0, q0), (p1, q1), (p2, q2) = _tri
                     cells += [(p0, p1, p2, q2), (p0, p1, q2, q1), (p0, q1, q2, q0)]
     V = np.asarray(pts, float)
     C = np.asarray(cells, np.int64)
@@ -584,6 +598,16 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
                                     lift_dir=(0.0, 1.0, 0.0))
             ts.append(float(solver.time))
             cls.append(float(fc.get("cl", float("nan"))))
+    # S4：CFL 诊断（诚实必要 —— 贴体 O 型网格的 θ 向间距远小于径向，dt 稍大即 CFL>1
+    # 发散；实测 dt=0.04 s + n_theta=96 时 CFL≈1.5 → cl 爆到 1e32）。
+    try:
+        from mesh_tet import _tet_volumes
+        _vol = np.abs(_tet_volumes(np.asarray(V, float), np.asarray(C, np.int64)))
+        h_min = float(_vol.min()) ** (1.0 / 3.0) if _vol.size else 0.0
+        h_typ = float(np.median(_vol)) ** (1.0 / 3.0) if _vol.size else 0.0
+    except Exception:
+        h_min = h_typ = 0.0
+    cfl = float(u_inf * dt / h_min) if h_min > 0 else None
     series = np.asarray(cls, float)
     t = np.asarray(ts, float)
     st = strouhal_from_series(t, series, D, u_inf) if series.size >= 16 else None
@@ -598,6 +622,7 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     return {"ok": True, "mesher": mesher, "n_cells": int(C.shape[0]),
             "n_cyl_faces": int(cyl_faces.size), "dt": dt, "steps": int(steps),
             "perturb_mag": perturb_mag,
+            "h_min": h_min, "h_typ": h_typ, "cfl_max": cfl,
             "t_span": float(t[-1] - t[0]) if t.size else 0.0,
             "n_samples": int(series.size),
             "mean": float(np.nanmean(series)) if series.size else None,
@@ -638,6 +663,8 @@ def _main(argv=None):
                     help="侧壁滑移（wall_slip_axes=(1,2)，准二维绕流）")
     ap.add_argument("--piso", type=int, default=0,
                     help="PISO 压力校正次数（S2：≥2 且配合 --n-inner 1 保非定常时间精度）")
+    ap.add_argument("--mesher", choices=("cartesian", "ogrid"), default="cartesian",
+                    help="cartesian=阶梯（鲁棒）；ogrid=贴体 O 型网格（S4 修复后细网格可用）")
     ap.add_argument("--thickness-D", type=float, default=0.5,
                     help="展向厚度（以 D 为单位；0.25 + 滑移壁 = 单层准二维，成本减半）")
     ap.add_argument("--perturb", type=float, default=None,
@@ -659,6 +686,7 @@ def _main(argv=None):
                         convection=args.convection,
                         wall_slip_axes=(1, 2) if args.slip_walls else (),
                         piso_correctors=args.piso,
+                        mesher=args.mesher,
                         thickness_D=args.thickness_D, perturb=args.perturb,
                         sample_every=args.sample_every,
                         checkpoint=args.checkpoint)
@@ -696,6 +724,10 @@ def _main(argv=None):
         else:
             print("自研瞬态: 单元 %d dt=%.4g 步数 %d 周期数 %.2f St=%s"
                   % (o["n_cells"], o["dt"], o["steps"], o["n_periods"], o["st"]))
+            if o.get("cfl_max") is not None:
+                print("   CFL 诊断: h_min=%.3g h_typ=%.3g → CFL_max=%.2f%s"
+                      % (o["h_min"], o["h_typ"], o["cfl_max"],
+                         "（>1：贴体网格 θ 向间距小，需减小 dt）" if o["cfl_max"] > 1.0 else ""))
             for k, v in (rep.get("diff") or {}).get("items", {}).items():
                 print("   差分 %-12s %s" % (k, v))
     return 0

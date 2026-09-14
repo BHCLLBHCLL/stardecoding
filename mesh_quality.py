@@ -256,6 +256,62 @@ def repair_cells(vertices, cells, kind="tet", null_tol=1e-12):
             "quality": _native_quality(V, Ck, "tet")}
 
 
+# ---------------------------------------------------------------------------
+# S4：正交性/偏斜诊断（贴体网格可用性的定量判据）
+# ---------------------------------------------------------------------------
+def orthogonality_report(vertices, cells, kind="tet", good=None, poor=None):
+    """内部面的**非正交角**与**偏斜**统计 —— 压力基求解器可用性的定量判据。
+
+    对每个内部面（owner→neighbor）：
+      · 非正交角 = ∠(面单位法向, 单元心连线)；0° = 完全正交（Cartesian 网格）；
+      · 偏斜 = |面心 − 心连线上的投影| / |心连线|（STAR-CCM+ skewness 口径近似）；
+        ≥1.0 表示面心的投影落到心连线端点之外，单元高度畸变。
+
+    判据（阈值可由 good/poor 覆盖）：median ≤ 20° 且 p95 ≤ 60° 且 skew.p95 ≤ 0.5
+    → "good"；median ≥ 45° 或 skew.p95 ≥ 0.8 → "poor"；其余 "marginal"。
+    实测参照：阶梯（Cartesian）网格 median 0° / p95 35° / skew 0.289 → good 且求解
+    稳定；贴体 O 型网格 median 56.6° / p95 81.9° / skew p95 0.97、max 1.25 → poor，
+    稳态与瞬态压力求解**都发散**（S4/S2 贴体路线的当前阻断点）。
+    返回 {ok, n_faces, n_interior, ortho_deg:{mean,median,p95,max},
+    skew:{mean,median,p95,max}, verdict, reason}。
+    """
+    from fvm_core import FVM          # 延迟导入：避免模块级循环依赖
+    V = np.asarray(vertices, float)
+    C = np.asarray(cells, np.int64)
+    if C.ndim != 2 or C.shape[0] == 0:
+        return {"ok": False, "reason": "需要非空单元表", "verdict": None}
+    fv = FVM(V, C)
+    m = ~fv.is_boundary
+    if not m.any():
+        return {"ok": False, "reason": "无内部面", "verdict": None,
+                "n_faces": int(fv.n_faces), "n_interior": 0}
+    o, nb = fv.owner[m], fv.neighbor[m]
+    d = fv.centroids[nb] - fv.centroids[o]
+    L = np.linalg.norm(d, axis=1)
+    cos = np.einsum("ij,ij->i", fv.face_normal[m], d) / np.maximum(L, 1e-300)
+    ang = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    t = np.einsum("ij,ij->i", fv.face_centroid[m] - fv.centroids[o], d) \
+        / np.maximum(L * L, 1e-300)
+    proj = fv.centroids[o] + t[:, None] * d
+    skew = np.linalg.norm(fv.face_centroid[m] - proj, axis=1) / np.maximum(L, 1e-300)
+    oth = {"mean": float(ang.mean()), "median": float(np.median(ang)),
+           "p95": float(np.percentile(ang, 95)), "max": float(ang.max())}
+    skw = {"mean": float(skew.mean()), "median": float(np.median(skew)),
+           "p95": float(np.percentile(skew, 95)), "max": float(skew.max())}
+    g = good or (20.0, 60.0, 0.5)
+    p = poor or (45.0, 0.8)
+    if oth["median"] <= g[0] and oth["p95"] <= g[1] and skw["p95"] <= g[2]:
+        verdict = "good"
+    elif oth["median"] >= p[0] or skw["p95"] >= p[1]:
+        verdict = "poor"
+    else:
+        verdict = "marginal"
+    return {"ok": True, "n_faces": int(fv.n_faces), "n_interior": int(m.sum()),
+            "ortho_deg": oth, "skew": skw, "verdict": verdict,
+            "reason": ("非正交角 median %.1f° / p95 %.1f°、偏斜 p95 %.3f"
+                       % (oth["median"], oth["p95"], skw["p95"]))}
+
+
 def poly_quality_safe(vertices, cells):
     """repair_cells 内部对 dict 单元的安全质量汇总（无 cells 返回空）。"""
     try:

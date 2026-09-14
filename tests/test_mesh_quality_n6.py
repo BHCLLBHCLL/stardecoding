@@ -203,6 +203,42 @@ def test_periodic_pairs_translation():
         assert i != j
 
 
+from mesh_quality import orthogonality_report  # noqa: E402  (S4 诊断)
+
+
+# ---------------------------------------------------------------- S4 正交性诊断
+def test_orthogonality_report_good_on_cartesian_mesh():
+    """Cartesian（Kuhn 6-tet）网格完全正交 → good，偏斜为常值 0.289。"""
+    from fvm_core import cube_tet_mesh
+    from mesh_quality import orthogonality_report
+    V, C = cube_tet_mesh(2)
+    r = orthogonality_report(V, C)
+    assert r["ok"] and r["verdict"] == "good"
+    assert r["ortho_deg"]["median"] == pytest.approx(0.0, abs=1e-4)   # 浮点级非正交
+    assert r["ortho_deg"]["p95"] < 40.0
+    assert r["skew"]["p95"] == pytest.approx(0.289, abs=0.05)
+    assert r["n_interior"] > 0 and r["n_faces"] > r["n_interior"]
+
+
+def test_orthogonality_report_flags_sheared_mesh():
+    """剪切变形使面法向偏离心连线 → 不再 good（阈值口径可量化）。"""
+    from fvm_core import cube_tet_mesh
+    from mesh_quality import orthogonality_report
+    V, C = cube_tet_mesh(2)
+    V2 = np.asarray(V, float).copy()
+    V2[:, 0] = V2[:, 0] + 0.6 * V2[:, 1]          # 剪切
+    r = orthogonality_report(V2, C)
+    assert r["ok"] and r["verdict"] in ("marginal", "poor")
+    assert r["ortho_deg"]["median"] > 10.0
+    assert r["ortho_deg"]["median"] < 45.0        # 中等畸变 → marginal 而非 poor
+
+
+def test_orthogonality_report_honest_on_empty_and_degenerate_input():
+    from mesh_quality import orthogonality_report
+    r = orthogonality_report(np.zeros((4, 3)), np.zeros((0, 4), np.int64))
+    assert r["ok"] is False and r["verdict"] is None and r["reason"]
+
+
 # ---------------------------------------------------------------- AMR 运行时
 def test_amr_marks_none_below_threshold():
     V, C = cube_5tet()
