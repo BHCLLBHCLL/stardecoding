@@ -1,23 +1,66 @@
 {
-  "note": "S2 自研圆柱结果（诚实记录：七组配置均未复现脱落）",
-  "cases": {
-    "cyl_re200_u005": {
-      "st": null,
-      "amplitude": 0.0061,
-      "n_periods": 1.99,
-      "reason": "未达脱落周期（PISO(2)+limited+slip，220 步 ≈21.9 s ≈4.8 周期，振幅单调衰减 0.00643→0.00008）",
-      "config": {
-        "mesher": "cartesian",
-        "h_factor": 4,
-        "convection": "limited",
-        "wall_slip_axes": [
-          1,
-          2
-        ],
-        "piso_correctors": 2,
-        "n_inner": 1
-      },
-      "source": "s_wave_plan.md S2 / _s2_piso_result.json"
-    }
+ "note": "S2 自研圆柱结果（诚实记录：多组配置均未复现脱落；本轮把时间步假设证伪）",
+ "cases": {
+  "cyl_re200_u005": {
+   "st": null,
+   "amplitude": 0.0061,
+   "n_periods": 1.99,
+   "reason": "未达脱落周期（PISO(2)+limited+slip，220 步 ≈21.9 s ≈4.8 周期，振幅单调衰减 0.00643→0.00008）",
+   "config": {
+    "mesher": "cartesian",
+    "h_factor": 4,
+    "convection": "limited",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 2,
+    "n_inner": 1
+   },
+   "source": "s_wave_plan.md S2 第一轮 / _s2_piso_result.json"
+  },
+  "cyl_re200_dt_sweep": {
+   "st": null,
+   "reason": "时间步 A/B 对照：dt=0.16 s（119 个对流时间单位）与 dt=0.04 s（缩小 4×）在同一非对称初扰动下**均单调衰减**（1e-5~1e-4 量级）→ 时间步假设被证伪",
+   "config": {
+    "mesher": "cartesian",
+    "h_factor": 4,
+    "thickness_D": 0.25,
+    "n_cells": 12216,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 1,
+    "perturb": 0.05
+   },
+   "evidence": "benchmarks/s2_dt_sweep.json（A 600 步完整 (t, cl) 序列 + B 500 步 + 分窗振幅）",
+   "source": "s_wave_plan.md S2 第二轮"
+  },
+  "cyl_re200_h8_in_progress": {
+   "st": null,
+   "state": "running",
+   "reason": "h=D/8（48,840 单元、单层准二维）空间分辨率提升实验进行中；175/1500 步（9 个对流时间单位）分窗振幅 0.00368→0.00045→0.00052→0.00053→0.00017，暂不足判据",
+   "config": {
+    "mesher": "cartesian",
+    "h_factor": 8,
+    "thickness_D": 0.125,
+    "n_cells": 48840,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 1,
+    "perturb": 0.05,
+    "dt": 0.04,
+    "steps": 1500
+   },
+   "checkpoint": "_s2_C_h8.json（每 25 步落盘，中断不丢证据）",
+   "timing": "实测 1.8 s/步（无争用）→ 全程约 45 分钟"
   }
+ }
 }

@@ -25,6 +25,7 @@ sys.path.insert(0, ROOT)
 import numpy as np
 import pytest
 
+from fvm_core import cube_tet_mesh
 from mesh_amr import refine_tets, register_amr_hook, unregister_amr_hook
 from solver_run import (DemoDiffusionSolver, FvmDiffusionSolver, Monitor,
                         MonitorManager, Report, SolverBackend, SolverState,
@@ -162,9 +163,13 @@ def test_stop_residual_tol():
 
 
 def test_stop_wall_time():
+    # 轮询到条件真正成立（有界 5 s）：纯计时断言在 CPU 争用时偶发假失败
+    # （time.sleep 提前返回/调度延迟），这里不削弱判据、只去掉不确定性。
     c = StopCriterion(wall_time=0.05)
     c.start_timer()
-    time.sleep(0.06)
+    deadline = time.monotonic() + 5.0
+    while c._elapsed() < 0.06 and time.monotonic() < deadline:
+        time.sleep(0.01)
     stop, reason = c.evaluate(1, 0.5)
     assert stop and "算时" in reason
 
@@ -303,19 +308,22 @@ def test_run_loop_report_and_events():
 
 
 def test_run_loop_amr_refines_mesh():
-    V, C = demo_mesh(nx=3)
+    # S4：AMR 入环改走内置**协调**细化（边闭包）+ 场传递，不再依赖注册钩子。
+    # 这里用 Kuhn 6-tet 协调网格（`demo_mesh` 的 5-tet 扇形基元本身非协调，
+    # 会被诚实跳过 —— 见 tests/test_amr_loop.py 对应用例）。
+    V, C = cube_tet_mesh(nx=2)
     be = SolverBackend(DemoDiffusionSolver(V, C))
     be.initialize()
-    register_amr_hook(refine_tets)
-    try:
-        be.set_amr(interval=5, threshold=0.99)
-        be.run_loop(max_iter=20)
-        amr = be.metrics()["amr"]
-        assert amr is not None
-        assert amr["times"] >= 1
-        assert amr["n_after"] > amr["n_before"]
-    finally:
-        unregister_amr_hook(refine_tets)
+    be.set_amr(interval=5, threshold=0.99)
+    be.run_loop(max_iter=20)
+    amr = be.metrics()["amr"]
+    assert amr is not None
+    assert amr["times"] >= 1
+    assert amr["n_after"] > amr["n_before"]
+    # 节点场（DemoDiffusionSolver.field() 是顶点量）无法按单元父子映射传递，
+    # 如实标注而不是假装传过。
+    assert amr["transferred"] is False
+    assert "非单元量" in (amr["note"] or "")
 
 
 # ---------------------------------------------------------------- 线程化 Run/Pause/Step/Stop（P10 验收核心）

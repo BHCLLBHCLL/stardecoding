@@ -676,9 +676,14 @@ class SolverBackend:
         self._result = None
         self._amr_interval = None
         self._amr_threshold = 0.30
+        self._amr_max_rounds = 8
         self._amr_times = 0
         self._amr_n_before = 0
         self._amr_n_after = 0
+        self._amr_skipped = ""
+        self._amr_error = ""
+        self._amr_note = ""
+        self._amr_transferred = False
         self._event_count = 0
         self._pause_sleep = 0.02
         self._step_requested = False
@@ -693,10 +698,17 @@ class SolverBackend:
                            ("u_mean", "field")):
             self.monitors.add(name, Monitor(name, kind=kind))
 
-    def set_amr(self, interval, threshold=0.30):
-        """开启 AMR 运行时细化（interval 步一次）；None 关闭。"""
+    def set_amr(self, interval, threshold=0.30, max_rounds=8):
+        """开启 AMR 运行时细化（每 interval 步一次）；None 关闭。
+
+        S4：细化走 `mesh_amr.refine_tets_conforming`（边闭包 → 协调复核），
+        并把旧场按父子映射 `transfer_fields` 传到新网格后 `set_fields(...
+        snapshot=True)` —— 换网格**不再清零解**。未协调时跳过本次细化并记
+        `_amr_skipped`（诚实拒绝，不把非协调网格塞进求解器）。
+        """
         self._amr_interval = int(interval) if interval else None
         self._amr_threshold = float(threshold)
+        self._amr_max_rounds = int(max_rounds)
 
     # -- 命令（任意线程） ------------------------------------------------
     def initialize(self):
@@ -861,27 +873,70 @@ class SolverBackend:
         if not self._amr_interval or self._iteration % int(self._amr_interval):
             return
         try:
-            from mesh_amr import run_amr
-            n_before = int(getattr(self.solver, "cells", None) is not None and
-                           len(self.solver.cells))
-            out = run_amr(self.solver.vertices, self.solver.cells, kind="tet",
-                          threshold=self._amr_threshold)
-            res = None
-            for r in out.get("results", []):
-                res = r.get("result") or res
-            if isinstance(res, dict) and res.get("ok") and res.get("vertices") is not None:
-                n_after = int(len(res["cells"]))
-                if n_after != n_before:
-                    self.solver.set_mesh(res["vertices"], res["cells"])
-                    self.solver._initialize_field()
-                    self._amr_times += 1
-                    self._amr_n_before = n_before
-                    self._amr_n_after = n_after
-                    self.events.fire("amr", n_before=n_before, n_after=n_after,
-                                     fraction=out.get("fraction", 0.0))
-        except Exception:
-            # AMR 失败不阻断主循环
-            pass
+            from mesh_amr import (amr_marks, refine_tets_conforming,
+                                  transfer_fields)
+            V, C = self.solver.vertices, self.solver.cells
+            n_before = int(len(C))
+            marks = amr_marks(V, C, kind="tet", threshold=self._amr_threshold)
+            if not marks["n_marks"]:
+                self._amr_skipped = "无单元低于质量阈值"
+                return
+            ref = refine_tets_conforming(V, C, mask=marks["mask"],
+                                         max_rounds=self._amr_max_rounds)
+            if not (ref.get("ok") and ref.get("conforming")):
+                self._amr_skipped = ("细化未协调（open_edges=%s, rounds=%s）"
+                                     % ((ref.get("conformity") or {}).get("n_open_edges"),
+                                        ref.get("rounds")))
+                return
+            n_after = int(len(ref["cells"]))
+            if n_after == n_before:
+                self._amr_skipped = "细化后单元数未变"
+                return
+            # 场传递（能力探测）：矢量求解器（u/v/w/p）→ 标量单元场 → 节点场
+            # 无传递能力时保持 N6 行为（换网格 + 重初始化）并如实标注，不假装。
+            u_old = p_old = None
+            vector_solver = (hasattr(self.solver, "velocity")
+
+                             and hasattr(self.solver, "set_fields"))
+            if vector_solver:
+                u_old = self.solver.velocity()
+                p_old = self.solver.pressure()
+            else:
+                f_old = np.asarray(self.solver.field(), float)
+                cell_scalar = (f_old.size == n_before)
+            t_save = float(getattr(self.solver, "time", 0.0))
+            self.solver.set_mesh(ref["vertices"], ref["cells"])
+            transferred, note = False, ""
+            try:
+                if vector_solver:
+                    u_new = transfer_fields(ref["parent"], u_old)
+                    p_new = transfer_fields(ref["parent"], p_old)
+                    self.solver.set_fields(u=u_new[:, 0], v=u_new[:, 1],
+                                           w=u_new[:, 2], p=p_new, snapshot=True)
+                    self.solver.time = t_save   # set_mesh 内部把 time 归零
+                    transferred = True
+                elif cell_scalar and hasattr(self.solver, "_field"):
+                    self.solver._field = transfer_fields(ref["parent"], f_old)
+                    transferred = True
+                else:
+                    note = ("求解器场非单元量（%d != %d）→ 不做传递，"
+                            "保持换网格后重初始化" % (f_old.size, n_before))
+            except Exception as e:
+                note = "场传递失败：%s: %s" % (type(e).__name__, e)
+            self._amr_times += 1
+            self._amr_n_before = n_before
+            self._amr_n_after = n_after
+            self._amr_transferred = transferred
+            self._amr_note = note
+            self._amr_skipped = ""
+            self._amr_error = ""
+            self.events.fire("amr", n_before=n_before, n_after=n_after,
+                             fraction=marks["fraction"],
+                             n_closed=ref.get("n_closed"),
+                             transferred=transferred)
+        except Exception as e:
+            # AMR 失败不阻断主循环（但如实记录原因）
+            self._amr_error = "%s: %s" % (type(e).__name__, e)
 
     # -- 只读快照 ------------------------------------------------
     def state(self):
@@ -895,9 +950,19 @@ class SolverBackend:
                     "residual": self._safe_residual(),
                     "monitors": self.monitors.table(),
                     "reason": self._stop_reason,
-                    "amr": {"times": self._amr_times,
-                            "n_before": self._amr_n_before,
-                            "n_after": self._amr_n_after} if self._amr_times else None}
+                    "amr": self._amr_meta()}
+
+    def _amr_meta(self):
+        """AMR 运行元数据（含"跳过原因"与"是否做了场传递"，便于诚实诊断）。"""
+        if not (self._amr_times or self._amr_skipped or self._amr_error):
+            return None
+        return {"times": self._amr_times,
+                "n_before": self._amr_n_before,
+                "n_after": self._amr_n_after,
+                "transferred": self._amr_transferred,
+                "skipped": self._amr_skipped or None,
+                "note": self._amr_note or None,
+                "error": self._amr_error or None}
 
     def curve_items(self, max_pts=512):
         with self._lock:
@@ -909,9 +974,7 @@ class SolverBackend:
                     "residual": self._safe_residual(),
                     "reason": self._stop_reason,
                     "events": self._event_count,
-                    "amr": {"times": self._amr_times,
-                            "n_before": self._amr_n_before,
-                            "n_after": self._amr_n_after} if self._amr_times else None}
+                    "amr": self._amr_meta()}
             return Report("%s — 运行报告" % self._state.upper()).lines(
                 self.monitors, meta)
 

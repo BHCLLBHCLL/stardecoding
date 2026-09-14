@@ -131,6 +131,165 @@ def refine_tets(vertices, cells, mask=None, threshold=None):
 
 
 # ---------------------------------------------------------------------------
+# S4：协调（无悬挂节点）细化 + 场传递 —— AMR 入求解环的前置条件
+# ---------------------------------------------------------------------------
+def _cell_faces(cells):
+    """(排序顶点三元组) → 共享该面的单元索引列表。"""
+    faces = {}
+    for ci, row in enumerate(cells):
+        r = [int(x) for x in row]
+        for tri in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)):
+            k = tuple(sorted((r[tri[0]], r[tri[1]], r[tri[2]])))
+            faces.setdefault(k, []).append(ci)
+    return faces
+
+
+def mesh_conformity(vertices, cells):
+    """协调性硬判据：面最多被两个单元共享，且 count==1 的"单侧面"构成闭合曲面。
+
+    1:8 红细化若邻接未细化单元会产生悬挂节点：粗面(3 顶点)与 4 个细分面同时
+    只出现一次，粗面的边只被 1 个单侧面使用 → n_open_edges>0。FVM 的面匹配按
+    顶点集合配对，悬挂界面会被误判为边界（内部连通丢失），所以细化结果入环前
+    必须过这道门槛。返回 {conforming, n_faces, n_boundary, n_dup_faces,
+    n_open_edges, n_vertices}。
+    """
+    V = np.asarray(vertices, float)
+    faces = _cell_faces(cells)
+    bnd = [k for k, cs in faces.items() if len(cs) == 1]
+    dup = [k for k, cs in faces.items() if len(cs) > 2]
+    # ① 无向边键规范化后统计使用次数（(9,0) 与 (0,9) 是同一条边）
+    use, edge_faces = {}, {}
+    for k in bnd:
+        a, b, c = k
+        for e in ((a, b), (b, c), (c, a)):
+            ek = e if e[0] < e[1] else (e[1], e[0])
+            use[ek] = use.get(ek, 0) + 1
+            edge_faces.setdefault(ek, []).append(k)
+    bad = [e for e, n in use.items() if n != 2]
+    # ② T 型节点（悬挂节点）检测：某条单侧面的边的**内部**存在别的顶点
+    #    （该顶点被共用这条边的其它单侧面使用）。角落单元的孤立细化正是这种
+    #    形态：粗面退化边被真实边界边掩盖，只能靠 T 型检测抓到。
+    hanging = []
+    scale = max(1.0, float(np.abs(V).max()) if V.size else 1.0)
+    tol = 1e-9 * scale
+    for ek, ks in edge_faces.items():
+        a, b = int(ek[0]), int(ek[1])
+        d = V[b] - V[a]
+        L2 = float(d @ d)
+        if L2 <= 0.0:
+            continue
+        cand = {int(v) for k in ks for v in k} - {a, b}
+        for v in cand:
+            t = float((V[v] - V[a]) @ d) / L2
+            if not (1e-9 < t < 1.0 - 1e-9):
+                continue
+            if float(np.linalg.norm(V[v] - (V[a] + t * d))) <= tol:
+                hanging.append((ek, v))
+                break
+    return {"conforming": (not bad) and (not dup) and (not hanging),
+            "n_faces": len(faces), "n_boundary": len(bnd),
+            "n_dup_faces": len(dup), "n_open_edges": len(bad),
+            "n_hanging_edges": len(hanging),
+            "n_vertices": int(len(V))}
+
+
+def refine_conformity(mask, cells):
+    """红细化的协调性**精确前置判据**：任何被两个单元共享的面，其两侧要么
+    同细化、要么同不细化；且网格本身面配对合法（无 >2 共享面）。
+
+    1:8 红细化在父单元内部是协调的，因此"无混合面"等价于细化后协调 —— 这是
+    比事后几何检测更强、也更便宜的判据（O(面数)）。返回 {conforming,
+    n_mixed_faces, n_dup_faces, n_faces, n_masked}。
+    """
+    faces = _cell_faces(cells)
+    mask = np.asarray(mask, bool)
+    mixed = [k for k, cs in faces.items()
+             if len(cs) == 2 and bool(mask[cs[0]]) != bool(mask[cs[1]])]
+    dup = [k for k, cs in faces.items() if len(cs) > 2]
+    return {"conforming": (not mixed) and (not dup),
+            "n_mixed_faces": len(mixed), "n_dup_faces": len(dup),
+            "n_faces": len(faces), "n_masked": int(mask.sum())}
+
+
+def refine_tets_conforming(vertices, cells, mask=None, threshold=None,
+                           max_rounds=8, verify=True):
+    """协调 1:8 红细化：**边闭包**（标记单元每条边上的单元一并细化）+ 父子映射。
+
+    规则：任一被标记单元的每条边，其上所有单元都必须细化（标准 edge-closure），
+    迭代至多 max_rounds 轮；随后细分并复核：`conforming` = 红细化前置判据
+    （`refine_conformity`，精确）**且** 结果网格结构诊断（`mesh_conformity`：
+    重复面 / 开口边 / T 型节点）皆通过。任一不过都如实返回 conforming=False ——
+    调用方应**跳过**本次细化，而不是把非协调网格交给求解器。
+
+    返回 {ok, vertices, cells, parent, n_before, n_after, n_refined, n_closed,
+    rounds, conforming, conformity}；`parent[k]` = 新单元 k 的**旧单元索引**
+    （未细化单元指向自身），供 transfer_fields 场传递使用。
+    """
+    V = np.asarray(vertices, float)
+    C = np.asarray(cells, np.int64)
+    if len(C) == 0:
+        raise ValueError("refine_tets_conforming 需要非空四面体")
+    if mask is None:
+        mask = np.ones(len(C), bool)
+    else:
+        mask = np.asarray(mask, bool).copy()
+    if threshold is not None:
+        scores = np.array([cell_metric(V, row, "tet") for row in C])
+        mask = scores < float(threshold)
+    edge_cells = {}
+    for ci, row in enumerate(C):
+        r = [int(x) for x in row]
+        for i in range(4):
+            for j in range(i + 1, 4):
+                k = (r[i], r[j]) if r[i] < r[j] else (r[j], r[i])
+                edge_cells.setdefault(k, []).append(ci)
+    rounds, n_closed = 0, 0
+    for _ in range(max(1, int(max_rounds))):
+        grow = set()
+        for _k, cs in edge_cells.items():
+            if any(mask[c] for c in cs):
+                for c in cs:
+                    if not mask[c]:
+                        grow.add(c)
+        if not grow:
+            break
+        for c in grow:
+            mask[c] = True
+        n_closed += len(grow)
+        rounds += 1
+    ref = refine_tets(V, C, mask=mask)
+    parents = [ci for ci in range(len(C)) if not mask[ci]]
+    parents += [ci for ci in range(len(C)) if mask[ci] for _ in range(8)]
+    parent = np.asarray(parents, np.int64)
+    if parent.size != len(ref["cells"]):
+        raise ValueError("父子映射长度 %d != 新单元数 %d"
+                         % (parent.size, len(ref["cells"])))
+    pre = refine_conformity(mask, C)
+    mesh_conf = mesh_conformity(ref["vertices"], ref["cells"]) if verify else None
+    conforming = bool(pre["conforming"]) and (mesh_conf is None
+                                               or bool(mesh_conf["conforming"]))
+    return {"ok": bool(ref["ok"]), "vertices": ref["vertices"],
+            "cells": ref["cells"], "parent": parent,
+            "n_before": int(len(C)), "n_after": int(len(ref["cells"])),
+            "n_refined": int(mask.sum()), "n_closed": int(n_closed),
+            "rounds": int(rounds),
+            "conforming": conforming,
+            "conformity": pre, "mesh_conformity": mesh_conf}
+
+
+def transfer_fields(parent, values):
+    """AMR 场传递（注入式）：新网格单元值 = 其父单元值（`parent` 来自
+    `refine_tets_conforming`）。
+
+    常数场逐点精确；1:8 红细分的 8 个子单元恰好填满父单元，故体积加权均值
+    ∑φV 保持不变（同一父单元的子单元同值，∑φV_new = ∑_parent φ_parent V_parent）。
+    标量 (n,) 与矢量 (n,3) 均可。
+    """
+    V = np.asarray(values)
+    return V[np.asarray(parent, np.int64)]
+
+
+# ---------------------------------------------------------------------------
 # 运行时回调注册表（P 波联调入口）
 # ---------------------------------------------------------------------------
 _hooks = []

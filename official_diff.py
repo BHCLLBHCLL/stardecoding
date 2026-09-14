@@ -507,7 +507,8 @@ def diff_metrics(ours, ref):
 def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
              length_D=16.0, height_D=8.0, thickness_D=0.5, h_factor=4.0,
              center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None,
-             convection="upwind", wall_slip_axes=(), piso_correctors=0):
+             convection="upwind", wall_slip_axes=(), piso_correctors=0,
+             perturb=None, checkpoint=None, checkpoint_every=25):
     """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
     **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
@@ -516,6 +517,13 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     边界：min-x 入口 / max-x 出口 / 其余（含圆柱阶梯面）壁面；
     升力由 aero_forces.force_coefficients 在圆柱面（r ≤ r0 + h）上积分。
     周期数 <3 时如实报告"未达脱落周期 → 不做 St 比对"。
+
+    `perturb`：非对称初始扰动幅值（以 U 为单位，如 0.05）；在圆柱上方
+    0.6D 处叠加宽 0.5D 的高斯竖直速度团，用于在有限算力下触发绝对不稳定
+    流动的脱落（对称网格 + 对称初值下脱落只能靠舍入误差起步）。它只影响
+    起步相位，不改变极限环频率。
+    `checkpoint`：长跑每 `checkpoint_every` 步把 (t, cl) 序列落盘（进程中断
+    也不丢证据）；返回体里带 `perturb_mag`。
     """
     if os.environ.get("STARDECODING_LONG") != "1":
         return {"ok": False,
@@ -539,6 +547,15 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
                             inlet_side="min", inlet_velocity=(u_inf, 0.0, 0.0),
                             outlet_side="max", convection=convection,
                             wall_slip_axes=wall_slip_axes, piso_correctors=piso_correctors)
+    # S2：非对称初始扰动（可选）——必须在 enable_transient 之前加，
+    # 这样 φⁿ 参考即为扰动后的场。
+    perturb_mag = 0.0
+    if perturb:
+        cc = np.asarray(solver.fvm.centroids, float)[:, :2]
+        cx0, cy0 = float(mesh["hole_center"][0]), float(mesh["hole_center"][1])
+        blob = np.exp(-(((cc[:, 0] - cx0) / float(D)) ** 2
+                        + ((cc[:, 1] - (cy0 + 0.6 * float(D))) / (0.5 * float(D))) ** 2))
+        perturb_mag = solver.perturb_velocity(dv=float(perturb) * u_inf * blob)
     solver.enable_transient(dt, snapshot=True)
     fv = solver.fvm
     hc = np.asarray(mesh["hole_center"], float)[:2]
@@ -551,6 +568,13 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     ts, cls = [], []
     for k in range(int(steps)):
         solver.advance(dt=dt, n_inner=n_inner)
+        if checkpoint and k % max(1, int(checkpoint_every)) == 0:
+            import json as _json
+            with open(checkpoint, "w", encoding="utf-8") as fh:
+                _json.dump({"t": ts, "cl": cls, "steps_done": k,
+                            "dt": float(dt), "n_cells": int(C.shape[0]),
+                            "perturb_mag": perturb_mag, "done": False},
+                           fh, ensure_ascii=False)
         if k % max(1, int(sample_every)) == 0:
             vel = solver.velocity()
             fc = force_coefficients(fv, solver.pressure(), vel[:, 0], vel[:, 1],
@@ -564,8 +588,16 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     t = np.asarray(ts, float)
     st = strouhal_from_series(t, series, D, u_inf) if series.size >= 16 else None
     n_periods = (st["f"] * (t[-1] - t[0])) if (st and st.get("ok")) else 0.0
+    if checkpoint:
+        import json as _json
+        with open(checkpoint, "w", encoding="utf-8") as fh:
+            _json.dump({"t": ts, "cl": cls, "steps_done": int(steps),
+                        "dt": float(dt), "n_cells": int(C.shape[0]),
+                        "perturb_mag": perturb_mag, "done": True}, fh,
+                       ensure_ascii=False)
     return {"ok": True, "mesher": mesher, "n_cells": int(C.shape[0]),
             "n_cyl_faces": int(cyl_faces.size), "dt": dt, "steps": int(steps),
+            "perturb_mag": perturb_mag,
             "t_span": float(t[-1] - t[0]) if t.size else 0.0,
             "n_samples": int(series.size),
             "mean": float(np.nanmean(series)) if series.size else None,
@@ -606,6 +638,14 @@ def _main(argv=None):
                     help="侧壁滑移（wall_slip_axes=(1,2)，准二维绕流）")
     ap.add_argument("--piso", type=int, default=0,
                     help="PISO 压力校正次数（S2：≥2 且配合 --n-inner 1 保非定常时间精度）")
+    ap.add_argument("--thickness-D", type=float, default=0.5,
+                    help="展向厚度（以 D 为单位；0.25 + 滑移壁 = 单层准二维，成本减半）")
+    ap.add_argument("--perturb", type=float, default=None,
+                    help="非对称初始扰动幅值（以 U 为单位；S2：0.05 触发脱落）")
+    ap.add_argument("--sample-every", type=int, default=1,
+                    help="每 N 步采样一次升力（长跑可加大以省内存）")
+    ap.add_argument("--checkpoint", default=None,
+                    help="(t,cl) 序列落盘路径（长跑证据，进程中断不丢）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sim_parser import SimFile
@@ -618,7 +658,10 @@ def _main(argv=None):
                         n_inner=args.n_inner, h_factor=args.h_factor,
                         convection=args.convection,
                         wall_slip_axes=(1, 2) if args.slip_walls else (),
-                        piso_correctors=args.piso)
+                        piso_correctors=args.piso,
+                        thickness_D=args.thickness_D, perturb=args.perturb,
+                        sample_every=args.sample_every,
+                        checkpoint=args.checkpoint)
         rep["ours"] = ours
         if ours.get("ok"):
             rep["diff"] = diff_metrics(ours, ref)

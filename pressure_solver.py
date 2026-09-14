@@ -505,6 +505,63 @@ class PressureSolver:
     def pressure(self):
         return self._p
 
+    def perturb_velocity(self, du=0.0, dv=0.0, dw=0.0):
+        """S2：给速度场叠加初始扰动，返回叠加的最大绝对幅值。
+
+        用途：对称网格 + 对称初值 + 对称边界时对称解是离散方程的不动点，
+        绝对不稳定流动（Re≈200 圆柱绕流）的脱落只能靠舍入误差极慢发展。
+        叠加小的非对称扰动（典型 0.02~0.1·U）可把起步时间从数百个对流时间
+        单位压到几个，且**不改变极限环频率**（St 由物理参数决定，扰动只影响
+        相位与起步时刻）。
+
+        参数可为标量（全场叠加）或长度 = 单元数的数组（局部扰动，例如圆柱
+        上方一个高斯团）。应在 `enable_transient()` **之前**调用，使 φⁿ 参考
+        即为扰动后的场。
+        """
+        if self._u is None:
+            return 0.0
+        n = int(self._u.size)
+
+        def _b(x):
+            a = np.asarray(x, float)
+            return a if a.ndim else np.full(n, float(x))
+
+        bu, bv, bw = _b(du), _b(dv), _b(dw)
+        self._u = self._u + bu
+        self._v = self._v + bv
+        applied = [bu, bv]
+        if self._w is not None:
+            self._w = self._w + bw
+            applied.append(bw)
+        mags = [float(np.abs(b).max()) for b in applied if b.size]
+        return max(mags) if mags else 0.0
+
+    def set_fields(self, u=None, v=None, w=None, p=None, snapshot=False):
+        """直接设定速度/压力场（AMR 场传递、重启续算、外部初始化用）。
+
+        长度必须等于单元数，否则抛 ValueError；未给的量保持原值。
+        `snapshot=True` 时把设定后的场冻结为 φⁿ 参考 —— AMR 换网格后必须如此，
+        否则瞬态项引用的是旧网格的场（S4 联调）。返回实际设定的字段名列表。
+        """
+        if self._fv is None:
+            return []
+        n = int(self._fv.n_cells)
+        done = []
+        for name, val in (("u", u), ("v", v), ("w", w), ("p", p)):
+            if val is None:
+                continue
+            a = np.asarray(val, float).reshape(-1)
+            if a.size != n:
+                raise ValueError("字段 %s 长度 %d != 单元数 %d"
+                                 % (name, a.size, n))
+            setattr(self, "_" + name, a.copy())
+            done.append(name)
+        if any(k in done for k in ("u", "v", "w")):
+            self._rebuild_mdot()
+        if snapshot:
+            self._snapshot_old()
+        return done
+
     def mass_flux(self):
         return self._mdot
 

@@ -28,7 +28,7 @@
 | 3 | 3D-CAD 建模 | 草图/特征/布尔/B-Rep | **L2–L3** | C1–C3 OCC 构造/编辑/布尔/圆角/抽壳/阵列/镜像；缺 T 块文法（读）、界内 B-Rep 建模 UI、Parasolid 写（仅 B 路线） |
 | 4 | 表面修复/包裹 | hole fill/wrapper | **L2–L3** | C4 修复 + C5 包裹（OCC 内核） |
 | 5 | 自动网格 | poly/trimmer/tet/prism/directed/thin | **L2–L3** | N1–N5 本地流水线全谱（tet/poly/trimmer/prism/extruder/thin/controls）；**R5 ✅ 教程尺度对标框架**（域表面/补丁尺度 ↔ 自研重网格化：面数比/面积比/边尺度比/最小角 + 退化保护与 attempts 记录） |
-| 6 | 网格诊断/质量 | 统计/修复/自适应 AMR | **L2–L3** | N6 `mesh_quality.py` histogram/repair + `mesh_interface.py` interface + `mesh_amr.py` AMR |
+| 6 | 网格诊断/质量 | 统计/修复/自适应 AMR | **L2–L3** | N6 `mesh_quality.py` histogram/repair + `mesh_interface.py` interface + `mesh_amr.py` AMR；**S4 第二轮**：AMR **入求解环**（`refine_conformity` 精确前置判据 + `mesh_conformity` 结构诊断（重复面/开口边/T 型节点）+ `refine_tets_conforming` 边闭包 + `transfer_fields` 场传递 + `SolverBackend.set_amr` 记录 transferred/skipped/note），非协调或场不可传递时诚实跳过 |
 | 7 | 区域/边界/界面 | boundary 类型/interface 谱系 | **L2** | G4 边界↔FaceTypes 22 边界/11642 面精确闭合；面网格 patch 识别仍启发式 |
 | 8 | 物理连续体/模型谱系 | 22+ 模型族参数 | **L2** | P1/G7 语义读写闭环；22+ 模型族未逐一解码 |
 | 9 | 材料 | 属性表/EOS | **L1–L2** | 材料链 + 常物性/EOS；物性表未全覆盖 |
@@ -317,6 +317,7 @@ B 路线同步扩展 `star_macro.py`：Solve/Initialize/Step 宏模板 + 运行�
 | S2 求解精度攻坚（涡脱复现） | P0 | Re=200 圆柱 St 落入 0.176±15%、振幅比 0.3–3.0；否则如实出结论 | S1（可选） |
 | S3 解析语义深化（字段级归属） | P1 | T 串归属率 ≥60%（带反例）；数组标注 ≥95%；尾部校验和定论；v3_0.025 抽取修复 | S1（官方对照） |
 | S4 网格-求解联调与性能 | P1 | prism+AMR 入求解环；R5 tet 对标 <60 s；10 万单元单步 <2 s 或记录上限 | S2 |
+| S4 第二轮实测 | — | AMR 入环 ✅（协调细化 + 场传递，7 项新测试）；prism 入环 ❌ 未做 | 48,840 单元 **1.8 s/步** ✅ / 97,680 单元 **≈10 s/步** ❌（差 5×，两种线性路由都试过：直接 10.0、AMG 9.5）|
 | S5 客户端收口 | P2 | Mesh 清除/转 2D 本地化、3D-CAD 界内 B-Rep 接 GUI、真实打包 | — |
 | S6 官方参考语料库与自动对标 | P2 | ≥3 工况官方参考 + 自研对比报告；容差表固定 | S1 |
 

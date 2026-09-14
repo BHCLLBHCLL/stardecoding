@@ -47,6 +47,28 @@ def _run(s, n=40):
 
 
 # ---------------------------------------------------------------- 初始化 / API
+def test_perturb_velocity_scalar_and_local_field():
+    """S2：非对称扰动 API（打破对称以触发绝对不稳定流动的脱落）。"""
+    s = _make(nx=2)
+    n = s.velocity().shape[0]
+    base = s.velocity().copy()
+    assert s.perturb_velocity(dv=0.05) == pytest.approx(0.05)
+    after = s.velocity()
+    assert np.allclose(after[:, 1] - base[:, 1], 0.05)
+    assert np.allclose(after[:, 0], base[:, 0])
+    assert np.allclose(after[:, 2], base[:, 2])
+    # 逐单元数组：只在局部叠加（高斯团/偏心扰动的用法）
+    du = np.zeros(n)
+    du[0] = -0.2
+    assert s.perturb_velocity(du=du) == pytest.approx(0.2)
+    v = s.velocity()
+    assert v[0, 0] == pytest.approx(base[0, 0] - 0.2)
+    assert np.allclose(v[1:, 0], base[1:, 0])
+    assert np.allclose(v[:, 1] - base[:, 1], 0.05)   # 之前的扰动保留
+    # 零扰动是恒等操作（工程上用于"不扰动"路径）
+    assert s.perturb_velocity() == 0.0
+
+
 def test_pressure_solver_initialization():
     s = _make(nx=2)
     n_cells = len(s.cells)
