@@ -132,6 +132,65 @@ def test_slip_axes_single_axis():
     assert len(s._wall_faces) > 0        # 只滑移 z 极值面 → 其余壁面仍无滑移
 
 
+# ---------------------------------------------------------------- S2 PISO
+def _piso_solver(piso=0, transient=False):
+    V, C = cube_tet_mesh(4)
+    s = PressureSolver(V, C, rho=1.0, mu=1e-3, inlet_axis=0, inlet_side="min",
+                       inlet_velocity=(1.0, 0.0, 0.0), outlet_side="max",
+                       piso_correctors=piso)
+    if transient:
+        s.enable_transient(0.05, snapshot=True)
+    return s
+
+
+def test_piso_zero_is_bitwise_zero_regression():
+    a, b = _piso_solver(0), _piso_solver(0)
+    for _ in range(3):
+        ra, rb = a.step(), b.step()
+    assert np.array_equal(a.velocity(), b.velocity())
+    assert np.array_equal(a.pressure(), b.pressure())
+    assert ra.get("residual") == rb.get("residual")
+
+
+def test_piso_negative_rejected():
+    with pytest.raises(ValueError):
+        PressureSolver(*cube_tet_mesh(2), rho=1.0, mu=1e-3, piso_correctors=-1)
+
+
+@pytest.mark.parametrize("piso", [1, 2, 3])
+def test_piso_more_correctors_lower_residual(piso):
+    s = _piso_solver(piso, transient=True)
+    o = None
+    for _ in range(4):
+        o = s.advance(dt=0.05, n_inner=1)
+    v = s.velocity()
+    assert not np.isnan(v).any() and np.isfinite(o["residual"])
+    assert float(o["residual"]) < 1e-4
+
+
+def test_piso_corrector_count_monotone_residual():
+    res = []
+    for piso in (0, 1, 2):
+        s = _piso_solver(piso, transient=True)
+        for _ in range(4):
+            o = s.advance(dt=0.05, n_inner=1)
+        res.append(float(o["residual"]))
+    assert res[2] <= res[0] * 1.5, "PISO 校正应不劣于纯 SIMPLE: %s" % res
+
+
+def test_piso_with_slip_and_limited_convection_stable():
+    V, C = cube_tet_mesh(4)
+    s = PressureSolver(V, C, rho=1.0, mu=1e-3, inlet_axis=0, inlet_side="min",
+                       inlet_velocity=(1.0, 0.0, 0.0), outlet_side="max",
+                       convection="limited", wall_slip_axes=(1, 2), piso_correctors=2)
+    s.enable_transient(0.05, snapshot=True)
+    for _ in range(4):
+        o = s.advance(dt=0.05, n_inner=1)
+    v = s.velocity()
+    assert not np.isnan(v).any() and float(o["residual"]) < 1e-5
+    assert abs(float(np.max(np.linalg.norm(v, axis=1))) - 1.0) < 1e-3
+
+
 def test_limited_scheme_uses_limiter_bounded():
     V, C = cube_tet_mesh(4)
     fv = FVM(V, C)

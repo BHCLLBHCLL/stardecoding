@@ -205,11 +205,16 @@ class PressureSolver:
                  compressible_mw=28.96, compressible_p_ref=101325.0,
                  compressible_t_ref=300.0, compressible_dt=1.0e-3,
                  compressible_relax=0.5, unsteady=False, dt=None,
-                 convection="upwind", wall_slip_axes=()):
+                 convection="upwind", wall_slip_axes=(), piso_correctors=0):
         # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
         # （法向速度=0、切向自由 → 动量装配对流与扩散均无贡献，面通量恒 0）：
         # 典型用法 wall_slip_axes=(1,2) 得到准二维绕流，消除薄板侧壁摩擦耗散。
         self.wall_slip_axes = tuple(int(a) for a in (wall_slip_axes or ()))
+        # S2：PISO 校正次数。0 = 纯 SIMPLE（默认，零回归）；≥1 时每个时间步动量只解一次，
+        # 随后做 1+N 次压力修正（推荐配合 advance(n_inner=1) 使用，保非定常时间精度）。
+        if int(piso_correctors or 0) < 0:
+            raise ValueError("piso_correctors 不能为负（0=纯 SIMPLE）")
+        self.piso_correctors = int(piso_correctors or 0)
         if convection not in ("upwind", "central", "limited"):
             raise ValueError("未知对流格式 %r（可选 upwind/central/limited）" % (convection,))
         # S2：对流格式。upwind=一阶上风（默认，隐式矩阵对角占优，零回归）；
@@ -1150,20 +1155,27 @@ class PressureSolver:
         self._last_d_cell = d_cell
         # Rhie-Chow 面质量通量（由预测速度 + 压力梯度重构）
         self._recompute_mdot_rhie_chow()
-        # 压力修正装配
-        rp, cp, vp, rhsp, o_int, nb_int, gamma, is_int = \
-            self._assemble_pressure_correction(d_cell)
-        pprime = solve_linear(rp, cp, vp, rhsp, n, tol=1e-9, maxit=8000)
-        # 速度 / 压力校正：u -= d ∇p'、p += α_p p'
-        gpp = self._grad_pressure_of(pprime)
-        self._p = self._p + self.alpha_pressure * pprime
-        self._u = self._u - d_cell * gpp[:, 0]
-        self._v = self._v - d_cell * gpp[:, 1]
-        self._w = self._w - d_cell * gpp[:, 2]
-        # 直接校正面质量通量（SIMPLE 标准做法）：mdot_f += gamma (p'_O - p'_N)
-        # —— 与压力修正矩阵用同一 gamma，保证泊松解与通量修正一致，正是残差收敛关键。
-        self._mdot[is_int] += gamma * (pprime[o_int] - pprime[nb_int])
-        self._fix_boundary_mdot()
+        # 压力修正：SIMPLE（默认 1 次）或 **PISO**（1 + piso_correctors 次；动量只解一次，
+        # 后续修正不再重解动量 —— 避免反复施加瞬态项 ρV/Δt 造成的隐式平滑，S2 靶心）。
+        n_corr = 1 + int(getattr(self, "piso_correctors", 0) or 0)
+        for k_corr in range(n_corr):
+            rp, cp, vp, rhsp, o_int, nb_int, gamma, is_int = \
+                self._assemble_pressure_correction(d_cell)
+            pprime = solve_linear(rp, cp, vp, rhsp, n, tol=1e-9, maxit=8000)
+            # 速度 / 压力校正：u -= d ∇p'；首次用 α_p 欠松弛（SIMPLE 稳定），
+            # PISO 后续校正不再欠松弛（保时间精度）。
+            gpp = self._grad_pressure_of(pprime)
+            self._p = self._p + (self.alpha_pressure if k_corr == 0 else 1.0) * pprime
+            self._u = self._u - d_cell * gpp[:, 0]
+            self._v = self._v - d_cell * gpp[:, 1]
+            self._w = self._w - d_cell * gpp[:, 2]
+            # 直接校正面质量通量（SIMPLE 标准做法）：mdot_f += gamma (p'_O - p'_N)
+            # —— 与压力修正矩阵用同一 gamma，保证泊松解与通量修正一致，正是残差收敛关键。
+            self._mdot[is_int] += gamma * (pprime[o_int] - pprime[nb_int])
+            self._fix_boundary_mdot()
+            if k_corr + 1 < n_corr:
+                # PISO：用校正后的速度重建 Rhie-Chow 面通量，供下一次压力修正使用
+                self._recompute_mdot_rhie_chow()
         # 残差：归一化连续性质量不平衡（收敛 → 0）
         cont = _safe_norm(self._continuity_imbalance())
         cont_ratio = cont / self._inlet_mdot_scale

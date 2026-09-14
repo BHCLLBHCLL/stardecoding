@@ -507,7 +507,7 @@ def diff_metrics(ours, ref):
 def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
              length_D=16.0, height_D=8.0, thickness_D=0.5, h_factor=4.0,
              center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None,
-             convection="upwind", wall_slip_axes=()):
+             convection="upwind", wall_slip_axes=(), piso_correctors=0):
     """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
     **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
@@ -538,7 +538,7 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     solver = PressureSolver(V, C, rho=1.0, mu=1.0 * nu, inlet_axis=0,
                             inlet_side="min", inlet_velocity=(u_inf, 0.0, 0.0),
                             outlet_side="max", convection=convection,
-                            wall_slip_axes=wall_slip_axes)
+                            wall_slip_axes=wall_slip_axes, piso_correctors=piso_correctors)
     solver.enable_transient(dt, snapshot=True)
     fv = solver.fvm
     hc = np.asarray(mesh["hole_center"], float)[:2]
@@ -604,6 +604,8 @@ def _main(argv=None):
                     help="对流格式（S2：limited = 二阶受限中心）")
     ap.add_argument("--slip-walls", action="store_true",
                     help="侧壁滑移（wall_slip_axes=(1,2)，准二维绕流）")
+    ap.add_argument("--piso", type=int, default=0,
+                    help="PISO 压力校正次数（S2：≥2 且配合 --n-inner 1 保非定常时间精度）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sim_parser import SimFile
@@ -615,7 +617,8 @@ def _main(argv=None):
                         nu=args.nu, steps=args.steps, dt=args.dt,
                         n_inner=args.n_inner, h_factor=args.h_factor,
                         convection=args.convection,
-                        wall_slip_axes=(1, 2) if args.slip_walls else ())
+                        wall_slip_axes=(1, 2) if args.slip_walls else (),
+                        piso_correctors=args.piso)
         rep["ours"] = ours
         if ours.get("ok"):
             rep["diff"] = diff_metrics(ours, ref)
