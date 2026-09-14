@@ -153,7 +153,16 @@
 - **手段**：mesh_remesh 粗化 + mesh_prism 贴壁 + mesh_amr 细化；fvm_core 热点排查（面循环/稀疏装配）；线性求解器策略（CSR + AMG/spilu 双路径已有）。
 - **验收**：带棱柱层的圆柱算例网格质量达标且求解稳定；R5 tet 对标 <60 s；性能基准入档。
 
-### S5 客户端收口（P2）
+### S5 客户端收口（P2）—— ⚠️ 第一轮达成（Mesh 两项从 NYI 桩改为诚实的会话/显示层实现；3D-CAD 与打包仍开放）
+
+**已交付**：
+- `star_gui.cmd_clear_mesh`（Mesh>Clear）：丢弃本会话生成结果（volume/poly/trimmer）+ 移除 `volume*`/`session*` 前缀 actor + 置 `document.session_meshes_cleared`；消息明示**不改对象图与 .sim**，官方网格可重新显示。
+- `star_gui.cmd_convert_2d`（Mesh>Convert2D）：按视图包围盒取**最小跨度轴**压平（显示层投影）+ 置 `document.display_2d`，消息明示**对象图与 .sim 维度未改**；无 3D 视图（无头）或视图无 actor 时**如实拒绝**。
+- 两动作注册从 `_kernel_nyi` 桩改为真实命令；`star_gui_parity.md` 对应行 `needs_kernel` → `session`（含边界说明）。
+- `tests/test_gui_mesh_ops.py` 4 项（3 通过 + 1 无头跳过）：动作注册与桩移除、清除后的状态与提示、无视图诚实拒绝、有视图压平并置标志。
+
+**仍开放（诚实标注）**：内核级「从网格模型删除体网格」与「真正把区域转 2D」仍属 needs_kernel；3D-CAD 界内 B-Rep 建模（OCC 内核已在 C2/C3，未接 GUI）、真实打包（PyInstaller 未安装）两项未动。
+### S5 原始目标（存档）
 - **目标**：① Mesh>清除/转 2D 本地实现（消除 needs_kernel 两项）；② 3D-CAD 界内 B-Rep 建模接 GUI（OCC 内核已在 C2/C3）；③ 打包：装 PyInstaller 或走官方 installer 生成真实二进制。
 - **验收**：star_gui_parity.md 对应行从 needs_kernel/降级 变为 persist/view；GUI 测试全绿 + 新增 3 项动作测试。
 
