@@ -207,7 +207,7 @@ class PressureSolver:
                  compressible_relax=0.5, unsteady=False, dt=None,
                  convection="upwind", wall_slip_axes=(), piso_correctors=0,
                  skew_corrected=False, nonorth_corrected=False,
-                 corr_limit=1.0):
+                 corr_limit=1.0, pc_inner=1):
         # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
         # （法向速度=0、切向自由 → 动量装配对流与扩散均无贡献，面通量恒 0）：
         # 典型用法 wall_slip_axes=(1,2) 得到准二维绕流，消除薄板侧壁摩擦耗散。
@@ -232,6 +232,11 @@ class PressureSolver:
         self.skew_corrected = bool(skew_corrected)
         self.nonorth_corrected = bool(nonorth_corrected)
         self.corr_limit = float(corr_limit)
+        # 压力修正的**内迭代**次数（仅 nonorth_corrected 生效）：非正交延迟修正项依赖
+        # p' 的梯度，而 p' 正是待解量 —— 用上一次的 p' 作参考会在瞬态下不断注入误差。
+        # pc_inner≥2 时在**同一步内**反复「装配 → 解 → 用新 p' 重装」，使延迟项自洽
+        # （代价：每步多 n_pc_inner−1 次压力泊松求解）。
+        self.pc_inner = max(1, int(pc_inner or 1))
         # 压力修正方程的延迟修正状态（上一次解出的 p'；None = 首次，修正项为 0）
         self._pc_last = None
         self._pc_k_n = None
@@ -1300,10 +1305,17 @@ class PressureSolver:
         # 后续修正不再重解动量 —— 避免反复施加瞬态项 ρV/Δt 造成的隐式平滑，S2 靶心）。
         n_corr = 1 + int(getattr(self, "piso_correctors", 0) or 0)
         for k_corr in range(n_corr):
+            # 非正交延迟修正的**内迭代**：每遍用上一遍解出的 p' 重装方程（自洽化）。
+            n_pc = self.pc_inner if self.nonorth_corrected else 1
             pc_used = self._pc_last      # 与矩阵同一延迟修正参考（否则通量/泊松解不一致）
-            rp, cp, vp, rhsp, o_int, nb_int, gamma, is_int = \
-                self._assemble_pressure_correction(d_cell)
-            pprime = solve_linear(rp, cp, vp, rhsp, n, tol=1e-9, maxit=8000)
+            pprime = None
+            for _it_pc in range(n_pc):
+                rp, cp, vp, rhsp, o_int, nb_int, gamma, is_int = \
+                    self._assemble_pressure_correction(d_cell)
+                pprime = solve_linear(rp, cp, vp, rhsp, n, tol=1e-9, maxit=8000)
+                if _it_pc + 1 < n_pc:
+                    self._pc_last = pprime      # 下一遍装配用刚解出的 p'
+            pc_used = pc_used if pc_used is not None else self._pc_last
             # 速度 / 压力校正：u -= d ∇p'；首次用 α_p 欠松弛（SIMPLE 稳定），
             # PISO 后续校正不再欠松弛（保时间精度）。
             gpp = self._grad_pressure_of(pprime)

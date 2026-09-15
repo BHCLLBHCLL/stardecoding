@@ -363,3 +363,47 @@ def test_corrections_guards_and_corr_limit_interpolates():
     lo = np.minimum(zero, full) - 1e-12
     hi = np.maximum(zero, full) + 1e-12
     assert ((third >= lo) & (third <= hi)).all()         # limited ∈ [0, full]
+
+
+# ------------------------------------------------ S4 第 3 步：边界闭环（Neumann）
+def test_lsq_zero_gradient_boundary_samples_constrain_only_normal():
+    """零梯度（Neumann）边界样本只应约束**法向** ∇φ·n̂ = 0。
+
+    判别场 φ = cosπx + cosπy + cosπz：六个壁面法向导数为 0、切向导数 ≠ 0。
+    旧口径把样本 (r_b, 0) 当成任意方向的"方向导数为零"，会把切向导数为零的
+    错误信息塞进 LSQ，污染近壁 1–2 层；投影到面法向后近壁梯度误差显著下降
+    （实测 Cartesian 1.87 → 1.24 = 0.66×；剪切 0.6 网格 3.19 → 2.92 = 0.91×），
+    深层内部完全不受影响。"""
+    P = np.pi
+
+    def phif(p):
+        return np.cos(P*p[:, 0]) + np.cos(P*p[:, 1]) + np.cos(P*p[:, 2])
+
+    def gradf(p):
+        return np.stack([-P*np.sin(P*p[:, 0]), -P*np.sin(P*p[:, 1]),
+                         -P*np.sin(P*p[:, 2])], axis=1)
+
+    V, C = cube_tet_mesh(3)
+    Vs = np.asarray(V, float).copy()
+    Vs[:, 0] = Vs[:, 0] + 0.6 * Vs[:, 1]
+    ratios = []
+    for VV in (V, Vs):
+        f = FVM(np.asarray(VV, float), np.asarray(C, np.int64))
+        c = f.centroids
+        phi, gex = phif(c), gradf(c)
+        bnd = np.zeros(f.n_cells, bool)
+        bnd[f.owner[f.is_boundary]] = True
+        m = ~f.is_boundary
+        o, nb = f.owner[m], f.neighbor[m]
+        adj = np.zeros(f.n_cells, bool)
+        adj[o[bnd[nb]]] = True
+        adj[nb[bnd[o]]] = True
+        deep = ~bnd & ~adj
+        e_new = np.abs(f.grad_lsq(phi) - gex).max(axis=1)
+        fb = np.zeros(f.n_faces)                      # 旧口径：任意方向的零导数样本
+        fb[f.is_boundary] = phi[f.owner[f.is_boundary]] + 1e-13
+        e_old = np.abs(f.grad_lsq(phi, boundary=fb) - gex).max(axis=1)
+        assert e_new[bnd].max() <= e_old[bnd].max()
+        assert np.allclose(e_new[deep], e_old[deep])  # 深层不受边界闭环影响
+        ratios.append(e_new[bnd].max() / e_old[bnd].max())
+    assert ratios[0] < 0.8 and ratios[1] < 0.95

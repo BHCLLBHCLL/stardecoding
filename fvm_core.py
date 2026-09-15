@@ -280,6 +280,19 @@ class FVM:
             q_b = boundary[~is_int] - phi[bo]
         else:
             q_b = np.zeros(len(bo))
+        # S4 第 3 步（边界闭环）：**零梯度（Neumann）边界样本只约束法向**。
+        # 样本 (r_b, Δφ=0) 实际表达的是 ∇φ·r_b = 0，只有当 r_b ∥ n̂ 时才等价于
+        # 真实边界条件 ∇φ·n̂ = 0；r_b 含切向分量时会把"切向导数为零"这个错误
+        # 信息塞进 LSQ，污染近壁 1–2 层的全部梯度分量（实测边界/邻壁梯度误差
+        # 1.8–2.9，而深层内部 1e-14）。把 r_b 投影到面法向后，约束恰好是
+        # ∇φ·n̂ = 0（对满足该 BC 的场可精确复原）。Dirichlet 边界（Δφ≠0）
+        # 保持不变。
+        if len(bo):
+            nb_vec = self.face_normal[~is_int]
+            zero_q = np.abs(q_b) <= 1e-14 * (1.0 + np.abs(phi[bo]))
+            if zero_q.any():
+                r_n = np.einsum("ij,ij->i", r_b, nb_vec)
+                r_b = np.where(zero_q[:, None], r_n[:, None] * nb_vec, r_b)
         R = np.concatenate([R_int, r_b])
         Q = np.concatenate([Q_int, q_b])
         S = np.concatenate([S_int, bo])
