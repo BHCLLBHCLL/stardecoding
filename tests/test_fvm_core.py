@@ -283,3 +283,83 @@ def test_flux_mdot_shape_mismatch():
     phi = np.zeros(f.n_cells)
     with pytest.raises(ValueError):
         f.convection_flux_upwind(np.zeros(f.n_faces + 1), phi)
+
+
+# ------------------------------------------------ S2/S4 修复：偏斜 + 非正交修正
+def _sheared(nx=3, k=0.6):
+    """剪切网格：非正交 + 偏斜（纯 Cartesian 网格会掩盖修正项的缺失）。"""
+    V, C = cube_tet_mesh(nx)
+    V2 = np.asarray(V, float).copy()
+    V2[:, 0] = V2[:, 0] + k * V2[:, 1]
+    return V2, C
+
+
+def test_face_value_skew_correction_exact_on_sheared_mesh():
+    """偏斜修正：面值在剪切网格上复原到机器精度（反距离权重误差 ~2e-1）。"""
+    V, C = _sheared(3)
+    f = FVM(V, C)
+    phi = _lin(f.centroids[:, 0], f.centroids[:, 1], f.centroids[:, 2])
+    fb = _lin(f.face_centroid[:, 0], f.face_centroid[:, 1], f.face_centroid[:, 2])
+    raw = f.face_value(phi, boundary=fb)
+    ls = f.grad_lsq(phi, boundary=fb)
+    fixed = f.face_value(phi, boundary=fb, grad=ls)
+    err_raw = np.abs(raw - fb).max()
+    err_fix = np.abs(fixed - fb).max()
+    assert err_raw > 1e-2                       # 现状确实不精确（歪斜 Kuhn 网格）
+    assert err_fix < 1e-12                      # 修正后机器精度
+    assert err_fix < 1e-6 * err_raw
+
+
+def test_diffusion_flux_nonorthogonal_correction_exact_on_sheared_mesh():
+    """非正交修正：线性场扩散通量与解析值一致（现状相对误差 >1e-1）。"""
+    V, C = _sheared(3)
+    f = FVM(V, C)
+    phi = _lin(f.centroids[:, 0], f.centroids[:, 1], f.centroids[:, 2])
+    fb = _lin(f.face_centroid[:, 0], f.face_centroid[:, 1], f.face_centroid[:, 2])
+    m = ~f.is_boundary
+    exact = -f.face_area[m] * (f.face_normal[m] @ _GRAD)
+    scale = np.abs(exact).max()
+    raw = f.diffusion_flux(phi, gamma=1.0, boundary=fb)[m]
+    ls = f.grad_lsq(phi, boundary=fb)
+    fixed = f.diffusion_flux(phi, gamma=1.0, boundary=fb, grad=ls)[m]
+    assert np.abs(raw - exact).max() / scale > 0.1       # 现状不一致
+    assert np.abs(fixed - exact).max() / scale < 1e-10   # LSQ 梯度 + 修正 → 精确
+    # 用**精确梯度**时，修正通量 == 解析通量（两种网格都到机器精度）
+    for VV, CC in ((V, C), _sheared(3)):
+        fc = FVM(VV, CC)
+        phic = _lin(fc.centroids[:, 0], fc.centroids[:, 1], fc.centroids[:, 2])
+        fbc = _lin(fc.face_centroid[:, 0], fc.face_centroid[:, 1],
+                   fc.face_centroid[:, 2])
+        mc = ~fc.is_boundary
+        fxc = -fc.face_area[mc] * (fc.face_normal[mc] @ _GRAD)
+        gexact = np.tile(_GRAD, (fc.n_cells, 1))
+        got = fc.diffusion_flux(phic, gamma=1.0, boundary=fbc, grad=gexact)[mc]
+        assert np.abs(got - fxc).max() / np.abs(fxc).max() < 1e-12
+    # 默认路径（grad=None）保持原实现：与投影距离 d_n 公式逐位一致
+    o2, nz2 = f.owner[m], f.neighbor[m]
+    manual = -3.0 * (phi[nz2] - phi[o2]) / f._d_n[m] * f.face_area[m]
+    default = f.diffusion_flux(phi, gamma=3.0, boundary=fb)[m]
+    assert np.array_equal(default, manual)
+
+
+def test_corrections_guards_and_corr_limit_interpolates():
+    V, C = _sheared(2)
+    f = FVM(V, C)
+    phi = _lin(f.centroids[:, 0], f.centroids[:, 1], f.centroids[:, 2])
+    with pytest.raises(ValueError):
+        f.face_value(phi, grad=np.zeros((f.n_cells, 2)))
+    with pytest.raises(ValueError):
+        f.diffusion_flux(phi, grad=np.zeros((f.n_cells + 1, 3)))
+    ls = f.grad_lsq(phi)
+    m = ~f.is_boundary
+    zero = f.diffusion_flux(phi, grad=ls, corr_limit=0.0)[m]      # 纯正交项（|d|）
+    third = f.diffusion_flux(phi, grad=ls, corr_limit=0.33)[m]
+    full = f.diffusion_flux(phi, grad=ls, corr_limit=1.0)[m]
+    o, nz = f.owner[m], f.neighbor[m]
+    L = np.linalg.norm(f.centroids[nz] - f.centroids[o], axis=1)
+    orth = -(phi[nz] - phi[o]) / L * f.face_area[m]
+    assert np.abs(zero - orth).max() < 1e-12             # corr_limit=0 即纯正交项
+    assert np.abs(full - zero).max() > 0.0               # 修正项确实起作用
+    lo = np.minimum(zero, full) - 1e-12
+    hi = np.maximum(zero, full) + 1e-12
+    assert ((third >= lo) & (third <= hi)).all()         # limited ∈ [0, full]

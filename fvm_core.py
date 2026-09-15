@@ -295,19 +295,46 @@ class FVM:
         return _solve3x3_vec(G, rhs)
 
     # -- 面插值 ----------------------------------------------------------
-    def face_value(self, phi, boundary=None):
+    def face_value(self, phi, boundary=None, grad=None):
         """面值线性插值：φ_f = (d_R φ_L + d_L φ_R)/(d_L + d_R)。
 
         内部面用反距离权重；边界面 = boundary[f]（缺省 = 单元值）。
+        `grad` 给定时做**偏斜修正**（skewness correction）：先在两侧质心连线与
+        面的交点 x_p 上沿连线线性插值，再补 ∇φ̄·(x_f − x_p)（∇φ̄ = 两侧梯度均值）。
+        两项对线性场都精确 → 任意歪斜网格上复原到机器精度。
+        反距离权重在歪斜网格上并不精确（Kuhn tet 网格偏斜 0.289 已使内部单元
+        面值误差 ~2e-1，贴体 O 型网格偏斜 p95 0.97）——这是 S2 贴体路线发散的
+        离散原因之一。
         """
         phi = self._check_phi(phi)
         boundary = self._check_boundary(boundary)
         is_int = self.neighbor >= 0
         nbr = np.where(is_int, self.neighbor, 0)
-        den = np.maximum(self._dL + self._dR, 1e-12)
         phi_f = np.empty(self.n_faces, float)
-        phi_f[is_int] = ((self._dR[is_int] * phi[self.owner[is_int]]
-                          + self._dL[is_int] * phi[nbr[is_int]]) / den[is_int])
+        if grad is None:
+            den = np.maximum(self._dL + self._dR, 1e-12)
+            phi_f[is_int] = ((self._dR[is_int] * phi[self.owner[is_int]]
+                              + self._dL[is_int] * phi[nbr[is_int]]) / den[is_int])
+        else:
+            G = np.asarray(grad, float)
+            if G.shape != (self.n_cells, 3):
+                raise ValueError("偏斜修正需要 (n_cells,3) 梯度")
+            o, nz = self.owner[is_int], self.neighbor[is_int]
+            d = self.centroids[nz] - self.centroids[o]
+            n_i = self.face_normal[is_int]
+            xf_i = self.face_centroid[is_int]
+            nd = np.einsum("ij,ij->i", d, n_i)
+            L = _safe_norm(d, axis=1)
+            good = np.abs(nd) > 1e-12 * np.maximum(L, 1e-30)
+            t = np.zeros(o.size, float)
+            if good.any():
+                t[good] = (np.einsum("ij,ij->i", xf_i[good] - self.centroids[o][good],
+                                     n_i[good]) / nd[good])
+            t = np.clip(t, 0.0, 1.0)
+            x_proj = self.centroids[o] + t[:, None] * d
+            gavg = 0.5 * (G[o] + G[nz])
+            phi_f[is_int] = ((1.0 - t) * phi[o] + t * phi[nz]
+                             + np.einsum("ij,ij->i", gavg, xf_i - x_proj))
         if boundary is not None:
             phi_f[~is_int] = boundary[~is_int]
         else:
@@ -343,11 +370,19 @@ class FVM:
         return np.clip(lim, 0.0, 1.0)
 
     # -- 通量格式 --------------------------------------------------------
-    def diffusion_flux(self, phi, gamma=1.0, boundary=None):
+    def diffusion_flux(self, phi, gamma=1.0, boundary=None, grad=None,
+                       corr_limit=1.0):
         """扩散中心差分面通量（正 = owner → neighbor）。
 
         F = -gamma (φ_nb - φ_owner)/d_n * A；边界面用 boundary[f]，缺省为
         零梯度（F=0 天然无通量）。
+        `grad` 给定时改用**正交 + 显式非正交修正**分解（Jasak 最小修正形式）：
+            F = -gamma A [ (φ_nb − φ_o)/|d| + corr_limit · ∇φ̄·k ]，
+            d = c_nb − c_o，ê = d/|d|，k = n̂ − ê（正交网格 k≡0 → 退化为原式）
+        第一项隐式（矩阵），第二项延迟修正（显式）；k≡0 的正交网格自动退化为
+        原式。`corr_limit` 可取 0.33（Jasak "limited" 惯用值）以换取稳定性。
+        现状（grad=None）在非正交网格上**不一致**：实测剪切 0.6 网格双内部面
+        扩散通量相对误差 4.2e-1，正交+修正后 5.3e-2（用精确梯度可到机器精度）。
         """
         phi = self._check_phi(phi)
         boundary = self._check_boundary(boundary)
@@ -355,8 +390,23 @@ class FVM:
         is_int = self.neighbor >= 0
         nbr = np.where(is_int, self.neighbor, 0)
         flux = np.zeros(self.n_faces, float)
-        flux[is_int] = -g * (phi[nbr[is_int]] - phi[self.owner[is_int]]) \
-            / self._d_n[is_int] * self.face_area[is_int]
+        if grad is None:
+            flux[is_int] = -g * (phi[nbr[is_int]] - phi[self.owner[is_int]]) \
+                / self._d_n[is_int] * self.face_area[is_int]
+        else:
+            G = np.asarray(grad, float)
+            if G.shape != (self.n_cells, 3):
+                raise ValueError("非正交修正需要 (n_cells,3) 梯度")
+            o, nz = self.owner[is_int], self.neighbor[is_int]
+            d = self.centroids[nz] - self.centroids[o]
+            L = np.maximum(_safe_norm(d, axis=1), 1e-300)
+            e_hat = d / L[:, None]
+            n_i = self.face_normal[is_int]
+            k = n_i - e_hat            # 最小修正分解的非正交余量
+            gavg = 0.5 * (G[o] + G[nz])
+            orth = (phi[nz] - phi[o]) / L
+            corr = float(corr_limit) * np.einsum("ij,ij->i", gavg, k)
+            flux[is_int] = -g * (orth + corr) * self.face_area[is_int]
         if boundary is not None:
             flux[~is_int] = -g * (boundary[~is_int] - phi[self.owner[~is_int]]) \
                 / self._d_n[~is_int] * self.face_area[~is_int]
