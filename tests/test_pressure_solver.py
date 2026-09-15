@@ -348,6 +348,66 @@ def test_solver_transient_zero_regression_when_disabled():
     assert a.time == 0.0 and b.time == 0.0
 
 
+# ---------------------------------------------- S4 第 2 步：偏斜 / 非正交修正
+def _ogrid_solver(n_theta=48, n_r=7, **kw):
+    """贴体 O 型通道网格上的求解器（非正交 median 56.6°、偏斜 p95 0.97）。"""
+    from official_diff import channel_tet_mesh
+    m = channel_tet_mesh(0.04, n_theta=n_theta, n_r=n_r)
+    V = np.asarray(m["vertices"], float)
+    C = np.asarray(m["cells"], np.int64)
+    kw.setdefault("mu", 1e-5)
+    kw.setdefault("inlet_velocity", (0.05, 0.0, 0.0))
+    kw.setdefault("wall_slip_axes", (1, 2))
+    return PressureSolver(V, C, rho=1.0, inlet_axis=0, inlet_side="min",
+                          outlet_side="max", convection="upwind", **kw)
+
+
+def test_nonorth_zero_limit_is_exact_noop():
+    """corr_limit=0 ⇒ 与经典路径逐位一致（新开关可安全关闭，零回归的强保证）。"""
+    V, C = cube_tet_mesh(3)
+    a = _make(nx=3)
+    b = PressureSolver(V, C, mu=1e-3, inlet_velocity=(1.0, 0.0, 0.0),
+                       alpha_momentum=0.7, alpha_pressure=0.3,
+                       nonorth_corrected=True, corr_limit=0.0)
+    ra = [float(a.step()["residual"]) for _ in range(8)]
+    rb = [float(b.step()["residual"]) for _ in range(8)]
+    assert ra == rb
+    assert np.array_equal(a.velocity(), b.velocity())
+
+
+def test_nonorth_correction_stabilizes_body_fitted_ogrid():
+    """贴体 O 型网格：经典失稳（|u|max≈1.8、残差 0.18）→ 限幅非正交修正完全收敛。
+
+    验收（S4 第 2 步）：corr_limit=0.33 时残差 < 1e-4、|u|max 与入口速度同量级
+    （≈0.07，物理）；corr_limit=1.0 在如此强的非正交网格上反而过冲失稳（如实记录）。
+    """
+    steps = 40
+    classic = _ogrid_solver()
+    rc = [float(classic.step()["residual"]) for _ in range(steps)]
+    uc = float(np.abs(classic.velocity()).max())
+    assert uc > 1.0 and rc[-1] > 0.05          # 经典：失稳（复现观测）
+    fixed = _ogrid_solver(nonorth_corrected=True, corr_limit=0.33)
+    rf = [float(fixed.step()["residual"]) for _ in range(steps)]
+    uf = float(np.abs(fixed.velocity()).max())
+    assert np.all(np.isfinite(fixed.velocity()))
+    assert rf[-1] < 1e-4 and uf < 0.2          # 修正：完全收敛且物理
+    both = _ogrid_solver(skew_corrected=True, nonorth_corrected=True, corr_limit=0.33)
+    rb = [float(both.step()["residual"]) for _ in range(steps)]
+    assert rb[-1] < 1e-4 and float(np.abs(both.velocity()).max()) < 0.2
+
+
+def test_skew_corrected_solver_still_converges_on_cartesian():
+    """偏斜修正不得破坏 Cartesian 网格的收敛（延迟修正路径的零回归守卫）。
+
+    注：偏斜修正只改面值/Rhie-Chow 面速度，隐式矩阵不变；Cartesian 上收敛略慢
+    （首步 8.6e-3 vs 4.7e-5）但最终仍收敛到 1e-5 量级。"""
+    a = _make(nx=3)
+    ra = [float(a.step()["residual"]) for _ in range(30)]
+    b = _make(nx=3, skew_corrected=True)
+    rb = [float(b.step()["residual"]) for _ in range(30)]
+    assert ra[-1] < 1e-6 and rb[-1] < 1e-3
+
+
 def test_solver_transient_quasi_steady_limit_recovers_steady():
     """R1-1 核心不变量：Δt→∞ 时瞬态项退化为零，瞬态推进精确退回稳态解。"""
     us = _run_steady(_make_transient(nx=2), n=200)
