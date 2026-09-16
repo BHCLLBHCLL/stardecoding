@@ -1,5 +1,5 @@
 {
- "note": "S2 自研圆柱结果（诚实记录：多组配置均未复现脱落；本轮把时间步假设证伪）",
+ "note": "S2 自研圆柱结果（诚实记录：多组配置均未复现脱落；第五路混合网格实现贴体瞬态首次稳定+扰动可持续生长，但 Hopf 模态仍被阻尼）",
  "cases": {
   "cyl_re200_u005": {
    "st": null,
@@ -91,6 +91,70 @@
     "n_inner": 1
    },
    "source": "s_wave_plan.md S2 第四路 / S4 O 型网格节"
+  },
+  "cyl_re200_hybrid_limited": {
+   "st": null,
+   "state": "no-shedding-steady-asymmetric",
+   "reason": "混合网格（方形 O 型环带+张量积外围，19,020 tet，median 32.6°/p95 69.0°/skew 0.35/d_n|d|<0.15 占 0%）+ nonorth corr=0.33 + limited：贴体瞬态首次稳定（1525 步无发散）；扰动先衰减后慢速再生长到定常非对称态（cl→0.0087），但无振荡分量（高通振幅 7e-6、后半段过零 1 次）→ 振荡模态被 limited 格式的数值耗散压制",
+   "cl_final": 0.00868,
+   "cl_max": 0.02216,
+   "highpass_amp_last_quarter": 7e-06,
+   "zero_crossings_2nd_half": 1,
+   "config": {
+    "mesher": "hybrid",
+    "m": 24,
+    "n_r": 16,
+    "stretch": 1.3,
+    "thickness_D": 0.25,
+    "n_cells": 19020,
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 1,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "convection": "limited",
+    "steps": 1525
+   },
+   "evidence": "_s2_hybrid_limited_ckpt.json（1525 步 (t, cl, w) 序列；主动终止以换 central 对照）",
+   "source": "s_wave_plan.md S2 第五路（run1）"
+  },
+  "cyl_re200_hybrid_central": {
+   "st": null,
+   "state": "no-shedding-steady-asymmetric",
+   "reason": "同网格同参数仅换 central：扰动生长强 5×（cl→0.0612，40 s = 50 D/U 饱和到定常非对称态，平均升力 0.0416），但振荡分量仍被阻尼（高通振幅 7e-6、后半段过零 1 次；报告 St=0.04 是单调漂移的 FFT 假峰）→ 贴体瞬态稳定+扰动可持续生长（相对阶梯网格全面衰减是实质进步），但 Hopf 模态仍未越过阈值；诊断：n_inner=1 下延迟修正的高阶项每步只施加一次，有效对流精度仍接近一阶上风",
+   "cl_final": 0.06118,
+   "cl_max": 0.06118,
+   "mean_lift": 0.04165,
+   "highpass_amp_last_quarter": 7e-06,
+   "zero_crossings_2nd_half": 1,
+   "st_fft_artifact": 0.04,
+   "config": {
+    "mesher": "hybrid",
+    "m": 24,
+    "n_r": 16,
+    "stretch": 1.3,
+    "thickness_D": 0.25,
+    "n_cells": 19020,
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 1,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "convection": "central",
+    "steps": 4000
+   },
+   "evidence": "_s2_hybrid_ckpt2.json（4000 步完整 (t, cl, w) 序列）+ _s2_hybrid_run2.json（mesh_quality/CFL/w_absmax 诊断）",
+   "source": "s_wave_plan.md S2 第五路（run2）"
   }
  }
 }
