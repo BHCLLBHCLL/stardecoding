@@ -522,7 +522,10 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
              length_D=16.0, height_D=8.0, thickness_D=0.5, h_factor=4.0,
              center_x_D=4.0, sample_every=1, mesher="cartesian", mesh=None,
              convection="upwind", wall_slip_axes=(), piso_correctors=0,
-             perturb=None, checkpoint=None, checkpoint_every=25):
+             perturb=None, checkpoint=None, checkpoint_every=25,
+             skew_corrected=False, nonorth_corrected=False, corr_limit=1.0,
+             hybrid_m=24, hybrid_nr=16, hybrid_a_D=3.0, hybrid_stretch=1.3,
+             hybrid_layers=1):
     """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
     **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
@@ -552,15 +555,28 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
         elif mesher == "ogrid":
             mesh = channel_tet_mesh(D, length_D=length_D, height_D=height_D,
                                     thickness=thickness_D * D)
+        elif mesher == "hybrid":
+            # S2 第 3 步 ③(a)：方形 O 型环带（贴体）+ 张量积外围（协调拼接）。
+            # 推荐 thickness_D=0.25 + slip 壁（z 厚 ≈ 外围 h → 长细比≈1，
+            # 非正交角 median≈33°/p95≈69°，d_n/|d|<0.15 占比 0%）
+            from mesh_hybrid import hybrid_channel_mesh
+            mesh = hybrid_channel_mesh(D, length_D=length_D, height_D=height_D,
+                                       thickness_D=thickness_D,
+                                       center_x_D=center_x_D, h_factor=h_factor,
+                                       m=hybrid_m, n_r=hybrid_nr, a_D=hybrid_a_D,
+                                       stretch=hybrid_stretch, n_layers=hybrid_layers)
         else:
-            return {"ok": False, "reason": "未知网格器 %r（cartesian/ogrid）" % mesher}
+            return {"ok": False, "reason": "未知网格器 %r（cartesian/ogrid/hybrid）" % mesher}
     V = np.asarray(mesh["vertices"], float)
     C = np.asarray(mesh["cells"], np.int64)
     dt = float(dt or (0.2 * D / u_inf))
     solver = PressureSolver(V, C, rho=1.0, mu=1.0 * nu, inlet_axis=0,
                             inlet_side="min", inlet_velocity=(u_inf, 0.0, 0.0),
                             outlet_side="max", convection=convection,
-                            wall_slip_axes=wall_slip_axes, piso_correctors=piso_correctors)
+                            wall_slip_axes=wall_slip_axes, piso_correctors=piso_correctors,
+                            skew_corrected=skew_corrected,
+                            nonorth_corrected=nonorth_corrected,
+                            corr_limit=corr_limit)
     # S2：非对称初始扰动（可选）——必须在 enable_transient 之前加，
     # 这样 φⁿ 参考即为扰动后的场。
     perturb_mag = 0.0
@@ -579,13 +595,13 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     cyl_faces = np.where(fv.is_boundary & (rh <= cyl_r + 1e-9))[0]
     if cyl_faces.size == 0:
         return {"ok": False, "reason": "未识别到圆柱面（0 个面）"}
-    ts, cls = [], []
+    ts, cls, ws = [], [], []
     for k in range(int(steps)):
         solver.advance(dt=dt, n_inner=n_inner)
         if checkpoint and k % max(1, int(checkpoint_every)) == 0:
             import json as _json
             with open(checkpoint, "w", encoding="utf-8") as fh:
-                _json.dump({"t": ts, "cl": cls, "steps_done": k,
+                _json.dump({"t": ts, "cl": cls, "w_absmax": ws, "steps_done": k,
                             "dt": float(dt), "n_cells": int(C.shape[0]),
                             "perturb_mag": perturb_mag, "done": False},
                            fh, ensure_ascii=False)
@@ -598,6 +614,9 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
                                     lift_dir=(0.0, 1.0, 0.0))
             ts.append(float(solver.time))
             cls.append(float(fc.get("cl", float("nan"))))
+            # S2 ③(a)：准二维真实性监视（滑移 z 壁下 |w| 应≈0；tet 分解的 z 不对称
+            # 会注入伪 w —— 如实记录，不掩盖）
+            ws.append(float(np.abs(vel[:, 2]).max()))
     # S4：CFL 诊断（诚实必要 —— 贴体 O 型网格的 θ 向间距远小于径向，dt 稍大即 CFL>1
     # 发散；实测 dt=0.04 s + n_theta=96 时 CFL≈1.5 → cl 爆到 1e32）。
     try:
@@ -615,13 +634,28 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
     if checkpoint:
         import json as _json
         with open(checkpoint, "w", encoding="utf-8") as fh:
-            _json.dump({"t": ts, "cl": cls, "steps_done": int(steps),
+            _json.dump({"t": ts, "cl": cls, "w_absmax": ws, "steps_done": int(steps),
                         "dt": float(dt), "n_cells": int(C.shape[0]),
                         "perturb_mag": perturb_mag, "done": True}, fh,
                        ensure_ascii=False)
+    # S2 ③(a)：网格质量随结果一起落档（贴体路线的核心证据之一）
+    try:
+        from mesh_quality import orthogonality_report
+        _oq = orthogonality_report(V, C)
+        mesh_quality = {"verdict": _oq["verdict"],
+                        "ortho_median": _oq["ortho_deg"]["median"],
+                        "ortho_p95": _oq["ortho_deg"]["p95"],
+                        "skew_p95": _oq["skew"]["p95"]}
+    except Exception:
+        mesh_quality = None
     return {"ok": True, "mesher": mesher, "n_cells": int(C.shape[0]),
             "n_cyl_faces": int(cyl_faces.size), "dt": dt, "steps": int(steps),
             "perturb_mag": perturb_mag,
+            "corrections": {"skew": bool(skew_corrected),
+                            "nonorth": bool(nonorth_corrected),
+                            "corr_limit": float(corr_limit)},
+            "mesh_quality": mesh_quality,
+            "w_absmax_final": (float(ws[-1]) if ws else None),
             "h_min": h_min, "h_typ": h_typ, "cfl_max": cfl,
             "t_span": float(t[-1] - t[0]) if t.size else 0.0,
             "n_samples": int(series.size),
@@ -663,8 +697,9 @@ def _main(argv=None):
                     help="侧壁滑移（wall_slip_axes=(1,2)，准二维绕流）")
     ap.add_argument("--piso", type=int, default=0,
                     help="PISO 压力校正次数（S2：≥2 且配合 --n-inner 1 保非定常时间精度）")
-    ap.add_argument("--mesher", choices=("cartesian", "ogrid"), default="cartesian",
-                    help="cartesian=阶梯（鲁棒）；ogrid=贴体 O 型网格（S4 修复后细网格可用）")
+    ap.add_argument("--mesher", choices=("cartesian", "ogrid", "hybrid"), default="cartesian",
+                    help="cartesian=阶梯（鲁棒）；ogrid=贴体 O 型网格；hybrid=方形 O 型环带+"
+                         "张量积外围（S2 第 3 步 ③(a)，协调拼接，配 --nonorth-correct 用）")
     ap.add_argument("--thickness-D", type=float, default=0.5,
                     help="展向厚度（以 D 为单位；0.25 + 滑移壁 = 单层准二维，成本减半）")
     ap.add_argument("--perturb", type=float, default=None,
@@ -673,6 +708,20 @@ def _main(argv=None):
                     help="每 N 步采样一次升力（长跑可加大以省内存）")
     ap.add_argument("--checkpoint", default=None,
                     help="(t,cl) 序列落盘路径（长跑证据，进程中断不丢）")
+    ap.add_argument("--skew-correct", action="store_true",
+                    help="面值偏斜修正（默认关；实测混合网格上压力矩阵奇异，负结果）")
+    ap.add_argument("--nonorth-correct", action="store_true",
+                    help="扩散非正交修正（贴体/混合网格推荐开启）")
+    ap.add_argument("--corr-limit", type=float, default=1.0,
+                    help="非正交修正限幅系数（推荐 0.33：保对角占优换稳定）")
+    ap.add_argument("--hybrid-m", type=int, default=24,
+                    help="混合网格：正方形每边细分段数（角向射线总数 = 4m）")
+    ap.add_argument("--hybrid-nr", type=int, default=16, help="混合网格：环带径向层数")
+    ap.add_argument("--hybrid-a-D", type=float, default=3.0,
+                    help="混合网格：环带外正方形半边长（×D）")
+    ap.add_argument("--hybrid-stretch", type=float, default=1.3,
+                    help="混合网格：径向加密幂次")
+    ap.add_argument("--hybrid-layers", type=int, default=1, help="混合网格：z 向层数")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sim_parser import SimFile
@@ -689,7 +738,14 @@ def _main(argv=None):
                         mesher=args.mesher,
                         thickness_D=args.thickness_D, perturb=args.perturb,
                         sample_every=args.sample_every,
-                        checkpoint=args.checkpoint)
+                        checkpoint=args.checkpoint,
+                        skew_corrected=args.skew_correct,
+                        nonorth_corrected=args.nonorth_correct,
+                        corr_limit=args.corr_limit,
+                        hybrid_m=args.hybrid_m, hybrid_nr=args.hybrid_nr,
+                        hybrid_a_D=args.hybrid_a_D,
+                        hybrid_stretch=args.hybrid_stretch,
+                        hybrid_layers=args.hybrid_layers)
         rep["ours"] = ours
         if ours.get("ok"):
             rep["diff"] = diff_metrics(ours, ref)

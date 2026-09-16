@@ -16,7 +16,8 @@
 | `sim_writer.py` | 对象图 repr 回写（Save / Save As） |
 | `cosimulation.py` | 协同仿真链接配置前段（R6：类型/连接/启动/耦合区间/URF/区域与场映射 + 校验 + JSON 往返 + Java 宏前端 best-effort） |
 | `mesh_benchmark.py` | 教程尺度网格对标（R5：官方 .sim 网格尺度 ↔ 自研重网格化，面数/面积/边尺度/质量） |
-| `official_diff.py` | 官方解差分（R4：官方参考量 St/D/Re + 同工况环形域几何 + 误差带判定；真实瞬态跑门控 STARDECODING_LONG） |
+| `official_diff.py` | 官方解差分（R4：官方参考量 St/D/Re + 同工况环形域几何 + 误差带判定；真实瞬态跑门控 STARDECODING_LONG；--mesher hybrid 混合网格 + 非正交修正旋钮） |
+| `mesh_hybrid.py` | 方形 O 型环带 + 张量积外围**协调混合网格**（S2 ③(a)：贴体圆柱 + 近笛卡尔尾迹，解析恒等式保证逐点拼接，解析体积核对到 1e-9） |
 | `star_bridge.py` | 官方 STAR-CCM+ 桥（S1：安装探测 / 宏模板 / 工作副本运行 / 视图对照 / 官方重存 / 名字键差分；官方集成门控 STARDECODING_OFFICIAL） |
 | `star_gui_plots.py` | 绘图/报告查看窗 |
 | `star_gui_parity.md` | 对标 STAR-CCM+ 20.02 能力表（view / session / persist / needs_kernel） |
