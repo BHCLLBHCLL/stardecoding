@@ -31,9 +31,42 @@ import math
 import numpy as np
 
 
+def _graded_line(span, h_near, far_ratio, n_min=2):
+    """单调渐变线：靠近起点间距 ≈ h_near，几何增长，最远间距 ≤ h_near·far_ratio。
+
+    用于尾迹加密：近场（正方形边）细、远场（出口/壁）粗，单元数远少于均匀加密。
+    返回精确覆盖 [0, span] 的含端点数组（末端重标定保证几何闭合）。
+    """
+    span = float(span)
+    h_near = float(h_near)
+    far_ratio = float(far_ratio)
+    if span <= 0.0 or h_near <= 0.0 or far_ratio <= 1.0:
+        return np.linspace(0.0, span, max(int(math.ceil(span / h_near)), 1) + 1)
+    for n in range(max(n_min, 2), 500):
+        # 解 r：h_near·(r^n − 1)/(r − 1) = span（n 段几何和恰为 span）
+        lo, hi = 1.0 + 1e-9, 20.0
+        for _ in range(100):
+            mid = 0.5 * (lo + hi)
+            s = (h_near * (mid ** n - 1.0) / (mid - 1.0)
+                 if mid > 1.0 + 1e-12 else h_near * n)
+            if s < span:
+                lo = mid
+            else:
+                hi = mid
+        r = 0.5 * (lo + hi)
+        if r <= 1.0 + 1e-6:
+            break                              # 均匀已足够（span/ h_near 段）
+        last = h_near * r ** (n - 1)
+        if last <= h_near * far_ratio * 1.05:
+            steps = h_near * r ** np.arange(n)
+            pos = np.concatenate(([0.0], np.cumsum(steps)))
+            return pos * (span / pos[-1])
+    return np.linspace(0.0, span, max(int(math.ceil(span / h_near)), 1) + 1)
+
+
 def hybrid_channel_mesh(D, length_D=16.0, height_D=8.0, thickness_D=0.25,
                         center_x_D=4.0, h_factor=4.0, m=24, n_r=16,
-                        a_D=3.0, stretch=1.3, n_layers=1):
+                        a_D=3.0, stretch=1.3, n_layers=1, stretch_far=None):
     """混合网格：方形 O 型环带（贴体圆柱）+ 张量积外围（通道）。
 
     默认参数 = S2 实测工作点（19,020 tet，非正交 median 32.6°/p95 69.0°、偏斜
@@ -72,10 +105,18 @@ def hybrid_channel_mesh(D, length_D=16.0, height_D=8.0, thickness_D=0.25,
     off[0], off[m] = -a, a
     XT = [cx + v for v in off]                    # 上/下边的 x 细分线
     YT = [cy + v for v in off]                    # 左/右边的 y 细分线
-    xL = np.linspace(0.0, cx - a, max(int(math.ceil((cx - a) / h)), 1) + 1)
-    xR = np.linspace(cx + a, L, max(int(math.ceil((L - cx - a) / h)), 1) + 1)
-    yB = np.linspace(0.0, cy - a, max(int(math.ceil((cy - a) / h)), 1) + 1)
-    yT = np.linspace(cy + a, H, max(int(math.ceil((H - cy - a) / h)), 1) + 1)
+    # 外围线：stretch_far=None → 均匀 h；给定（如 4.0）→ 尾迹几何渐变加密
+    # （细端必须在**靠正方形**一侧：xL/yB 的细端在 span 终点，xR/yT 的细端在起点）
+    if stretch_far:
+        xL = (cx - a) - _graded_line(cx - a, h, stretch_far)[::-1]
+        xR = (cx + a) + _graded_line(L - cx - a, h, stretch_far)
+        yB = (cy - a) - _graded_line(cy - a, h, stretch_far)[::-1]
+        yT = (cy + a) + _graded_line(H - cy - a, h, stretch_far)
+    else:
+        xL = np.linspace(0.0, cx - a, max(int(math.ceil((cx - a) / h)), 1) + 1)
+        xR = np.linspace(cx + a, L, max(int(math.ceil((L - cx - a) / h)), 1) + 1)
+        yB = np.linspace(0.0, cy - a, max(int(math.ceil((cy - a) / h)), 1) + 1)
+        yT = np.linspace(cy + a, H, max(int(math.ceil((H - cy - a) / h)), 1) + 1)
 
     pts2 = []
     vmap = {}
@@ -196,6 +237,7 @@ def hybrid_channel_mesh(D, length_D=16.0, height_D=8.0, thickness_D=0.25,
             "thickness": T, "length": L, "height": H, "h": h,
             "a": a, "m": m, "n_theta": n_th, "n_r": n_r,
             "stretch": float(stretch), "n_layers": n_layers,
+            "stretch_far": (float(stretch_far) if stretch_far else None),
             "square": (cx - a, cx + a, cy - a, cy + a),
             "quality_proxy": {"min_vol": float(vol.min()),
                               "max_vol": float(vol.max()),

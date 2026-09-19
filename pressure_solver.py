@@ -207,7 +207,7 @@ class PressureSolver:
                  compressible_relax=0.5, unsteady=False, dt=None,
                  convection="upwind", wall_slip_axes=(), piso_correctors=0,
                  skew_corrected=False, nonorth_corrected=False,
-                 corr_limit=1.0, pc_inner=1):
+                 corr_limit=1.0, pc_inner=1, planar_2d=False):
         # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
         # （法向速度=0、切向自由 → 动量装配对流与扩散均无贡献，面通量恒 0）：
         # 典型用法 wall_slip_axes=(1,2) 得到准二维绕流，消除薄板侧壁摩擦耗散。
@@ -237,6 +237,11 @@ class PressureSolver:
         # pc_inner≥2 时在**同一步内**反复「装配 → 解 → 用新 p' 重装」，使延迟项自洽
         # （代价：每步多 n_pc_inner−1 次压力泊松求解）。
         self.pc_inner = max(1, int(pc_inner or 1))
+        # S2 ③(a) 第六步：平面约束（准二维净化）。单层 z + 滑移壁网格上，tet 分解的
+        # z 不对称会通过伪 w 通道污染解（实测 |w| 达 0.22·U 且滑移壁下无阻尼）。
+        # planar_2d=True 跳过 w 动量方程并强制 w≡0 —— 对 z 向均匀的场这是**精确**的
+        # 二维问题离散（所有 z 向通量/梯度恒 0），伪 w 通道彻底关闭。默认 False 零回归。
+        self.planar_2d = bool(planar_2d)
         # 压力修正方程的延迟修正状态（上一次解出的 p'；None = 首次，修正项为 0）
         self._pc_last = None
         self._pc_k_n = None
@@ -1287,7 +1292,8 @@ class PressureSolver:
         fv = self._fv
         n = fv.n_cells
         d_cell = np.zeros(n, float)
-        for comp in range(3):
+        comps = (0, 1) if getattr(self, "planar_2d", False) else (0, 1, 2)
+        for comp in comps:
             r, c, v, rhs, ap = self._assemble_momentum(comp)
             sol = solve_linear(r, c, v, rhs, n, tol=1e-9, maxit=6000)
             if comp == 0:
@@ -1298,6 +1304,8 @@ class PressureSolver:
                 self._w = sol
             aP = ap / self.alpha_momentum
             d_cell = fv.volumes / np.maximum(aP, 1e-12)
+        if getattr(self, "planar_2d", False):
+            self._w = np.zeros(n)
         self._last_d_cell = d_cell
         # Rhie-Chow 面质量通量（由预测速度 + 压力梯度重构）
         self._recompute_mdot_rhie_chow()
@@ -1322,7 +1330,8 @@ class PressureSolver:
             self._p = self._p + (self.alpha_pressure if k_corr == 0 else 1.0) * pprime
             self._u = self._u - d_cell * gpp[:, 0]
             self._v = self._v - d_cell * gpp[:, 1]
-            self._w = self._w - d_cell * gpp[:, 2]
+            if not getattr(self, "planar_2d", False):
+                self._w = self._w - d_cell * gpp[:, 2]
             # 直接校正面质量通量（SIMPLE 标准做法）：mdot_f += gamma (p'_O - p'_N)
             # —— 与压力修正矩阵用同一 gamma，保证泊松解与通量修正一致，正是残差收敛关键。
             self._mdot[is_int] += gamma * (pprime[o_int] - pprime[nb_int])

@@ -166,6 +166,55 @@ def test_run_case_hybrid_wiring(monkeypatch):
     assert "STARDECODING_LONG" in out2["reason"]
 
 
+def test_hybrid_graded_wake_refinement():
+    """外围几何渐变（stretch_far）：近尾迹分辨率翻倍而单元数不增，协调性与质量保持。"""
+    from fvm_core import FVM
+    base = hybrid_channel_mesh(D=0.04)
+    graded = hybrid_channel_mesh(D=0.04, h_factor=8.0, stretch_far=4.0)
+    assert graded["n_cells"] <= base["n_cells"], (graded["n_cells"], base["n_cells"])
+    conf = mesh_conformity(graded["vertices"], graded["cells"])
+    assert conf["conforming"], conf
+    pred = _polygon_volume(graded)
+    assert abs(graded["volume"] - pred) / pred < 1e-9
+    o = orthogonality_report(graded["vertices"], graded["cells"])
+    assert o["verdict"] in ("good", "marginal"), o["reason"]
+    assert o["ortho_deg"]["p95"] < 75.0
+    # 近尾迹（x=cx+0.5D..1.5D， wake 中心带）最细 x 间距 ≈ h=D/8
+    V = np.asarray(graded["vertices"], float)
+    xs = np.unique(np.round(V[(V[:, 0] > 0.16 + 0.02) & (V[:, 0] < 0.16 + 0.06)
+                              & (np.abs(V[:, 1] - 0.16) < 0.02), 0], 7))
+    assert float(np.diff(xs).min()) <= 0.04 / 8.0 + 1e-9
+    fv = FVM(V, np.asarray(graded["cells"], np.int64))
+    mm = ~fv.is_boundary
+    d = fv.centroids[fv.neighbor[mm]] - fv.centroids[fv.owner[mm]]
+    L = np.linalg.norm(d, axis=1)
+    assert float((fv._d_n[mm] / np.maximum(L, 1e-300) < 0.15).mean()) == 0.0
+
+
+def test_pressure_solver_planar_2d_flag():
+    """planar_2d：w 恒 0 且解有限（默认 False 时行为不变 —— 零回归）。"""
+    from pressure_solver import PressureSolver
+    m = _small()
+    V = np.asarray(m["vertices"], float)
+    C = np.asarray(m["cells"], np.int64)
+    kw = dict(rho=1.0, mu=1e-5, inlet_axis=0, inlet_side="min",
+              inlet_velocity=(0.05, 0.0, 0.0), outlet_side="max",
+              convection="limited", wall_slip_axes=(1, 2),
+              nonorth_corrected=True, corr_limit=0.33)
+    s = PressureSolver(V, C, planar_2d=True, **kw)
+    for _ in range(8):
+        r = s.step()
+    assert np.isfinite(s.velocity()).all()
+    assert float(np.abs(s.velocity()[:, 2]).max()) == 0.0
+    assert r["residual"] < 1.0
+    s2 = PressureSolver(V, C, **kw)                 # 默认关：不回归
+    assert s2.planar_2d is False
+    for _ in range(4):
+        s2.step()
+    assert np.isfinite(s2.velocity()).all()
+
+
+
 def test_hybrid_mesh_report_helper():
     rep = hybrid_mesh_report(_small())
     assert rep["conformity"]["conforming"]

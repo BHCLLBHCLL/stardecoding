@@ -525,7 +525,7 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
              perturb=None, checkpoint=None, checkpoint_every=25,
              skew_corrected=False, nonorth_corrected=False, corr_limit=1.0,
              hybrid_m=24, hybrid_nr=16, hybrid_a_D=3.0, hybrid_stretch=1.3,
-             hybrid_layers=1):
+             hybrid_layers=1, hybrid_stretch_far=None, planar_2d=False):
     """同工况自研求解：通道域结构化 tet + 瞬态 SIMPLE（R1 内核）+ 圆柱升力积分 → Cl(t) → St。
 
     **长耗时**：需 STARDECODING_LONG=1。默认 `mesher="cartesian"`（笛卡尔阶梯网格，良态稳定）；
@@ -564,7 +564,8 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
                                        thickness_D=thickness_D,
                                        center_x_D=center_x_D, h_factor=h_factor,
                                        m=hybrid_m, n_r=hybrid_nr, a_D=hybrid_a_D,
-                                       stretch=hybrid_stretch, n_layers=hybrid_layers)
+                                       stretch=hybrid_stretch, n_layers=hybrid_layers,
+                                       stretch_far=hybrid_stretch_far)
         else:
             return {"ok": False, "reason": "未知网格器 %r（cartesian/ogrid/hybrid）" % mesher}
     V = np.asarray(mesh["vertices"], float)
@@ -576,7 +577,7 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
                             wall_slip_axes=wall_slip_axes, piso_correctors=piso_correctors,
                             skew_corrected=skew_corrected,
                             nonorth_corrected=nonorth_corrected,
-                            corr_limit=corr_limit)
+                            corr_limit=corr_limit, planar_2d=planar_2d)
     # S2：非对称初始扰动（可选）——必须在 enable_transient 之前加，
     # 这样 φⁿ 参考即为扰动后的场。
     perturb_mag = 0.0
@@ -653,7 +654,8 @@ def run_case(D=0.04, u_inf=0.05, nu=DEFAULT_NU, dt=None, steps=120, n_inner=2,
             "perturb_mag": perturb_mag,
             "corrections": {"skew": bool(skew_corrected),
                             "nonorth": bool(nonorth_corrected),
-                            "corr_limit": float(corr_limit)},
+                            "corr_limit": float(corr_limit),
+                            "planar_2d": bool(planar_2d)},
             "mesh_quality": mesh_quality,
             "w_absmax_final": (float(ws[-1]) if ws else None),
             "h_min": h_min, "h_typ": h_typ, "cfl_max": cfl,
@@ -722,6 +724,10 @@ def _main(argv=None):
     ap.add_argument("--hybrid-stretch", type=float, default=1.3,
                     help="混合网格：径向加密幂次")
     ap.add_argument("--hybrid-layers", type=int, default=1, help="混合网格：z 向层数")
+    ap.add_argument("--hybrid-stretch-far", type=float, default=None,
+                    help="混合网格：外围几何渐变（近场 h、远场 ≤h·该值；尾迹加密且单元数近常数）")
+    ap.add_argument("--planar-2d", action="store_true",
+                    help="平面约束：跳过 w 动量并强制 w≡0（单层 z 滑移壁网格上净化伪 w 通道）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     from sim_parser import SimFile
@@ -745,7 +751,9 @@ def _main(argv=None):
                         hybrid_m=args.hybrid_m, hybrid_nr=args.hybrid_nr,
                         hybrid_a_D=args.hybrid_a_D,
                         hybrid_stretch=args.hybrid_stretch,
-                        hybrid_layers=args.hybrid_layers)
+                        hybrid_layers=args.hybrid_layers,
+                        hybrid_stretch_far=args.hybrid_stretch_far,
+                        planar_2d=args.planar_2d)
         rep["ours"] = ours
         if ours.get("ok"):
             rep["diff"] = diff_metrics(ours, ref)
