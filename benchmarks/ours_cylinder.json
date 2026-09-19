@@ -275,6 +275,38 @@
    },
    "evidence": "_s2_hybrid_ckpt6.json",
    "source": "s_wave_plan.md S2 第六步"
+  },
+  "cyl_re200_hybrid_ni3_3000": {
+   "st": null,
+   "state": "no-shedding-steady-asymmetric",
+   "reason": "run9 = run4 配置延长到 3000 步（t=30s 目标）：与 run4 逐步一致（确定性复现验证），外部终止于 1125 步/t=11.25s（无 Python 错误、JSON 空文件 —— Windows 强杀模式，非求解器崩溃）；cl=0.048 仍按 σ≈0.058/s 减速生长、无振荡（过零 1）→ 与 run2（ni=1 饱和 0.061 @t=40）同一模式：ni=3 只改变生长速度不改变饱和归宿",
+   "cl_final": 0.04804,
+   "sigma_fit_per_s": 0.058,
+   "zero_crossings_2nd_half": 1,
+   "config": {
+    "mesher": "hybrid",
+    "m": 24,
+    "n_r": 16,
+    "stretch": 1.3,
+    "thickness_D": 0.25,
+    "n_cells": 19020,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "steps": 1125,
+    "steps_requested": 3000,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "terminated": "external kill, no stderr"
+   },
+   "evidence": "_s2_hybrid_ckpt9.json（1125 步 (t, cl, w) 序列）",
+   "source": "s_wave_plan.md S2 第六步（run9）"
   }
  }
 }
