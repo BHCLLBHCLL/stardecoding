@@ -217,6 +217,64 @@
    },
    "evidence": "_s2_hybrid_ckpt5.json + _s2_hybrid_run5.json",
    "source": "s_wave_plan.md S2 第五路（run5 对照）"
+  },
+  "cyl_re200_hybrid_graded_diverged": {
+   "st": null,
+   "state": "failed-diverged",
+   "reason": "尾迹几何渐变加密（h=D/8 近尾迹 + stretch_far=4/2 两档）瞬态立即发散：cl 首窗 0.12-0.27、w 飙至 1.45=29U → 近尾迹 h=0.005 使 z 长细比 rho=2，tet 内剖面伪 w 模态失稳。结构性限制：单 z 层 z 全局恒定，面内尺寸不能变化 4×（均匀 h=D/4 的 rho≈0.6-1.25 是甜点）",
+   "w_absmax_peak": 1.45,
+   "config": {
+    "mesher": "hybrid",
+    "m": 24,
+    "n_r": 16,
+    "stretch": 1.3,
+    "thickness_D": 0.25,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "h_factor": 8,
+    "stretch_far": 4,
+    "steps": 250
+   },
+   "evidence": "_s2_hybrid_ckpt7.json（far=4）+ _s2_hybrid_ckpt8.json（far=2，发散更快）",
+   "source": "s_wave_plan.md S2 第六步"
+  },
+  "cyl_re200_hybrid_planar2d_diverged": {
+   "st": null,
+   "state": "failed-diverged",
+   "reason": "planar_2d（强制 w≡0、跳过 w 动量）+ 渐变网格：t≈1.1s 起发散至 NaN。机理：tet 内部斜面法向含 z 分量，去掉 z 动量方程后 Rhie-Chow 通量模型失去平衡 → 压力泊松不一致。三维 tet 求解器不能如此退化到二维（机制性测试保留，默认 False 零回归）",
+   "config": {
+    "mesher": "hybrid",
+    "m": 24,
+    "n_r": 16,
+    "stretch": 1.3,
+    "thickness_D": 0.25,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "h_factor": 8,
+    "stretch_far": 4,
+    "planar_2d": true,
+    "steps": 325
+   },
+   "evidence": "_s2_hybrid_ckpt6.json",
+   "source": "s_wave_plan.md S2 第六步"
   }
  }
 }
