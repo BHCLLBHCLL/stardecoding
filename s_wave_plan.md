@@ -353,7 +353,10 @@ O 型 96×14 瞬态 80 步（dt=0.01、PISO(1)、同一非对称扰动）逐项�
 - 两动作注册从 `_kernel_nyi` 桩改为真实命令；`star_gui_parity.md` 对应行 `needs_kernel` → `session`（含边界说明）。
 - `tests/test_gui_mesh_ops.py` 4 项（3 通过 + 1 无头跳过）：动作注册与桩移除、清除后的状态与提示、无视图诚实拒绝、有视图压平并置标志。
 
-**仍开放（诚实标注）**：内核级「从网格模型删除体网格」与「真正把区域转 2D」仍属 needs_kernel；3D-CAD 界内 B-Rep 建模（OCC 内核已在 C2/C3，未接 GUI）、真实打包（PyInstaller 未安装）两项未动。
+**仍开放（诚实标注）**：内核级「从网格模型删除体网格」已由第二轮解决（见下），「真正把区域转 2D」仍属 needs_kernel；3D-CAD 界内 B-Rep 建模（OCC 内核已在 C2/C3，未接 GUI）未动。
+- **S5 第三轮（本轮）：真实打包达成** —— 装上 PyInstaller 6.22.3 并生成**首个可分发二进制**：`dist/stardecoding-cli.exe`（onefile，236.3 MB），冒烟用真实 `adjointWing_start.sim` 跑 `--report`，输出完整对象图/场景/Part 清单、退出码 0（`tests/test_build_exe.py` 3 项：冻结入口语法、排除巨型依赖、产物真跑；产物不入库故该项在未构建时如实 skip）。
+  **过程中的真问题**：把 `scipy` 作为 `--hidden-import` 会触发 PyInstaller 的巨型 hook 图，把 sklearn/tensorflow/astropy/pyarrow 全拖进来（构建 >10 分钟、体积失控）；解析器本身**只用 numpy**（scipy 仅求解器模块需要）→ 改为只收 numpy + 显式排除 15 个重依赖。另：生成的三引号入口曾被转义写坏导致 `SyntaxError`、cp1252 控制台输出中文报错 —— 都已修并有测试护栏。
+  **诚实边界**：GUI（PyQt5 + VTK）打包**未做**（依赖体积大、需额外 Qt 插件收集）；onefile 236 MB 偏大，`--onedir` + UPX 是后续优化项。
 - **S5 第二轮（本轮）：Mesh>清除从 session 升级为 persist（对象图级真删除）** —— 旧实现只丢弃会话生成结果 + 显示 actor，对象图与 .sim 不变。新增三层：
   ① `sim.volume_mesh_groups()`：与 `extract_volume_mesh` 同源的角色标签集（Coord/VertexList/FaceCellIndex/ElemType/ProstarCellIndex/ProstarCellType/CellGeometryPartIndex/PrismLayerCells），但返回**全部**带拓扑角色的存储组（含重复副本 3087/3092 —— 只删一个副本时抽取仍成功，所以必须删干净）+ 网格绑定场组（SerialSize 恰等于拓扑组尺寸）+ 被引用的 SimpleStorage/ListStorage 对象；
   ② `sim.deleted_ids` + `live_objects()`：**逻辑删除**视图 —— 网格/边界/解场抽取器立即看不到被删对象（撤销只需清空集合）；
