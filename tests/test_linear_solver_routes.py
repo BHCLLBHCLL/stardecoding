@@ -122,6 +122,21 @@ def test_solve_linear_rejects_unconverged(monkeypatch):
     assert _rel_res(A, x, b) < 1e-6, _rel_res(A, x, b)   # 回退到直接 LU 后必须精确
 
 
+def test_ilu_defaults_are_zero_fill():
+    """回归护栏：ILU 默认必须是零填充 ILU(0)（高填充把成本全花在因式分解上，实测 2.3× 慢）。"""
+    import inspect
+    sig = inspect.signature(ps._ilu_bicgstab)
+    assert sig.parameters["drop_tol"].default == 0.0
+    assert sig.parameters["fill_factor"].default == 1.0
+
+
+def test_amg_uses_cg_with_amg_preconditioner():
+    """回归护栏：压力泊松走 AMG 预条件 CG（比 ml.solve 迭代精化快近 2×）。"""
+    src = open(os.path.join(ROOT, "pressure_solver.py"), encoding="utf-8").read()
+    assert "aspreconditioner()" in src
+    assert "max_coarse=200" in src
+
+
 def test_direct_threshold_default_now_below_100k():
     """回归护栏：默认直接 LU 阈值必须低于 10 万（否则 10 万级又回到 5s/次的直接 LU）。"""
     src = open(os.path.join(ROOT, "pressure_solver.py"), encoding="utf-8").read()

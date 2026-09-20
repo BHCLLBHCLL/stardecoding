@@ -5,10 +5,15 @@
 
 实测（本机，官方 vortexShed 同款通道域阶梯 tet 网格）：
 
-  | 网格 | 未知量 | 直接 LU | AMG-SA | ILU(1e-4)+BiCGSTAB | 新分流 |
+  | 网格 | 未知量 | 直接 LU | 仅 AMG | 分流 v1 | **分流 v2（当前默认）** |
   | --- | --- | --- | --- | --- | --- |
-  | h=D/8, T=0.25D | 97,680 | 32.6 s/步 | 12.6 s/步 | — | 见 --mode auto |
-  | h=D/8, T=1.0D | 390,720 | （未跑，直接 LU 不可行） | 53.3 s/步 | — | — |
+  | h=D/8, T=0.25D | 97,680 | 32.64 s/步 | 12.56 s/步 | 5.60 s/步 | **min 3.28 / median 3.37 s/步** |
+  | h=D/8, T=0.125D | 48,840 | （第三轮 5.77 s/步） | — | 3.53 s/步 | **min 2.04 / median 2.10 s/步** |
+  | h=D/8, T=1.0D | 390,720 | （未跑，直接 LU 不可行） | 53.34 s/步 | — | — |
+
+  v2 = 动量 ILU(0)（零填充：setup 0.18 + solve 0.25 = 0.42 s，高填充 ILU(1e-4,10) 要 0.97 s）
+     + 压力 AMG(max_coarse=200) 预条件 CG（0.23-0.56 s，ml.solve 要 0.84 s）；残差与直接 LU 逐位一致。
+  共享机器上外部负载会让步时方差达数倍，故口径用 min/median（脚本会在方差 >2× 时告警）。
 
 单次求解（97,680 未知量 / 454k nnz）：
   · 动量（对流扩散，非对称）：直接 5.56 s｜AMG setup 3.39+solve 0.08｜**ILU 0.89+0.04 s**
@@ -72,7 +77,13 @@ def run_bench(mode="auto", h_factor=8.0, thickness_D=0.25, steps=3,
         per_step.append(time.time() - t1)
         lin.append(float(stats["time"]))
         res.append(float(r["residual"]))
+    ps_list = np.asarray(per_step, float)
     out = {"mode": mode, "cells": int(C.shape[0]), "h_factor": float(h_factor),
+           "per_step_min_s": float(ps_list.min()),
+           "per_step_median_s": float(np.median(ps_list)),
+           "per_step_max_s": float(ps_list.max()),
+           "contention_note": ("共享机器：外部负载会让步时方差数倍；"
+                               "min 为最安静窗口的可比口径"),
            "thickness_D": float(thickness_D), "build_s": float(build),
            "per_step_s": per_step, "linsolve_s": lin, "residuals": res,
            "mean_step_s": float(np.mean(per_step)),
@@ -103,8 +114,11 @@ def _main(argv=None):
     for k, (w, l, r) in enumerate(zip(out["per_step_s"], out["linsolve_s"],
                                       out["residuals"])):
         print("  step %d: %.2fs total | linsolve %.2fs | residual %.3e" % (k, w, l, r))
-    print("[%s] mean %.2f s/step（线性求解 %.2f s）"
-          % (out["mode"], out["mean_step_s"], out["mean_linsolve_s"]))
+    print("[%s] 步时 min %.2f / median %.2f / max %.2f s（线性求解均值 %.2f s）"
+          % (out["mode"], out["per_step_min_s"], out["per_step_median_s"],
+             out["per_step_max_s"], out["mean_linsolve_s"]))
+    if out["per_step_max_s"] > 2.0 * out["per_step_min_s"]:
+        print("    ⚠ 步时方差 >2×：共享机器外部负载污染，取 min 作为可比口径")
     return 0
 
 

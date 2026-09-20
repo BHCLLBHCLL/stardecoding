@@ -72,9 +72,17 @@ def solve_linear(row, col, data, b, n, tol=1e-9, maxit=8000,
     return _solve_numpy(row, col, data, b, n, tol, maxit, x0, sor)
 
 
-def _ilu_bicgstab(A, row, col, data, b, rtol, maxit, drop_tol=1e-4,
-                  fill_factor=10):
-    """ILU(drop_tol)+BiCGSTAB：对流扩散（非对称、对角占优）实测最快路线。"""
+def _ilu_bicgstab(A, row, col, data, b, rtol, maxit, drop_tol=0.0,
+                  fill_factor=1.0):
+    """ILU+BiCGSTAB：对流扩散（非对称、对角占优）实测最快路线。
+
+    默认 ILU(0)（drop_tol=0 / fill=1，即零填充）—— 97,680 未知量实测：
+      ILU(0)        setup 0.18s + solve 0.25s = **0.42s**（rel_res 6.2e-07）
+      ILU(1e-3, 3)  setup 0.34s + solve 0.27s = 0.61s（6.0e-07）
+      ILU(1e-4,10)  setup 0.93s + solve 0.04s = 0.97s（7.7e-08）
+    高填充把成本全花在因式分解上（LU nnz 2.27M vs 0.39M），而 BiCGSTAB 迭代本身
+    只要 0.25s —— 零填充是总耗时最优。精度同为 1e-6 相对残差量级。
+    """
     import scipy.sparse.linalg as spla
     try:
         ilu = spla.spilu(A.tocsc(), drop_tol=drop_tol, fill_factor=fill_factor)
@@ -100,8 +108,21 @@ def _amg_solve(A, row, col, data, b, x0, rtol, maxit):
         import pyamg
     except Exception:
         return None
+    import scipy.sparse.linalg as spla
     try:
-        ml = pyamg.smoothed_aggregation_solver(A)
+        ml = pyamg.smoothed_aggregation_solver(A, max_coarse=200)
+    except Exception:
+        return None
+    # 压力修正矩阵对称正定 → 先用 AMG 预条件 CG（实测 solve 0.21s vs ml.solve 0.40s）
+    try:
+        xc, info = spla.cg(A, b, rtol=rtol, atol=0.0, M=ml.aspreconditioner(),
+                           maxiter=max(int(maxit), 200))
+        if info == 0 or _check_residual(row, col, data, xc, b, max(rtol, 1e-6) * 10.0):
+            if _check_residual(row, col, data, xc, b, max(rtol, 1e-6) * 10.0):
+                return np.asarray(xc, float).ravel()
+    except Exception:
+        pass
+    try:
         x = ml.solve(b, x0=x0, tol=rtol, maxiter=max(int(maxit), 200))
     except Exception:
         return None

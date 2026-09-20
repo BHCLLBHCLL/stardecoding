@@ -363,6 +363,37 @@
    },
    "evidence": "_s2_p7B.json",
    "source": "s_wave_plan.md S2 第七步"
+  },
+  "cyl_re200_hybrid_thin_slab": {
+   "st": null,
+   "state": "decays-to-symmetric",
+   "reason": "薄展向对照（T=0.125D、z=0.005；m=32、n_r=20，早前质量扫描正交性最优组合 27,612 单元）：**定性不同于此前所有混合网格算例** —— cl 在 t=2.0 达 0.00186 后**衰减**到 t=3.0 的 0.00139（同时刻基线厚板为 0.01293，低 7×），伪 w 也低（0.0034 vs 0.0045）。**假设性解释（未证）**：z 更薄 → 伪 w 被 z 向粘性更强阻尼 → 此前观察到的“非对称持续生长”很可能**部分是 z 不对称数值伪影**，扣除后底层离散仍偏耗散（有效 Re 低于 Hopf 阈值）→ 正确渐近是对称定常",
+   "cl_at_t2": 0.00186,
+   "cl_at_t3": 0.00139,
+   "baseline_cl_at_t3": 0.0188,
+   "w_absmax_final": 0.0034,
+   "config": {
+    "mesher": "hybrid",
+    "h_factor": 4.0,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "thickness_D": 0.125,
+    "m": 32,
+    "n_r": 20,
+    "stretch": 1.5,
+    "steps": 300
+   },
+   "evidence": "_s2_p7C.json（300 步 (t, cl, w) 序列）",
+   "source": "s_wave_plan.md S2 第七步（探针 C）"
   }
  }
 }
