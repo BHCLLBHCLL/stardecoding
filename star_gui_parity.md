@@ -26,7 +26,7 @@
 | 网格>生成体网格 | kernel（`cmd_generate_volume_mesh` 本地 N 波流水线：表面细分→tet（scipy/Gmsh 双路由）→质量→重编号，N1+N3；水密守门+HEADLESS 安全；N6 统一质量 histogram/repair 接入 `mesh_quality.py`） |
 | 网格>生成多面体网格 | kernel（`cmd_generate_poly_mesh`：tet→Voronoi 对偶 poly 单元，N3b；结果存 `_poly_mesh_result`） |
 | 网格>生成 Trimmer 网格 | kernel（`cmd_generate_trimmer_mesh`：八叉树分级加密+表面切割单元，N3b；结果存 `_trimmer_mesh_result`） |
-| 网格>清除 | session（`cmd_clear_mesh`：丢弃会话生成结果 volume/poly/trimmer + 移除相关 actor + 置 `session_meshes_cleared`；**不改对象图与 .sim**，官方网格可重新显示；内核级「从网格模型删除体网格」仍属 needs_kernel） |
+| 网格>清除 | **persist（内核级真删除）**：`cmd_clear_mesh` → `SimDocument.clear_volume_mesh()` —— 识别体网格存储组（含重复副本与网格绑定场组）→ 标记删除 + 解除 Keys 引用 + 清缓存 → `sim_writer.remove_object_lines()` 按行区间**真删对象行**并平移 line/数组 start；保存后重开 `extract_volume_mesh()` 为 ok=False（实测对象数 −233），`restore_volume_mesh()` 可完整恢复。仍丢弃会话生成结果 + 移除相关 actor（`session_meshes_cleared`） |
 | 网格>转 2D | session（`cmd_convert_2d`：**显示层**沿视图最小跨度轴压平并置 `display_2d`，消息明示「对象图与 .sim 维度未改」；无 3D 视图/无 actor 时诚实拒绝；内核级 2D 转换仍属 needs_kernel） |
 | 网格>缩放 | persist（`TransformPartCommand` → Float8 顶点/`ImportedVertices` 回写，可撤销） |
 | 网格>诊断 | view（指纹/长度/ClassVersions 自洽标志）；kernel N6 侧在 `mesh_quality.py` 提供质量 histogram/repair/`mesh_interface.py` interface/`mesh_amr.py` AMR 钩子，供运行环（P10）与湍流（P6）联调 |

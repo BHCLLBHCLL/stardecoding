@@ -307,6 +307,62 @@
    },
    "evidence": "_s2_hybrid_ckpt9.json（1125 步 (t, cl, w) 序列）",
    "source": "s_wave_plan.md S2 第六步（run9）"
+  },
+  "cyl_re200_hybrid_refine_D5": {
+   "st": null,
+   "state": "no-shedding-steady-asymmetric",
+   "reason": "全域温和加密（h=D/5、m=28、n_r=18，26,352 单元，ρ=1.25 仍在稳定区间）：300 步对照同一物理时刻 cl 略**低于**基线（t=3.0 s：0.01725 vs 0.0188，−8%）→ 该量级加密不加速扰动生长，与\"阻断不是本量级网格分辨率\"一致",
+   "cl_at_t3": 0.01725,
+   "baseline_cl_at_t3": 0.0188,
+   "ratio": 0.918,
+   "config": {
+    "mesher": "hybrid",
+    "thickness_D": 0.25,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "h_factor": 5.0,
+    "m": 28,
+    "n_r": 18,
+    "steps": 300
+   },
+   "evidence": "_s2_p7A.json（300 步 (t, cl, w) 序列）",
+   "source": "s_wave_plan.md S2 第七步"
+  },
+  "cyl_re200_hybrid_noURF": {
+   "st": null,
+   "state": "failed-diverged",
+   "reason": "去掉欠松弛（alpha_momentum=1.0, alpha_pressure=1.0，瞬态 PISO 的教科书设置）：**第 1 步即发散**（cl=-135.8、|w|=1.37）→ 欠松弛在本求解器上不是可选加速项而是稳定性必需（SIMPLE 型分离求解 + 一阶时间推进的组合需要 α_m=0.7 / α_p=0.3）",
+   "cl_step1": -135.76,
+   "w_absmax_step1": 1.3729,
+   "config": {
+    "mesher": "hybrid",
+    "thickness_D": 0.25,
+    "convection": "central",
+    "wall_slip_axes": [
+     1,
+     2
+    ],
+    "piso_correctors": 1,
+    "n_inner": 3,
+    "perturb": 0.2,
+    "dt": 0.01,
+    "nonorth_corrected": true,
+    "corr_limit": 0.33,
+    "alpha_momentum": 1.0,
+    "alpha_pressure": 1.0,
+    "steps": 2
+   },
+   "evidence": "_s2_p7B.json",
+   "source": "s_wave_plan.md S2 第七步"
   }
  }
 }

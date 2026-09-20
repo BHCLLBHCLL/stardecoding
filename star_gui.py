@@ -636,6 +636,47 @@ class StarMainWindow(QMainWindow):
                 vp.render()
 
     def cmd_clear_mesh(self):
+        """Mesh>Clear：**内核级**清除体积网格（对象图真删除 + 可持久化）+ 会话/显示清理。
+
+        S5 第二轮：旧实现只清会话状态（生成结果 + 显示 actor），对象图与 .sim 不变；
+        现在先在文档层执行 `clear_volume_mesh()` —— 把顶点/面/单元存储组、网格绑定
+        场组及其存储对象标记删除并解除引用，保存后文件里不再有体网格（可被
+        `extract_volume_mesh()` 验证为 ok=False）。无绑定 .sim / 无体网格时**如实
+        降级**为会话清理并说明原因，不假装完成内核级删除。
+        """
+        kernel = {"ok": False, "reason": "未绑定 .sim（无对象图可改）"}
+        doc = getattr(self, "document", None)
+        if doc is not None and getattr(doc, "sim", None) is not None:
+            kernel = doc.clear_volume_mesh(include_fields=True)
+        cleared = []
+        for attr in ("_volume_mesh_result", "_poly_mesh_result", "_trimmer_mesh_result"):
+            if getattr(self, attr, None) is not None:
+                setattr(self, attr, None)
+                cleared.append(attr.strip("_").replace("_result", ""))
+        removed = 0
+        vp = getattr(self, "viewport", None)
+        if vp is not None and hasattr(vp, "remove_actors"):
+            keys = [k for k, _n, _pid, _a in getattr(vp, "actors", [])
+                    if str(k).startswith(("volume", "session"))]
+            if keys:
+                removed = vp.remove_actors(keys)
+            if hasattr(vp, "render"):
+                vp.render()
+        if doc is not None:
+            doc.session_meshes_cleared = True
+        if kernel.get("ok"):
+            br = kernel["by_role"]
+            self.msg("已清除体积网格（对象图）：拓扑组 %d / 场组 %d / 存储对象 %d，共 %d 个"
+                     "对象标记删除；保存即生效（文件内不再有体网格），可用"
+                     " restore_volume_mesh() 恢复。会话网格：%s；显示 actor：%d 个。"
+                     % (br.get("topology", 0), br.get("fields", 0),
+                        br.get("storage", 0), len(kernel["removed"]),
+                        ", ".join(cleared) or "无", removed), "info")
+        else:
+            self.msg("已清除本会话网格（生成结果：%s；显示 actor：%d 个）。"
+                     "对象图未改动：%s" % (", ".join(cleared) or "无", removed,
+                                        kernel.get("reason")), "info")
+    def _cmd_clear_mesh_legacy(self):
         """Mesh>Clear：清除**本会话**生成的网格（生成结果 + 相关显示 actor）。
 
         诚实边界（S5）：只清会话状态 —— **不改对象图、不改 .sim**；文件里的官方网格

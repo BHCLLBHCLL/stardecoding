@@ -1140,6 +1140,9 @@ class SimFile:
         self.roots = []
         self.children = {}
         self.objmap = {}
+        # S5：Mesh>Clear 的**逻辑删除**集合 —— 被标记的对象不参与网格/解场抽取
+        # （对象本身保留在 objects 里，便于撤销；写盘时由 sim_writer 真删对象行）。
+        self.deleted_ids = set()
         self._storage_pos = {}   # G3：存储键(数组 s0/ps) -> 数组记录 缓存
 
         for d, payload, s0, ps in self.sections:
@@ -1722,12 +1725,12 @@ class SimFile:
         """
         if _np is None:
             return {"ok": False, "kind": None, "count": 0, "reason": "需要 numpy"}
-        dups = [o for o in self.objects
+        dups = [o for o in self.live_objects()
                 if (o.class_name or "") == "DuplicateStorageManager"]
         if not dups:
             return {"ok": False, "kind": None, "count": 0,
-                    "reason": "无 DuplicateStorageManager 存储体系（纯表面网格文件？）"}
-        stor_by_id = {o.id: o for o in self.objects
+                    "reason": "无 DuplicateStorageManager 存储体系（纯表面网格文件？或被 Mesh>Clear 已删除）"}
+        stor_by_id = {o.id: o for o in self.live_objects()
                       if (o.class_name or "").startswith(("SimpleStorage", "ListStorage"))}
 
         def stor_in(d, tag):
@@ -1882,6 +1885,115 @@ class SimFile:
                 "cells": cells, "groups": groups, "reason": "",
                 **dim_extra, **extra}
 
+    # -- S5：逻辑删除视图（Mesh>Clear 的内核级实现基础） --------------------
+    def live_objects(self):
+        """未被标记删除的对象（deleted_ids 为空时零开销直接返回 objects）。"""
+        if not self.deleted_ids:
+            return self.objects
+        return [o for o in self.objects if o.id not in self.deleted_ids]
+
+    def mark_objects_deleted(self, ids):
+        """标记逻辑删除（幂等）。返回实际新增的 id 列表。"""
+        added = []
+        for oid in ids or ():
+            oid = int(oid)
+            if oid not in self.deleted_ids:
+                self.deleted_ids.add(oid)
+                added.append(oid)
+        return added
+
+    def unmark_objects_deleted(self, ids=None):
+        """取消逻辑删除（ids=None 时全部恢复）。返回恢复个数。"""
+        if ids is None:
+            n = len(self.deleted_ids)
+            self.deleted_ids.clear()
+            return n
+        n = 0
+        for oid in ids:
+            if int(oid) in self.deleted_ids:
+                self.deleted_ids.discard(int(oid))
+                n += 1
+        return n
+
+    # -- S5：体积网格存储组的识别与真删除（Mesh>Clear 的内核级实现） --------
+    _VM_TOPO_TAGS = frozenset((
+        "Coord", "VertexList", "FaceCellIndex", "ElemType",
+        "ProstarCellIndex", "ProstarCellType", "CellGeometryPartIndex",
+        "PrismLayerCells", "CellPartIndex"))
+
+    def volume_mesh_groups(self):
+        """体网格存储组识别：拓扑组（顶点/面/单元角色）+ 网格绑定的场组 + 存储对象。
+
+        判定与 `extract_volume_mesh` 同源（同样的角色标签集），但**返回全部**带拓扑角色
+        的 DuplicateStorageManager（含重复副本 3087/3092、边界 patch 组 3336…），因为只删
+        其中一个副本时抽取仍会成功 —— "清除网格"必须删干净。
+
+        fields：既非拓扑组、又无拓扑标签，但其 SerialSize 恰等于某个拓扑组的尺寸 →
+        该组数据按单元数/面数排布，脱离网格没有意义（网格绑定字段组）。
+
+        返回 {ok, topology:[id…], fields:[id…], storage:[id…], sizes:{id:size},
+              roles:{id:[tag…]}, n_objects, reason}。无可识别组 → ok=False + 原因。
+        """
+        dups = [o for o in self.live_objects()
+                if (o.class_name or "") == "DuplicateStorageManager"]
+        stor_by_id = {o.id: o for o in self.live_objects()
+                      if (o.class_name or "").startswith(("SimpleStorage", "ListStorage"))}
+        topology, roles, sizes = [], {}, {}
+        for d in dups:
+            m = d.dict.get("map") or {}
+            hit = sorted(t for t in m if t in self._VM_TOPO_TAGS)
+            if not hit:
+                continue
+            topology.append(d.id)
+            roles[d.id] = hit
+            sizes[d.id] = int(d.dict.get("SerialSize") or 0)
+        if not topology:
+            return {"ok": False, "topology": [], "fields": [], "storage": [],
+                    "sizes": {}, "roles": {}, "n_objects": 0,
+                    "reason": "未找到体积网格存储组（无 DuplicateStorageManager 带拓扑角色标签）"}
+        topo_sizes = set(sizes.values())
+        fields = []
+        for d in dups:
+            if d.id in sizes:
+                continue
+            sz = int(d.dict.get("SerialSize") or 0)
+            if sz and sz in topo_sizes:
+                fields.append(d.id)
+        storage = set()
+        for d in dups:
+            if d.id not in sizes and d.id not in fields:
+                continue
+            for _tag, sid in (d.dict.get("map") or {}).items():
+                if sid in stor_by_id:
+                    storage.add(sid)
+        ids = list(topology) + list(fields)
+        return {"ok": True, "topology": sorted(topology), "fields": sorted(fields),
+                "storage": sorted(storage), "sizes": sizes, "roles": roles,
+                "n_objects": len(ids),
+                "reason": ""}
+
+    def clear_volume_mesh_patch(self, include_fields=True):
+        """生成"清除体积网格"的对象图补丁（不修改对象，供 GUI 文档层应用/撤销）。
+
+        返回 {ok, delete:[id…], unlink:[id…], summary:{...}, reason}。
+        delete = 拓扑组（+ include_fields 时的网格绑定场组）+ 其引用的存储对象；
+        unlink  = 与 delete 同集（调用方应从各 manager 的 Keys 里摘掉它们）。
+        """
+        g = self.volume_mesh_groups()
+        if not g.get("ok"):
+            return {"ok": False, "delete": [], "unlink": [], "summary": g,
+                    "reason": g.get("reason")}
+        dels = list(g["topology"])
+        if include_fields:
+            dels += list(g["fields"])
+        dels += list(g["storage"])
+        dels = sorted(set(int(i) for i in dels))
+        return {"ok": True, "delete": dels, "unlink": dels,
+                "summary": {"topology": g["topology"], "fields": g["fields"],
+                            "storage": g["storage"], "sizes": g["sizes"],
+                            "roles": g["roles"], "n_objects": len(dels),
+                            "include_fields": bool(include_fields)},
+                "reason": ""}
     def export_volume_vtu(self, path, vol=None):
         """把网格写为 VTK XML UnstructuredGrid，ParaView 可直接打开。
 
@@ -2036,13 +2148,13 @@ class SimFile:
                     "reason": vol.get("reason") or "体网格未抽取"}
         ncell = int(vol.get("count") or 0)
         nvert = int(vol["points"].shape[0])
-        stor_by_id = {o.id: o for o in self.objects
+        stor_by_id = {o.id: o for o in self.live_objects()
                       if (o.class_name or "").startswith(
                           ("SimpleStorage", "ListStorage"))}
-        dups = {o.id: o for o in self.objects
+        dups = {o.id: o for o in self.live_objects()
                 if (o.class_name or "") == "DuplicateStorageManager"}
         out = []
-        for fb in self.objects:
+        for fb in self.live_objects():
             if not (fb.class_name or "").endswith(".FvBoundary"):
                 continue
             dup = dups.get(fb.dict.get("faces"))
@@ -2147,15 +2259,15 @@ class SimFile:
         #   ① star.post.SolutionRepresentation（教程/历史文件，携带 FunctionNames 字段清单）
         #   ② star.common.FvRepresentation（**官方新求解并保存**的文件：解场直接挂在网格表示上，
         #      无 SolutionRepresentation —— 实测官方桥生成的 airfoil_official*.sim 即此形态）
-        srs = [o for o in self.objects
+        srs = [o for o in self.live_objects()
                if (o.class_name or "") == "star.post.SolutionRepresentation"]
         if not srs:
-            srs = [o for o in self.objects
+            srs = [o for o in self.live_objects()
                    if (o.class_name or "").endswith("FvRepresentation")]
-        stor_by_id = {o.id: o for o in self.objects
+        stor_by_id = {o.id: o for o in self.live_objects()
                       if (o.class_name or "").startswith(
                           ("SimpleStorage", "ListStorage"))}
-        dups = {o.id: o for o in self.objects
+        dups = {o.id: o for o in self.live_objects()
                 if (o.class_name or "") == "DuplicateStorageManager"}
         out_data, out_fields = {}, []
         ncell = 0

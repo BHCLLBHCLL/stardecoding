@@ -284,6 +284,75 @@ class SimDocument(object):
         self.saved_views["default"] = dict(cam)
         return changed
 
+
+    # -- S5：Mesh>Clear 的**内核级**实现（对象图真删除 + 可持久化 + 可撤销） --------
+    def clear_volume_mesh(self, include_fields=True):
+        """从对象图里真删除体积网格存储组（顶点/面/单元 + 网格绑定场组 + 存储对象）。
+
+        与旧实现的区别：旧 `cmd_clear_mesh` 只清会话状态（生成结果 + 显示 actor），
+        对象图与 .sim 不变；本方法把网格存储组标记删除并解除引用 —— 保存后文件里
+        不再有体网格（`extract_volume_mesh()` 返回 ok=False），撤销可完整恢复。
+
+        返回 {ok, removed:[id…], by_role:{topology/fields/storage: n}, reason}。
+        无 sim 或无体网格 → ok=False + 原因（诚实拒绝，不假装清除）。
+        """
+        if self.sim is None:
+            return {"ok": False, "removed": [], "by_role": {},
+                    "reason": "未绑定 .sim（无对象图可改）"}
+        patch = self.sim.clear_volume_mesh_patch(include_fields=include_fields)
+        if not patch.get("ok"):
+            return {"ok": False, "removed": [], "by_role": {},
+                    "reason": patch.get("reason")}
+        ids = list(patch["delete"])
+        for oid in ids:
+            self.mark_deleted(oid)          # 持久化：save_sim(deleted=… ) 真删对象行
+            self.unlink_object(oid)          # 解除 Keys 引用，避免悬垂
+            self.patches.pop(oid, None)
+        # 逻辑删除：抽取器（extract_volume_mesh / 解场 / 边界）立即不再看到这些对象
+        try:
+            self.sim.mark_objects_deleted(ids)
+        except Exception:
+            pass
+        # 网格抽取/显示缓存全部失效
+        try:
+            self.sim._part_meshes_cache = None
+        except Exception:
+            pass
+        for attr in ("_volume_mesh_cache", "_boundary_faces_cache"):
+            if hasattr(self.sim, attr):
+                try:
+                    setattr(self.sim, attr, None)
+                except Exception:
+                    pass
+        s = patch["summary"]
+        self.dirty = True
+        self._notify("mesh_cleared", removed=ids)
+        return {"ok": True, "removed": ids,
+                "by_role": {"topology": len(s["topology"]),
+                             "fields": len(s["fields"]),
+                             "storage": len(s["storage"])},
+                "reason": ""}
+
+    def restore_volume_mesh(self, ids=None):
+        """撤销 Mesh>Clear：取消删除标记（对象图本身从未被破坏）。"""
+        if self.sim is None:
+            return {"ok": False, "restored": 0, "reason": "未绑定 .sim"}
+        targets = list(ids) if ids is not None else sorted(self.deleted)
+        n = 0
+        for oid in targets:
+            if oid in self.deleted:
+                self.unmark_deleted(oid)
+                n += 1
+        try:
+            self.sim.unmark_objects_deleted(targets)
+        except Exception:
+            pass
+        try:
+            self.sim._part_meshes_cache = None
+        except Exception:
+            pass
+        self.dirty = True
+        return {"ok": True, "restored": n, "reason": ""}
     def mark_clean(self):
         self.dirty = False
         self._notify("clean")

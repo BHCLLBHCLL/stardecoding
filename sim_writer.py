@@ -440,6 +440,58 @@ def maintain_class_versions(blob, sim, created):
     return bytes(out), dict(delta)
 
 
+def remove_object_lines(blob, sim, ids, encoding="latin-1"):
+    """**真删除**对象行（S5 Mesh>Clear 的落盘实现）。
+
+    与 skip_ids 的区别：skip_ids 只让补丁/新建跳过该对象，原始行仍留在文件里；
+    本函数按 obj.line（字节偏移）定位行区间并整段切除，同时把其后所有对象的
+    line 与数组载荷 start 平移，保证后续补丁偏移仍然正确。
+    返回 (new_blob, n_removed)。删除集为空时原样返回（零开销）。
+    """
+    ids = [int(i) for i in (ids or ())]
+    if not ids:
+        return bytes(blob), 0
+    spans = []
+    for oid in ids:
+        o = sim.objmap.get(oid)
+        if o is None:
+            continue
+        ln = getattr(o, "line", -1)
+        if ln is None or int(ln) < 0:
+            continue
+        spans.append(_line_span(blob, int(ln)))
+    if not spans:
+        return bytes(blob), 0
+    spans.sort()
+    merged = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    out = bytearray(blob)
+    for s, e in reversed(merged):
+        del out[s:e]
+
+    def _shift_of(pos):
+        return sum(e - s for s, e in merged if e <= pos)
+
+    for o in sim.objects:
+        ln = getattr(o, "line", -1)
+        if ln is None or int(ln) < 0:
+            continue
+        cut = _shift_of(int(ln))
+        if cut:
+            o.line = int(ln) - cut
+    for a in getattr(sim, "arrays", []) or []:
+        st = int(a.get("start") or 0)
+        if st > 0:
+            cut = _shift_of(st)
+            if cut:
+                a["start"] = st - cut
+    return bytes(out), len(merged)
+
+
 def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
              array_patches=None, new_arrays=None, deleted=None,
              maintain_versions=True):
@@ -470,7 +522,14 @@ def save_sim(sim, dest_path, patches=None, created=None, src_path=None,
     else:
         container_entry = None
         blob = raw_src
-    skip = set(deleted or [])
+    skip = set(int(i) for i in (deleted or []))
+    # S5 修复：先**真删**被标记删除的对象行并平移 line/数组 start，再走后续补丁 ——
+    # 否则已删对象的行会留在文件里（重开后网格仍在），且补丁偏移会与实际不符。
+    blob, n_removed = remove_object_lines(blob, sim, skip)
+    try:
+        sim.last_removed_objects = int(n_removed)
+    except Exception:
+        pass
     blob = apply_array_payload_patches(blob, sim, array_patches or {})
     blocks = list(new_arrays or [])
     if not blocks:

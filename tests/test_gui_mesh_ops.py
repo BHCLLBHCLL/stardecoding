@@ -49,6 +49,11 @@ def test_mesh_actions_are_real_commands():
 
 
 def test_clear_mesh_drops_session_results_and_marks_state(app):
+    """S5 第二轮：会话清理照旧；对象图侧要么**真删除**（有体网格存储），要么如实降级说明。
+
+    本用例加载的 adjointWing_start.sim **没有**体积网格存储组，因此走诚实降级分支；
+    真删除路径（含保存后重开验证）由 tests/test_mesh_clear.py 覆盖。
+    """
     win = _window(app)
     try:
         win._volume_mesh_result = {"points": [[0, 0, 0]], "name": "x"}
@@ -57,7 +62,12 @@ def test_clear_mesh_drops_session_results_and_marks_state(app):
         assert win._volume_mesh_result is None and win._poly_mesh_result is None
         assert getattr(win.document, "session_meshes_cleared", False) is True
         text = win.messages.view.toPlainText()
-        assert "已清除本会话网格" in text and "对象图与 .sim 未改动" in text
+        assert "已清除" in text and "对象图" in text
+        assert ("已清除体积网格（对象图）" in text) or ("未改动：" in text)
+        if "未改动：" in text:
+            # 诚实降级：必须给出具体原因，且不得留下逻辑删除痕迹
+            assert "未找到体积网格存储组" in text
+            assert not getattr(win.document.sim, "deleted_ids", set())
     finally:
         win.document.mark_clean()
         win.close()
