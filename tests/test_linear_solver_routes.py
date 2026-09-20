@@ -122,6 +122,21 @@ def test_solve_linear_rejects_unconverged(monkeypatch):
     assert _rel_res(A, x, b) < 1e-6, _rel_res(A, x, b)   # 回退到直接 LU 后必须精确
 
 
+def test_bicgstab_ladder_solves_unpreconditioned_first():
+    """S4 第五轮关键发现：动量系统**无预条件**最快（实测 0.04 s vs ILU(0) 0.73 s）。
+
+    本用例保证升格阶梯的第一级（无预条件）可用，且分流代码里它排在 ILU 之前。
+    """
+    A, b, _x = _convection_system()
+    r, c, d = _coo(A)
+    x = ps._bicgstab_ladder(A, r, c, d, b, 1e-8, 4000)
+    assert x is not None, "无预条件 BiCGSTAB 未能在对流扩散系统上收敛"
+    assert _rel_res(A, x, b) < 1e-5
+    src = open(os.path.join(ROOT, "pressure_solver.py"), encoding="utf-8").read()
+    seg = src.split('if system == "convection":', 1)[1][:400]
+    assert "_bicgstab_ladder" in seg and seg.index("_bicgstab_ladder") < seg.index("_ilu_bicgstab")
+
+
 def test_ilu_defaults_are_zero_fill():
     """回归护栏：ILU 默认必须是零填充 ILU(0)（高填充把成本全花在因式分解上，实测 2.3× 慢）。"""
     import inspect

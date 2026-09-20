@@ -72,6 +72,37 @@ def solve_linear(row, col, data, b, n, tol=1e-9, maxit=8000,
     return _solve_numpy(row, col, data, b, n, tol, maxit, x0, sor)
 
 
+def _bicgstab_ladder(A, row, col, data, b, rtol, maxit):
+    """对流扩散系统的**逐级升格** Krylov 求解：无预条件 → Jacobi → ILU(0)。
+
+    S4 第五轮实测（97,680 未知量，动量矩阵，3 步 × 3 分量 × 3 次重复取最快）：
+      无预条件 BiCGSTAB 0.041-0.058 s（rel_res ~1e-6）
+      Jacobi 预条件      0.038-0.044 s
+      ILU(0)             0.73-0.76 s ← **18× 慢**：上/下三角回代比它省下的迭代贵得多
+    上风离散 + 一阶时间项的矩阵对角占优，本来几十次迭代就收敛，预条件纯属净亏。
+    故默认走最便宜的一级，**每一级都必须过残差校验**，全不过才返回 None（外层回退）。
+    """
+    import scipy.sparse.linalg as spla
+    bnorm = max(_safe_norm(b), 1e-300)
+    budget = max(int(maxit), 200)
+    try:
+        x, info = spla.bicgstab(A, b, rtol=rtol, atol=0.0, maxiter=budget)
+        if _check_residual(row, col, data, x, b, 1e-5):
+            return np.asarray(x, float).ravel()
+    except Exception:
+        pass
+    try:
+        d = A.diagonal()
+        d = np.where(np.abs(d) < 1e-300, 1.0, d)
+        M = spla.LinearOperator(A.shape, lambda z: z / d)
+        x, info = spla.bicgstab(A, b, rtol=rtol, atol=0.0, M=M, maxiter=budget)
+        if _check_residual(row, col, data, x, b, 1e-5):
+            return np.asarray(x, float).ravel()
+    except Exception:
+        pass
+    return None
+
+
 def _ilu_bicgstab(A, row, col, data, b, rtol, maxit, drop_tol=0.0,
                   fill_factor=1.0):
     """ILU+BiCGSTAB：对流扩散（非对称、对角占优）实测最快路线。
@@ -170,7 +201,9 @@ def _solve_scipy(row, col, data, b, n, tol, maxit, x0, system="auto"):
         except Exception:
             pass
     if system == "convection":
-        x = _ilu_bicgstab(A, row, col, data, b, rtol, maxit)
+        x = _bicgstab_ladder(A, row, col, data, b, rtol, maxit)   # 先无预条件（最便宜）
+        if x is None:
+            x = _ilu_bicgstab(A, row, col, data, b, rtol, maxit)  # 再 ILU(0)
         if x is not None:
             return x
     elif system == "poisson":
@@ -785,11 +818,28 @@ class PressureSolver:
         """
         if self.compressible_model is not None and not isinstance(self.compressible_model, str):
             return self.compressible_model.face_density()
-        return np.full(self._fv.n_faces, float(self._rho0), float)
+        # S4 第五轮：常量面密度缓存 —— 10 万单元每步被调用 5+ 次（动量 3 分量 + Rhie-Chow
+        # + 压力修正），每次 np.full(n_faces) 都是 22.7 万元素的重复分配。所有调用点均为
+        # 只读（无就地写入），故可安全共享；返回数组置只读以防将来误写。
+        key = (self._fv.n_faces, float(self._rho0))
+        cache = getattr(self, "_face_rho_cache", None)
+        if cache is None or cache[0] != key:
+            arr = np.full(self._fv.n_faces, float(self._rho0), float)
+            arr.flags.writeable = False
+            cache = (key, arr)
+            self._face_rho_cache = cache
+        return cache[1]
 
     def _face_mu(self):
-        """面动力粘度（n_faces,）：恒为参考粘度 _mu0（动机同 `_face_rho`）。"""
-        return np.full(self._fv.n_faces, float(self._mu0), float)
+        """面动力粘度（n_faces,）：恒为参考粘度 _mu0（动机同 `_face_rho`，同样缓存）。"""
+        key = (self._fv.n_faces, float(self._mu0))
+        cache = getattr(self, "_face_mu_cache", None)
+        if cache is None or cache[0] != key:
+            arr = np.full(self._fv.n_faces, float(self._mu0), float)
+            arr.flags.writeable = False
+            cache = (key, arr)
+            self._face_mu_cache = cache
+        return cache[1]
 
     # -- 多相 VOF 耦合 --------------------------------------------
     def _ensure_vof_model(self):
@@ -1053,13 +1103,20 @@ class PressureSolver:
     def _face_nu_t(self):
         """返回面插值 nu_t（n_faces,）：内部面取 owner/neighbor 平均，边界面取 owner。"""
         fv = self._fv
-        nu = self.nu_t
         nf = fv.n_faces
+        if self.turb_model is None:
+            # 无湍流时恒为零 —— 缓存（每步 3 次调用，调用点只读）
+            cache = getattr(self, "_face_nu_t_zero", None)
+            if cache is None or cache.shape[0] != nf:
+                cache = np.zeros(nf, float)
+                cache.flags.writeable = False
+                self._face_nu_t_zero = cache
+            return cache
+        nu = self.nu_t
         nu_face = np.zeros(nf, float)
         is_int = fv.neighbor >= 0
-        if self.turb_model is not None:
-            nu_face[is_int] = 0.5 * (nu[fv.owner[is_int]] + nu[fv.neighbor[is_int]])
-            nu_face[~is_int] = nu[fv.owner[~is_int]]
+        nu_face[is_int] = 0.5 * (nu[fv.owner[is_int]] + nu[fv.neighbor[is_int]])
+        nu_face[~is_int] = nu[fv.owner[~is_int]]
         return nu_face
 
     def _ensure_turb_model(self):
@@ -1146,9 +1203,10 @@ class PressureSolver:
         mu_face = self._face_mu()
         rho_face = self._face_rho()
         n = fv.n_cells
-        rows = []
-        cols = []
-        vals = []
+        # S4 第五轮：三元组改为 **numpy 块累积 + 一次性 concatenate** —— 原实现
+        # `list.extend(ndarray)` 会把每个元素装箱成 Python 标量（10 万单元约 1000 万次/步），
+        # 实测 `_assemble_momentum` 占整步 1.35 s，是非线解部分的最大头。
+        rows_blk, cols_blk, vals_blk = [], [], []
         rhs = np.zeros(n, float)
         # 内部面：对流(上风)+扩散(中心差分)
         is_int = fv.neighbor >= 0
@@ -1176,15 +1234,11 @@ class PressureSolver:
             k_perp = None
         D = mu_tot[is_int] * fv.face_area[is_int] / np.maximum(fv._d_n[is_int], 1e-12)
         pos = m >= 0.0
-        rows.extend(o[pos]); cols.extend(o[pos]); vals.extend(m[pos].astype(float))
-        rows.extend(nb[pos]); cols.extend(o[pos]); vals.extend((-m[pos]).astype(float))
         neg = ~pos
-        rows.extend(o[neg]); cols.extend(nb[neg]); vals.extend(m[neg].astype(float))
-        rows.extend(nb[neg]); cols.extend(nb[neg]); vals.extend((-m[neg]).astype(float))
-        rows.extend(o); cols.extend(o); vals.extend(D)
-        rows.extend(nb); cols.extend(nb); vals.extend(D)
-        rows.extend(o); cols.extend(nb); vals.extend(-D)
-        rows.extend(nb); cols.extend(o); vals.extend(-D)
+        mf = m.astype(float)
+        rows_blk += [o[pos], nb[pos], o[neg], nb[neg], o, nb, o, nb]
+        cols_blk += [o[pos], o[pos], nb[neg], nb[neg], o, nb, nb, o]
+        vals_blk += [mf[pos], -mf[pos], mf[neg], -mf[neg], D, D, -D, -D]
         # S2 延迟修正：把「高阶面值 − 上风面值」的差值作为显式源（隐式矩阵不变，稳定）
         if self.convection in ("central", "limited"):
             ho_src = self._deferred_convection_source(comp, is_int, o, nb, m)
@@ -1200,8 +1254,9 @@ class PressureSolver:
         outlet_mask = np.isin(bnd_face, self._outlet_faces, assume_unique=False)
         # 零梯度出流且 m>0：对流对角 += mb
         out_conv = outlet_mask & (mb >= 0.0)
-        rows.extend(bo[out_conv]); cols.extend(bo[out_conv])
-        vals.extend(mb[out_conv].astype(float))
+        rows_blk.append(bo[out_conv])
+        cols_blk.append(bo[out_conv])
+        vals_blk.append(mb[out_conv].astype(float))
         # 已知边界速度的对流（入口/壁面，含所有 m<0 反向流入）：RHS -= m*bval
         conv_rhs = ~out_conv
         if conv_rhs.any():                      # S4：向量化（原 Python 循环按边界逐个更新 RHS）
@@ -1212,7 +1267,9 @@ class PressureSolver:
         slip_mask = (np.isin(bnd_face, self._slip_faces, assume_unique=False)
                      if len(self._slip_faces) else np.zeros(len(bo), dtype=bool))
         diff_b = ~outlet_mask & ~slip_mask
-        rows.extend(bo[diff_b]); cols.extend(bo[diff_b]); vals.extend(Db[diff_b])
+        rows_blk.append(bo[diff_b])
+        cols_blk.append(bo[diff_b])
+        vals_blk.append(Db[diff_b])
         if diff_b.any():                        # S4：向量化（原 Python 循环）
             rhs += np.bincount(bo[diff_b], weights=Db[diff_b] * bvals[diff_b],
                                minlength=n)
@@ -1257,9 +1314,9 @@ class PressureSolver:
             if old is None:
                 old = {0: self._u, 1: self._v, 2: self._w}[comp]
             idx = np.arange(n, dtype=np.int64)
-            rows.extend(idx)
-            cols.extend(idx)
-            vals.extend(coeff)
+            rows_blk.append(idx)
+            cols_blk.append(idx)
+            vals_blk.append(coeff)
             rhs = rhs + coeff * np.asarray(old, float)
         # S4 第 2 步：非正交扩散的**显式（延迟）修正**。
         # 精确面通量 F = -μ A [(u_N-u_O)/|d| + ∇u·k]（k = n̂ − ê）；隐式矩阵只含第一项，
@@ -1274,9 +1331,9 @@ class PressureSolver:
             rhs = rhs - np.bincount(o, weights=F_corr, minlength=n) \
                 + np.bincount(nb, weights=F_corr, minlength=n)
         # 速度欠松弛：aP = ap/α；RHS 补偿 (1-α)/α * ap * φ_old
-        rows = np.array(rows, np.int64)
-        cols = np.array(cols, np.int64)
-        vals = np.array(vals, float)
+        rows = np.concatenate(rows_blk).astype(np.int64, copy=False)
+        cols = np.concatenate(cols_blk).astype(np.int64, copy=False)
+        vals = np.concatenate(vals_blk).astype(float, copy=False)
         d_idx = rows == cols
         ap = np.bincount(rows[d_idx], weights=vals[d_idx], minlength=n)   # S4：bincount 取代 add.at
         cur = {0: self._u, 1: self._v, 2: self._w}[comp]
