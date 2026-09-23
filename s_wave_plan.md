@@ -27,7 +27,7 @@
 | 5 | 区域/边界/界面与对象图 | 92% | 82% | — | G4 22 边界/11642 面精确闭合 | 面网格 patch 仍启发式；跨 part 聚合待细化 |
 | 6 | 物理/材料/模型谱系 | 88% | 80% | — | G7+P1 语义读写闭环；R4 抽 U/ρ/A/D/Re | 22+ 模型族未逐一解码；材料库/EOS 仅常数 |
 | 7 | 场函数/初始化/数据映射 | 80%→**82%** | 74%→**75%** | ↑ | P2 求值器、P3 初始化器、R2 跨网格映射 | 映射未接入求解环；DerivedDataSet 仅标注 |
-| 8 | 求解器内核 | 93%→**94%** | 81%→**84%** | ↑ | P4–P12 全谱 + R1 回归 + R4 官方参考与实跑 + **S2 五路八步穷举（14 例诚实入库）** + **S4 性能达标：10 万单元 1.32 s/步（<2 s ✓，直接 LU 的 24.7×）** | **涡脱仍未复现**：阶梯衰减 / O 型发散 / 混合网格饱和到定常非对称（薄展向甚至衰减）→ 瓶颈=离散耗散把有效 Re 压到 Hopf 阈值之下；贴体瞬态首次稳定、扰动可持续生长是实质进步 |
+| 8 | 求解器内核 | 93%→**94%** | 81%→**84%** | ↑ | P4–P12 全谱 + R1 回归 + R4 官方参考与实跑 + **S2 五路八步穷举（14 例诚实入库）** + **S4 性能达标：10 万单元 1.32 s/步（<2 s ✓，直接 LU 的 24.7×）** | **涡脱仍未复现**，但**阻断点已判别**：同网格瞬态官方对照（第八步）——官方求解器在我方同一张网格上 St=0.1689（官方参考 0.1752，差 4%）、有振荡；自研同网格扰动衰减 ⇒ **阻断在自研求解器的数值耗散/时间推进，不在网格/几何**。贴体瞬态首次稳定、扰动可持续生长是前序实质进步 |
 | 9 | 求解运行控制与监视 | 95% | 85% | — | P10 Run/Step/Stop + 监视/残差曲线 | B 路宏未实测（现可）；无求解断点/续算 |
 | 10 | 后处理与场景可视化 | 95% | 88% | — | V1–V7 + Post 20 动作；CSV/EnSight/CGNS；离屏动画 | 场景内嵌绘图面板未解码；mp4 需 ffmpeg |
 | 11 | 自动化生态 | 60%→**62%** | 52% | ↑ | A1 宏录播 / A2 star API / A3 DOE；**R6 协同配置前段 + Javadoc 核对宏** | A4 伴随 / A5 协同协议 / A6 HPC 挂起；语料 0 个 cosim 对象 |
@@ -197,6 +197,20 @@
 
 
 
+
+**第八步（决定性判别）：同网格瞬态官方对照 —— 阻断在自研求解器，不在网格**
+
+长期悬置的问题是「S2 的阻断在网格还是求解器」。做法：让我方那张网格（cartesian 阶梯 24,432 单元、T=0.5D）**在官方求解器里跑瞬态**，边界严格对齐（Inlet 速度入口 / Outlet 压力出口 / Cylinder 无滑移壁 / **四个外壁 SymmetryBoundary = 滑移**，对应我方 `wall_slip_axes=(1,2)`），dt=0.01、每 0.5 s 存场、跑 20 s 共 40 个场；离线用**本仓库同一份 `force_coefficients`** 从官方场算 CL(t)（不走官方报告/监视器 —— 最小 API 面）。
+
+| 侧 | 网格 | 时间步 | St | 后半段过零 | 分窗振幅 | 判定 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **官方求解器** | 我方同一张 | 0.01 s × 5 内迭代 | **0.1689**（过零 0.2222 Hz / FFT 0.2000 Hz） | 5 次 | 0.0055 → 0.0062（仍在发展期） | **有振荡（脱落）** |
+| 自研求解器 | 我方同一张 | 0.01 s, n_inner=3, central | —（FFT 峰 0.66 Hz 为扰动残余） | 1 次 | 0.0606 → 0.0008 | 无振荡（衰减） |
+
+→ **结论：官方求解器在我方同一张网格上复现了脱落（St 与官方参考 0.1752 相差 4%），而自研求解器在同一网格上扰动衰减 ⇒ S2 的阻断在自研求解器的数值耗散/时间推进，不在网格或几何。** 这把 S2 的下一步从「网格路线」收敛到唯一一条：求解器离散/时间推进的耗散（官方为二阶对流 + 5 次内迭代的隐式非稳态；我方为隐式上风 + PISO/n_inner 组合）。
+**诚实边界**：① 官方侧振幅仍在发展期（0.0062；官方参考算例跑到 200 s 才到 0.28），St 由后半段 5 次过零 + FFT 双路估计，量级可信、精度有限；② 自研侧序列仅覆盖 3.0 s（20 s 长跑仍在后台，梯度与历史阶梯算例一致：扰动单调衰减）；③ 两侧内迭代/对流阶数不同 —— 这正是「求解器」差异本身，属于被判别对象。
+**过程坑（如实记录，均已入测试护栏）**：① `it.run(n)` 的推进粒度依赖求解器状态（实测 42 个存场只覆盖 1.39 s）；② 无参 `run()` 阻塞到外壳自带停止准则（Maximum Physical Time=1 s）满足即停，时间轮询法一个存场都进不去；③ 时间步必须经 `Simulation.getSolverManager().getSolver(Class)` 取 `SpecifiedTimestepUnsteadySolver`（`ModelManager.getModel` 泛型上界是 `Model`，编译期报错 —— 探针抓出）。
+证据：`s6_samemesh/transient/`（40 个官方场 + `official_cl_series.json` + `judgement.json` + `ours_cl_series.json` + `official_transient_log.txt`）；测试 `tests/test_samemesh_transient.py` 4 项。
 ### S2 原始目标（存档）
 - **目标**：官方同工况（U=0.05、D=0.04、ν=1e-5、Re=200）下复现涡脱：St 落入 0.176±15%、升力振幅比落入 0.3–3.0；否则如实记录并给出下一步。
 - **手段（按性价比）**：① 对流格式升级（fvm_core 已有 limiter/_barth_ratio，pressure_solver 现走上风 → 增可选二阶/中心+限制器，默认不变零回归）；② 近壁加密（mesh_prism.prism_layers 已有，接 run_case）；③ 局部加密（mesh_amr 钩子接入运行环）；④ 时间推进（自适应 dt / ≥10 周期）。
@@ -387,7 +401,7 @@ profile 把整步 3.44 s 拆开：`_assemble_momentum` **1.35 s**（占非线解
 - **目标**：① Mesh>清除/转 2D 本地实现（消除 needs_kernel 两项）；② 3D-CAD 界内 B-Rep 建模接 GUI（OCC 内核已在 C2/C3）；③ 打包：装 PyInstaller 或走官方 installer 生成真实二进制。
 - **验收**：star_gui_parity.md 对应行从 needs_kernel/降级 变为 persist/view；GUI 测试全绿 + 新增 3 项动作测试。
 
-### S6 官方参考数据语料库与自动对标（P2，依赖 F1）—— ⚠️ 第一轮达成（清单+抽取+判定+报告；官方"受控运行"已验证）
+### S6 官方参考数据语料库与自动对标（P2，依赖 F1）—— ✅ 主体达成（4 工况清单 + 同网格官方对照闭环；瞬态对照/自研通过项仍开放）
 
 **已交付**：
 - `benchmarks/manifest.json`：**3 个官方算例**（Re=200 主算例 / Re=100 / Re=200 分段），含参数、容差（`st_rel`/振幅比带）、出处；官方参考量**不写死**，由 `--extract` 现场从 .sim 抽取。
@@ -412,7 +426,15 @@ profile 把整步 3.44 s 拆开：`_assemble_momentum` **1.35 s**（占非线解
 - **新生成的官方参考**：`optimate/data/airfoil.sim`（三元素翼型，原本无解）经官方桥 `clearSolution` → `SimulationIterator.run()` 跑到**算例自身停止准则 600 迭代**（90 s）→ `benchmarks/official/airfoil_official_2000.sim`。末段：**Cl=2.2445（±0.0047）、Cd=0.0756（±0.0028）、Cl/Cd=29.73、Continuity 1.07e-3** —— 这批数据原先在本项目里是"缺失的官方翼型解"。
 - 清单扩到 **4 算例**（3 官方 .sim + 1 官方桥现场生成），新增**稳态力系数类**判定（`metrics: ["cl","cd"]` + `cl_rel/cd_rel` 容差）；非脱落型算例**不报 St**（避免把按迭代索引的曲线当脱落频率）。
 - `tests/test_bench_report.py` 增至 **7 项**（含稳态力系数四路径）。
-**仍开放**：① 官方侧建模宏（把我们自己的通道域算例喂给官方跑，做真正的同网格对照）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做。
+
+**本轮追加（S6 收官：同网格官方对照闭环打通）**：
+- **根因修复（官方拒收我方 CGNS）**：cgnslib 读取端 `ADFH_Get_Data_Type` 靠节点 group 的 **`type` 属性**判数据类型——`_cgns_node` 此前只写 name/label，全部节点缺 type → 官方批报 `CGNS error: Error reading CGNS-Library-Version`。修复（postprocess.py）：每个节点按数据形态写 type（None→MT、str→C1、int32→I4、float32→R4…），且 name/label/type 一律写 **NUL 填充定长属性**（33/33/3 字节，与 cgnslib `new_str_att` 的 `H5Tset_size(max+1)` 一致；变长写法在 `ADFH_Get_Name` 未初始化栈缓冲 + strcpy 处有越界读风险）。另修 Zone_t 数据形状为 **2 维 [1,3]**（`cgi_read_zone` 校验 ndim==2）。
+- **本地权威验证器**：用本机 CGNS-4.5.1 源码编出 `cgnscheck`（msys64 ucrt64 + CMake/Ninja + HDF5 动态链，`build-adfh/src/tools/cgnscheck.exe`）——修前完整复现官方同款报错，修后真实文件过检（仅可选元数据警告）。此后 CGNS 格式回归可本地秒级验证，不再烧官方批。
+- **同网格官方对照实测（24,432 单元阶梯网格，Re=200 稳态）**：`s6_samemesh.py` 三段闭环 `prepare → official → compare` 全通。官方 `importFile` 接受我方 CGNS、自动建 region=Zone + 七边界（Inlet/Outlet/Cylinder/四壁）与 ZoneBC patch 名一致，稳态 1000 步（Maximum Steps 停止，残差平台 ~1e-3）落盘 5.9 MB。
+- **场级对比（samemesh_report.json）**：质心匹配 100.0000%（maxdist 1.1e-16）；**速度 rel_l2=15.6%**（我方一阶迎风+残差 1e-6 vs 官方二阶+残差 1e-3 平台，量级合理）；压力对齐后 rel_l2=69.6%；**Cd 我方 0.0496 vs 官方 0.0524（差 5.3%，双方同码 force_coefficients）**；Δp 我方 0.0051 vs 官方 0.0086（69%，官方未全收敛如实注明）。
+- **过程坑（如实入库）**：官方 Save 的解场把速度拆成 U/V/W 三个标量场——首版回退取了首个 3 分量场 `ApparentPressureGradient` 当速度（rel_l2=1.47 的假对比），修为 `_velocity_field` 显式组装标量三元组/拒绝非速度 3 分量场。
+- **occ 环境 numpy BLAS 崩溃（根因已根治）**：occ 环境的 numpy 2.5.2 为 conda 源码构建（pkgconfig 链接 conda Library 的 netlib BLAS 3.9.0），BLAS 例程以 **delay-load** 引用 `Library\bin\libblas/libcblas/liblapack.dll`——进程 PATH 缺该目录时首次调用即抛 delay-load 异常 **0xC06D007F** 直接杀进程（不限于大数组：小尺寸 `(5,7)@(7,)` dgemv 亦崩；此前"≥~1.5 万元素才崩"的尺寸结论不完整，系不同 BLAS 入口的阈值差异）。self_test 全量跑即崩在 `motion.sliding_interface` 的 `(N,3)@(3,)` dgemv。**根治**：`occ\Lib\site-packages\zz_conda_blas_path.pth` 启动钩子把 `Library\bin` 前置进 PATH（等价于 conda activate 的效果，无需激活也生效）；另保留代码级防御：`_l2` 平方和归约 + motion.py 四处 `(N,3)@(3,)`/`W@vals` 改 BLAS-free（`sum(axis=1)` / `einsum`），数学等价已验证。
+**仍开放**：① 同网格**瞬态**官方对照（官方在我方网格上是否脱落 → S2 "网格 vs 求解器"阻断判别）；② 自研侧尚未有任何"通过"项（S2 未复现脱落）；③ `.simh`/解场级对标未做。
 ### S6 原始目标（存档）
 - **目标**：用官方 STAR-CCM+ 批量生成参考语料（同几何的网格尺寸/质量、稳态/瞬态解、报告值、重存文件），落成 benchmarks/ + 自动对标脚本，把 R4/R5 的"对标"从一次性变为可重复。
 - **手段**：宏模板（建网格/求解/导出报告/保存）+ 清单 JSON（工况、期望指标、容差）+ bench_report.py（跑批 + 汇总 + 对比）。

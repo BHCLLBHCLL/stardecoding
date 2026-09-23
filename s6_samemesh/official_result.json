@@ -1,0 +1,23 @@
+{
+ "ok": true,
+ "returncode": 0,
+ "workdir": "C:\\Users\\sdcll\\AppData\\Local\\Temp\\star_macro_sq_8ye8e",
+ "exe": "C:\\Program Files\\Siemens\\20.02.007-R8\\STAR-CCM+20.02.007-R8\\star\\lib\\win64\\clang17.0vc14.2-r8\\lib\\starccmw.exe",
+ "reason": "",
+ "fail_reason": null,
+ "out_path": "d:\\training\\caedecoder\\stardecoding\\s6_samemesh\\official.sim",
+ "parts_before": 0,
+ "parts_new": 0,
+ "regions_before": 0,
+ "region": "Zone",
+ "boundaries": [
+  "Cylinder",
+  "Inlet",
+  "Outlet",
+  "WallYMax",
+  "WallYMin",
+  "WallZMax",
+  "WallZMin"
+ ],
+ "iterations": 1000
+}

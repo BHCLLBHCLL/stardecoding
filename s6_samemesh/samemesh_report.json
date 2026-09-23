@@ -1,0 +1,49 @@
+{
+ "ok": true,
+ "n_cells_ours": 24432,
+ "n_cells_official": 24432,
+ "match_rate": 1.0,
+ "match_max_dist": 1.1102230246251565e-16,
+ "official_fields": [
+  "ApparentPressureGradient",
+  "Density",
+  "EffectiveViscosity",
+  "Pressure",
+  "ProstarCellType",
+  "Solidity",
+  "U_Velocity",
+  "V_Velocity",
+  "VoidFraction",
+  "VolumeFraction",
+  "W_Velocity"
+ ],
+ "velocity_field": "U_Velocity+V_Velocity+W_Velocity",
+ "pressure_field": "Pressure",
+ "velocity": {
+  "rel_l2": 0.15625319024673454,
+  "mean_abs": 0.0029760996133513396,
+  "median_abs": 0.0016410513818076772,
+  "max_abs": 0.026152194069474485,
+  "scale_mean": 0.05032752469779598,
+  "component_rel_l2": {
+   "u": 0.1490710670287887,
+   "v": 0.590566194081212,
+   "w": 3.5269061864788833
+  }
+ },
+ "pressure": {
+  "raw_mean_diff": 0.0020912639221903066,
+  "aligned_rel_l2": 0.6958437082649108,
+  "aligned_median_abs": 0.0009134535951279133
+ },
+ "cd_ours": 0.0496210700158131,
+ "cl_ours": 0.001149488934224552,
+ "dp_ours": 0.005071119597988413,
+ "dp_official": 0.008585647645976266,
+ "ours_iterations": 47,
+ "ours_residual_final": 9.89061425450862e-07,
+ "official_iterations": 1000,
+ "official_note": "官方稳态在 Maximum Steps 停止（残差平台 ~1e-3，未到我方的 1e-6 判据），对比含双方收敛差",
+ "cd_official": 0.05236596908859039,
+ "cd_official_note": "单元中心场由 force_coefficients 按面插值（与我方同码）"
+}

@@ -11,7 +11,9 @@
      getContinuumManager().getObjects() / getReportManager().getObjects() /
      getPlotManager().getObjects() / getMonitorManager().getObjects() / saveState；
   ③ official_smoke / official_open_stats / official_resave：官方打开、视图统计、重存；
-  ④ compare_official_view：官方视图计数 ↔ 本仓库解析计数 的逐项对照。
+  ④ compare_official_view：官方视图计数 ↔ 本仓库解析计数 的逐项对照；
+  ⑤ MESH_CASE_MACRO / official_mesh_case（S6）：我方 CGNS → 官方同网格算例
+     （导入 → 建区域/物理/边界 → 稳态求解 → Save As），SAMEMESH_* 日志逐段回流。
 
 安全约束（沿用 F7）：**只在临时目录的工作副本上跑**，绝不改教程原件；无 exe 时全部返回
 skipped 且不抛错（供 W6 门控复用）。
@@ -34,6 +36,25 @@ VERIFIED_APIS = (
     "sim.getMonitorManager().getObjects()",
     "sim.saveState(",
     "sim.println(",
+    # S6 同网格官方算例（均已在本机 Javadoc / 官方教程录制宏双重核对）：
+    "sim.getImportManager().importFile(",
+    "sim.getRegionManager().newRegionsFromParts(",   # 4 参版（5 参 featureCurveMode 已弃用）
+    "sim.getContinuumManager().createContinuum(",
+    "pc.enable(",                                     # Continuum.enable(Class)
+    "pc.getModelManager().getModel(",                 # ModelManager.getModel(Class)
+    "getMaterialProperties().getMaterialProperty(",   # MaterialPropertiesHolder → Manager
+    "pc.getInitialConditions().get(",                 # ConditionManager.get(Class)
+    "setMethod(",                                     # Profile.setMethod(Class)
+    ".getMethod(",                                     # Profile/MaterialProperty.getMethod
+    "getQuantity()",
+    "region.setPhysicsContinuum(",
+    "getBoundaryManager().getBoundary(",
+    "boundary.setBoundaryType(",                       # Journal using classes
+    "b.getValues().get(",
+    "sim.getSimulationIterator()",
+    "it.stop()",
+    "sim.clearSolution(",
+    "mpc.generateVolumeMesh()",
 )
 
 ROOT_HINTS = (
@@ -212,6 +233,163 @@ public class StarBridgeRunCase extends StarMacro {
 """
 
 
+# ------------------------------------------------------------------ S6：同网格官方算例
+# 我方 CGNS（postprocess.write_cgns，含 ZoneBC 边界 patch）→ 官方外壳内：
+#   importFile 导入网格 → newRegionsFromParts 建区域/边界 → 3D 稳态气体单组分 +
+#   分离流 + 恒密度 + 层流连续体（ρ/μ/入口流速按参）→ Inlet/Outlet/壁面边界 →
+#   稳态迭代到目标步 → Save As。
+# API 全部经本机 Javadoc + 官方教程录制宏双重核对（详见 VERIFIED_APIS 注）；
+# 注意 getObjects() 返回 Collection<Part>（非 GeometryPart），须 instanceof 过滤。
+MESH_CASE_MACRO = """
+package macro;
+
+import star.common.*;
+import star.flow.ConstantDensityModel;
+import star.flow.ConstantDensityProperty;
+import star.flow.DynamicViscosityProperty;
+import star.flow.LaminarModel;
+import star.flow.VelocityMagnitudeProfile;
+import star.flow.VelocityProfile;
+import star.material.ConstantMaterialPropertyMethod;
+import star.material.Gas;
+import star.material.SingleComponentGasModel;
+import star.metrics.ThreeDimensionalModel;
+import star.segregatedflow.SegregatedFlowModel;
+
+public class StarBridgeMeshCase extends StarMacro {
+  public void execute() {
+    Simulation sim = getActiveSimulation();
+    try {
+      run(sim);
+    } catch (Exception ex) {
+      sim.println("SAMEMESH_FAIL uncaught: " + ex);
+    }
+  }
+
+  private void run(Simulation sim) {
+    String cgns = "%(cgns)s";
+    String out = "%(out)s";
+    long target = %(target)d;
+    double rho = %(rho)s;
+    double mu = %(mu)s;
+    double uIn = %(u_in)s;
+
+    // ① 快照（部件 + 区域）→ 导入我方 CGNS → 差分。
+    //    体网格导入的产物随版本而异：新部件（需转区域）**或**直接新区域，
+    //    两条路都走；都没有 → 诚实失败。
+    java.util.HashSet<String> partsBefore = new java.util.HashSet<String>();
+    for (Object po : sim.getPartManager().getObjects()) {
+      partsBefore.add(((star.base.neo.ClientServerObject) po).getPresentationName());
+    }
+    java.util.HashSet<String> regionsBefore = new java.util.HashSet<String>();
+    for (Region r : sim.getRegionManager().getObjects()) {
+      regionsBefore.add(r.getPresentationName());
+    }
+    sim.println("SAMEMESH parts_before=" + partsBefore.size()
+        + " regions_before=" + regionsBefore.size());
+    try {
+      sim.getImportManager().importFile(cgns);
+    } catch (Exception ex) {
+      sim.println("SAMEMESH_FAIL import: " + ex);
+      return;
+    }
+    java.util.ArrayList<GeometryPart> newParts = new java.util.ArrayList<GeometryPart>();
+    for (Object po : sim.getPartManager().getObjects()) {
+      if (!partsBefore.contains(
+            ((star.base.neo.ClientServerObject) po).getPresentationName())
+          && (po instanceof GeometryPart)) {
+        newParts.add((GeometryPart) po);
+      }
+    }
+    sim.println("SAMEMESH parts_new=" + newParts.size());
+    if (!newParts.isEmpty()) {
+      // ② 部件 → 区域（OneRegionPerPart + 每表面一个边界，CGNS ZoneBC 名应成为边界名）
+      try {
+        sim.getRegionManager().newRegionsFromParts(newParts, "OneRegionPerPart",
+            "OneBoundaryPerPartSurface", true);
+      } catch (Exception ex) {
+        sim.println("SAMEMESH_FAIL regions: " + ex);
+        return;
+      }
+    }
+    Region region = null;
+    for (Region r : sim.getRegionManager().getObjects()) {
+      if (!regionsBefore.contains(r.getPresentationName())) {
+        region = r;
+        break;
+      }
+    }
+    if (region == null) {
+      sim.println("SAMEMESH_FAIL no_region");
+      return;
+    }
+    sim.println("SAMEMESH region=" + region.getPresentationName());
+
+    // ③ 物理连续体：3D 稳态单组分气体 + 分离流 + 恒密度 + 层流
+    PhysicsContinuum pc = sim.getContinuumManager().createContinuum(PhysicsContinuum.class);
+    pc.enable(ThreeDimensionalModel.class);
+    pc.enable(SteadyModel.class);
+    pc.enable(SingleComponentGasModel.class);
+    pc.enable(SegregatedFlowModel.class);
+    pc.enable(ConstantDensityModel.class);
+    pc.enable(LaminarModel.class);
+
+    // ④ 材料物性（官方教程录制宏同款调用链）：密度/动力粘度
+    Gas gas = (Gas) pc.getModelManager().getModel(SingleComponentGasModel.class).getMaterial();
+    ConstantMaterialPropertyMethod rhoM = (ConstantMaterialPropertyMethod)
+        gas.getMaterialProperties().getMaterialProperty(ConstantDensityProperty.class).getMethod();
+    rhoM.getQuantity().setValue(rho);
+    ConstantMaterialPropertyMethod muM = (ConstantMaterialPropertyMethod)
+        gas.getMaterialProperties().getMaterialProperty(DynamicViscosityProperty.class).getMethod();
+    muM.getQuantity().setValue(mu);
+
+    // ⑤ 初始条件：均匀来流（+x）；区域挂接连续体
+    VelocityProfile vp = pc.getInitialConditions().get(VelocityProfile.class);
+    vp.setMethod(ConstantVectorProfileMethod.class);
+    vp.getMethod(ConstantVectorProfileMethod.class).getQuantity().setComponents(uIn, 0.0, 0.0);
+    region.setPhysicsContinuum(pc);
+
+    // ⑥ 边界：Inlet→速度入口；Outlet→压力出口；其余→壁面
+    int nIn = 0, nOut = 0;
+    for (Boundary b : region.getBoundaryManager().getObjects()) {
+      String n = b.getPresentationName();
+      sim.println("SAMEMESH bnd|" + n);
+      if (n.equals("Inlet")) {
+        b.setBoundaryType(InletBoundary.class);
+        b.getValues().get(VelocityMagnitudeProfile.class).setMethod(ConstantScalarProfileMethod.class);
+        b.getValues().get(VelocityMagnitudeProfile.class).getMethod(
+            ConstantScalarProfileMethod.class).getQuantity().setValue(uIn);
+        nIn++;
+      } else if (n.equals("Outlet")) {
+        b.setBoundaryType(PressureBoundary.class);
+        nOut++;
+      } else {
+        b.setBoundaryType(WallBoundary.class);
+      }
+    }
+    if (nIn != 1 || nOut != 1) {
+      sim.println("SAMEMESH_FAIL inlet=" + nIn + " outlet=" + nOut);
+      return;
+    }
+
+    // ⑦ 稳态迭代（轮询到目标步即停；target=0 交给自身收敛准则）→ 另存
+    SimulationIterator it = sim.getSimulationIterator();
+    it.run();
+    while (it.isIterating()) {
+      if (target > 0 && it.getCurrentIteration() >= target) {
+        it.stop();
+        break;
+      }
+      try { Thread.sleep(%(poll)d); } catch (Exception ex) { }
+    }
+    sim.println("SAMEMESH iter=" + it.getCurrentIteration());
+    sim.saveState(out);
+    sim.println("SAMEMESH_DONE " + out);
+  }
+}
+"""
+
+
 def official_run_case(src_sim, out_path, do_mesh=False, max_iterations=0,
                       clear_solution=False, class_name="StarBridgeRunCase",
                       timeout=1800, on_line=None, poll_ms=50):
@@ -239,6 +417,298 @@ def official_run_case(src_sim, out_path, do_mesh=False, max_iterations=0,
     res["ok"] = bool(res.get("ok") and "BRIDGE_RUN_DONE" in log and os.path.isfile(out))
     if not res["ok"] and not res.get("reason"):
         res["reason"] = "运行标记缺失或输出未生成"
+    return res
+
+
+MESH_CASE_TRANSIENT_MACRO = """
+package macro;
+
+import star.common.*;
+import star.flow.ConstantDensityModel;
+import star.flow.ConstantDensityProperty;
+import star.flow.DynamicViscosityProperty;
+import star.flow.LaminarModel;
+import star.flow.VelocityMagnitudeProfile;
+import star.flow.VelocityProfile;
+import star.material.ConstantMaterialPropertyMethod;
+import star.material.Gas;
+import star.material.SingleComponentGasModel;
+import star.metrics.ThreeDimensionalModel;
+import star.segregatedflow.SegregatedFlowModel;
+
+public class StarBridgeTransientCase extends StarMacro {
+  public void execute() {
+    Simulation sim = getActiveSimulation();
+    try {
+      run(sim);
+    } catch (Exception ex) {
+      sim.println("SAMEMESH_FAIL uncaught: " + ex);
+    }
+  }
+
+  private void run(Simulation sim) {
+    String cgns = "%(cgns)s";
+    String outPrefix = "%(out)s";
+    double dt = %(dt)s;
+    double totalTime = %(total_time)s;
+    double sampleDt = %(sample_dt)s;
+    double rho = %(rho)s;
+    double mu = %(mu)s;
+    double uIn = %(u_in)s;
+
+    java.util.HashSet<String> partsBefore = new java.util.HashSet<String>();
+    for (Object po : sim.getPartManager().getObjects()) {
+      partsBefore.add(((star.base.neo.ClientServerObject) po).getPresentationName());
+    }
+    java.util.HashSet<String> regionsBefore = new java.util.HashSet<String>();
+    for (Region r : sim.getRegionManager().getObjects()) {
+      regionsBefore.add(r.getPresentationName());
+    }
+    sim.println("SAMEMESH parts_before=" + partsBefore.size()
+        + " regions_before=" + regionsBefore.size());
+    try {
+      sim.getImportManager().importFile(cgns);
+    } catch (Exception ex) {
+      sim.println("SAMEMESH_FAIL import: " + ex);
+      return;
+    }
+    java.util.ArrayList<GeometryPart> newParts = new java.util.ArrayList<GeometryPart>();
+    for (Object po : sim.getPartManager().getObjects()) {
+      if (!partsBefore.contains(
+            ((star.base.neo.ClientServerObject) po).getPresentationName())
+          && (po instanceof GeometryPart)) {
+        newParts.add((GeometryPart) po);
+      }
+    }
+    sim.println("SAMEMESH parts_new=" + newParts.size());
+    if (!newParts.isEmpty()) {
+      try {
+        sim.getRegionManager().newRegionsFromParts(newParts, "OneRegionPerPart",
+            "OneBoundaryPerPartSurface", true);
+      } catch (Exception ex) {
+        sim.println("SAMEMESH_FAIL regions: " + ex);
+        return;
+      }
+    }
+    Region region = null;
+    for (Region r : sim.getRegionManager().getObjects()) {
+      if (!regionsBefore.contains(r.getPresentationName())) {
+        region = r;
+        break;
+      }
+    }
+    if (region == null) {
+      sim.println("SAMEMESH_FAIL no_region");
+      return;
+    }
+    sim.println("SAMEMESH region=" + region.getPresentationName());
+
+    // 物理：3D + **隐式非稳态** + 单组分气体 + 分离流 + 恒密度 + 层流
+    PhysicsContinuum pc = sim.getContinuumManager().createContinuum(PhysicsContinuum.class);
+    pc.enable(ThreeDimensionalModel.class);
+    pc.enable(ImplicitUnsteadyModel.class);
+    pc.enable(SingleComponentGasModel.class);
+    pc.enable(SegregatedFlowModel.class);
+    pc.enable(ConstantDensityModel.class);
+    pc.enable(LaminarModel.class);
+
+    Gas gas = (Gas) pc.getModelManager().getModel(SingleComponentGasModel.class).getMaterial();
+    ConstantMaterialPropertyMethod rhoM = (ConstantMaterialPropertyMethod)
+        gas.getMaterialProperties().getMaterialProperty(ConstantDensityProperty.class).getMethod();
+    rhoM.getQuantity().setValue(rho);
+    ConstantMaterialPropertyMethod muM = (ConstantMaterialPropertyMethod)
+        gas.getMaterialProperties().getMaterialProperty(DynamicViscosityProperty.class).getMethod();
+    muM.getQuantity().setValue(mu);
+
+    VelocityProfile vp = pc.getInitialConditions().get(VelocityProfile.class);
+    vp.setMethod(ConstantVectorProfileMethod.class);
+    vp.getMethod(ConstantVectorProfileMethod.class).getQuantity().setComponents(uIn, 0.0, 0.0);
+    region.setPhysicsContinuum(pc);
+
+    // 时间步：Solver（非 Model！）→ Simulation.getSolverManager().getSolver(Class)
+    // + SpecifiedTimestepUnsteadySolver.setTimeStep(double)（本机 Javadoc 核对；
+    // 曾误走 ModelManager.getModel(Class) → 编译期上界不符，探针抓出）
+    try {
+      SolverManager sm = sim.getSolverManager();
+      SpecifiedTimestepUnsteadySolver tss =
+          (SpecifiedTimestepUnsteadySolver) sm.getSolver(SpecifiedTimestepUnsteadySolver.class);
+      tss.setTimeStep(dt);
+      sim.println("SAMEMESH dt=" + dt + " dt_set=ok");
+    } catch (Exception ex) {
+      sim.println("SAMEMESH dt_fail: " + ex);
+    }
+
+    // 边界：Inlet 速度入口 / Outlet 压力出口 / Cylinder 无滑移壁 /
+    // 四个外壁 → SymmetryBoundary（滑移，与我方 wall_slip_axes=(1,2) 对齐）
+    int nIn = 0, nOut = 0, nWall = 0, nSym = 0;
+    for (Boundary b : region.getBoundaryManager().getObjects()) {
+      String n = b.getPresentationName();
+      sim.println("SAMEMESH bnd|" + n);
+      if (n.equals("Inlet")) {
+        b.setBoundaryType(InletBoundary.class);
+        b.getValues().get(VelocityMagnitudeProfile.class).setMethod(ConstantScalarProfileMethod.class);
+        b.getValues().get(VelocityMagnitudeProfile.class).getMethod(
+            ConstantScalarProfileMethod.class).getQuantity().setValue(uIn);
+        nIn++;
+      } else if (n.equals("Outlet")) {
+        b.setBoundaryType(PressureBoundary.class);
+        nOut++;
+      } else if (n.equals("Cylinder")) {
+        b.setBoundaryType(WallBoundary.class);
+        nWall++;
+      } else {
+        b.setBoundaryType(SymmetryBoundary.class);
+        nSym++;
+      }
+    }
+    sim.println("SAMEMESH bnd_kinds in=" + nIn + " out=" + nOut
+        + " wall=" + nWall + " sym=" + nSym);
+    if (nIn != 1 || nOut != 1 || nWall != 1) {
+      sim.println("SAMEMESH_FAIL bnd_kinds in=" + nIn + " out=" + nOut
+          + " wall=" + nWall);
+      return;
+    }
+
+    // 推进 + 分段存场：**it.step(nSteps)**（Javadoc：step(int nSteps)；旧名
+    // stepAndWait(int) 已弃用）。踩过的坑（如实记录）：
+    //   ① `it.run(n)` 的推进粒度依赖求解器状态 —— 实测首段后每次只推 1 个时间步，
+    //      42 个存场仅覆盖 1.39 s；
+    //   ② 无参 run() 会阻塞到**自带停止准则**满足即停（外壳/求解器激活时自动创建
+    //      Maximum Physical Time 与 Maximum Inner Iterations），时间轮询法一个存场都进不去。
+    // step(int) 是显式推进，绕开停止准则驱动，确定性最好。
+    double stepsPerSample = Math.max(1.0, sampleDt / dt);
+    int totalSteps = (int) Math.round(totalTime / dt);
+    int chunkSteps = (int) Math.max(1.0, Math.round(stepsPerSample));
+    SimulationIterator it = sim.getSimulationIterator();
+    int done = 0, nSave = 0;
+    while (done < totalSteps) {
+      int chunk = Math.min(chunkSteps, totalSteps - done);
+      it.step(chunk);
+      done += chunk;
+      nSave++;
+      double tphys = -1.0;
+      try {
+        tphys = ((star.common.UnsteadyModel)
+            pc.getModelManager().getModel(ImplicitUnsteadyModel.class)).getPhysicalTime();
+      } catch (Exception ex) { }
+      String outp = outPrefix + "_" + nSave + ".sim";
+      sim.saveState(outp);
+      sim.println("SAMEMESH save|" + outp + "|" + it.getCurrentIteration()
+          + "|" + tphys);
+    }
+    sim.println("SAMEMESH iter=" + it.getCurrentIteration());
+    sim.println("SAMEMESH_DONE " + outPrefix);
+  }
+}
+"""
+
+
+def official_mesh_case_transient(src_sim, cgns_path, out_prefix, dt=0.01,
+                                 total_time=12.0, sample_dt=0.5,
+                                 rho=1.0, mu=1e-5, u_in=0.05,
+                                 class_name="StarBridgeTransientCase",
+                                 timeout=7200, on_line=None, poll_ms=50):
+    """S6/S2：同网格**瞬态**官方算例（我方 CGNS → 官方非稳态 → 分段存场）。
+
+    与本仓库 run_case 同工况对齐：隐式非稳态 + 指定时间步 dt；Inlet 速度入口、
+    Outlet 压力出口、Cylinder 无滑移壁、**四个外壁 SymmetryBoundary（滑移）** ——
+    对应我方 wall_slip_axes=(1,2) 的准二维设置。
+
+    每 sample_dt 秒存一个 `<out_prefix>_<n>.sim`（n 为存场序号），供离线用本仓库同一份
+    force_coefficients 算 CL(t)（无需在宏里建报告/监视器 —— API 面最小）。
+    SAMEMESH_* 标记回流；任何失败 → SAMEMESH_FAIL <原因>。
+    返回 {ok, saves:[(path, iteration, physical_time)…], dt, log, ...}。
+    """
+    if not os.path.isfile(cgns_path):
+        return {"ok": False, "reason": "CGNS 不存在: %s" % cgns_path, "log": ""}
+    prefix = os.path.abspath(out_prefix)
+    macro = MESH_CASE_TRANSIENT_MACRO % {
+        "cgns": os.path.abspath(cgns_path).replace("\\", "/"),
+        "out": prefix.replace("\\", "/"),
+        "dt": repr(float(dt)), "total_time": repr(float(total_time)),
+        "sample_dt": repr(float(sample_dt)),
+        "rho": repr(float(rho)), "mu": repr(float(mu)), "u_in": repr(float(u_in)),
+        "poll": max(int(poll_ms), 10),
+    }
+    res = official_run(src_sim, macro, class_name, timeout=timeout, on_line=on_line)
+    if res.get("skipped"):
+        return res
+    log = res.get("log") or ""
+    fail = re.search(r"SAMEMESH_FAIL (\S.*)", log)
+    res["fail_reason"] = fail.group(1).strip() if fail else None
+    res["out_prefix"] = prefix
+    res["saves"] = []
+    for ln in log.splitlines():
+        m = re.match(r"SAMEMESH save\|(.*)\|(\d+)\|([-0-9.eE]+)", ln.strip())
+        if m:
+            res["saves"].append((m.group(1).strip(), int(m.group(2)),
+                                  float(m.group(3))))
+    m = re.search(r"SAMEMESH dt=([-0-9.eE]+)", log)
+    res["dt"] = float(m.group(1)) if m else None
+    m = re.search(r"SAMEMESH bnd_kinds in=(\d+) out=(\d+) wall=(\d+) sym=(\d+)", log)
+    res["bnd_kinds"] = ({"in": int(m.group(1)), "out": int(m.group(2)),
+                         "wall": int(m.group(3)), "sym": int(m.group(4))}
+                        if m else None)
+    res["iterations"] = _transient_iter(log)
+    res["ok"] = bool(res.get("ok") and "SAMEMESH_DONE" in log
+                      and res["saves"] and os.path.isfile(res["saves"][-1][0]))
+    if not res["ok"] and not res.get("reason") and not res.get("fail_reason"):
+        if re.search(r"error:\s", log):
+            res["reason"] = "宏编译失败（Java error，见 log）"
+        else:
+            res["reason"] = "SAMEMESH 标记缺失或分段存场未生成"
+    return res
+
+
+def _transient_iter(log):
+    m = re.search(r"SAMEMESH iter=(\d+)", log)
+    return int(m.group(1)) if m else None
+
+def official_mesh_case(src_sim, cgns_path, out_path, rho=1.0, mu=1e-5, u_in=0.05,
+                       max_iterations=0, class_name="StarBridgeMeshCase",
+                       timeout=3600, on_line=None, poll_ms=50):
+    """S6 同网格官方算例：我方 CGNS → 官方外壳内建区/物理/边界 → 稳态求解 → Save As。
+
+    在**工作副本**上执行（绝不改外壳原件）。SAMEMESH_* 标记逐段回流：
+      parts_before / parts_new / region= / bnd|<边界名>（逐个）/
+      iter=<实际迭代步> / SAMEMESH_DONE <输出路径>；
+    任何一步失败 → SAMEMESH_FAIL <原因>（诚实失败，绝不返回未收敛解）。
+    返回 {ok, out_path, fail_reason, parts_before, parts_new, region,
+          boundaries, iterations, log, reason, ...}。
+    """
+    if not os.path.isfile(cgns_path):
+        return {"ok": False, "reason": "CGNS 不存在: %s" % cgns_path, "log": ""}
+    out = os.path.abspath(out_path)
+    macro = MESH_CASE_MACRO % {
+        "cgns": os.path.abspath(cgns_path).replace("\\", "/"),
+        "out": out.replace("\\", "/"),
+        "target": int(max_iterations or 0),
+        "rho": repr(float(rho)), "mu": repr(float(mu)), "u_in": repr(float(u_in)),
+        "poll": max(int(poll_ms), 10),
+    }
+    res = official_run(src_sim, macro, class_name, timeout=timeout, on_line=on_line)
+    if res.get("skipped"):
+        return res
+    log = res.get("log") or ""
+
+    def _num(pattern):
+        m = re.search(pattern, log)
+        return int(m.group(1)) if m else None
+
+    fail = re.search(r"SAMEMESH_FAIL (\S.*)", log)
+    region_m = re.search(r"SAMEMESH region=(.*)", log)
+    res["fail_reason"] = fail.group(1).strip() if fail else None
+    res["out_path"] = out
+    res["parts_before"] = _num(r"SAMEMESH parts_before=(\d+)")
+    res["parts_new"] = _num(r"SAMEMESH parts_new=(\d+)")
+    res["regions_before"] = _num(r"regions_before=(\d+)")
+    res["region"] = region_m.group(1).strip() if region_m else None
+    res["boundaries"] = [ln.split("|", 1)[1].strip()
+                         for ln in log.splitlines() if ln.startswith("SAMEMESH bnd|")]
+    res["iterations"] = _num(r"SAMEMESH iter=(\d+)")
+    res["ok"] = bool(res.get("ok") and "SAMEMESH_DONE" in log and os.path.isfile(out))
+    if not res["ok"] and not res.get("reason") and not res.get("fail_reason"):
+        res["reason"] = "SAMEMESH 标记缺失或输出未生成"
     return res
 
 

@@ -2305,10 +2305,11 @@ try:
         _vwcgns(_vcgns, _vfv, fields={"speed": _vnp.ones(_vnc)})
         with _vh5.File(_vcgns, "r") as _vf:
             _vzone = _vf["Base"]["Zone"]
-            _vconn = _vzone["Elements"]["ElementConnectivity"]
-            assert bytes(_vnp.asarray(_vzone["ZoneType"][()])) == b"Unstructured", \
-                "V6 write_cgns ZoneType"
-            assert tuple(_vconn.shape) == (_vnc, 4) and int(_vconn[()].min()) == 1, \
+            _vconn = _vzone["Elements"]["ElementConnectivity"][" data"]
+            assert bytes(_vnp.asarray(_vzone["ZoneType"][" data"][()])) == \
+                b"Unstructured", "V6 write_cgns ZoneType"
+            assert _vconn.size == _vnc * 4 and int(_vconn[()].min()) >= 1 \
+                and int(_vconn[()].max()) <= _vnv, \
                 "V6 write_cgns 1-based 四面体连接"
             assert "speed" in _vzone["FlowSolution"], "V6 write_cgns 解场"
 finally:
@@ -3185,6 +3186,42 @@ assert all(m in _s1multi for m in ("getPartManager().getObjects()",
 
 print("S 波 S1 官方桥（离线：探测字段/空根/宏仅含核对 API/自比对零差异；"
       "官方集成 = 打开我们的产物 + 视图 6 类计数相等 + 重存 + 编辑穿过重存，见 tests/test_star_bridge.py）全通过")
+
+# --- S 波 S6：同网格官方对照（离线锚点；官方实测在 s6_samemesh.py 三段驱动） ---
+import numpy as _s6np
+from fvm_core import FVM as _S6FVM
+from official_diff import (channel_boundary_patches as _s6patches,
+                            channel_tet_mesh_cartesian as _s6mesh)
+from postprocess import write_cgns as _s6cgns
+
+_s6m = _s6mesh(0.04, length_D=4.0, center_x_D=2.0)
+_s6fv = _S6FVM(_s6np.asarray(_s6m["vertices"], float),
+               _s6np.asarray(_s6m["cells"], _s6np.int64))
+_s6pat = _s6patches(_s6fv, _s6m)
+assert [p["name"] for p in _s6pat] == ["Inlet", "Outlet", "Cylinder", "WallYMin",
+                                       "WallYMax", "WallZMin", "WallZMax"], "S6 patch 名单"
+assert sum(len(p["faces"]) for p in _s6pat) == int(
+    _s6np.asarray(_s6fv.is_boundary, bool).sum()), "S6 边界面不重不漏"
+assert all(p["type"] in ("BCInflow", "BCOutflow", "BCWall") for p in _s6pat), "S6 BCType"
+_s6dir = tempfile.mkdtemp(prefix="s6_anchor_")
+try:
+    _s6cg = os.path.join(_s6dir, "s6.cgns")
+    _s6cgns(_s6cg, _s6fv, patches=_s6pat)
+    import h5py as _s6h5
+    with _s6h5.File(_s6cg, "r") as _s6f:
+        assert "Base/Zone/ZoneBC" in _s6f, "S6 ZoneBC 节点"
+        _s6bcs = [k for k in _s6f["Base/Zone/ZoneBC"] if k != " data"]
+        assert set(_s6bcs) == {"Inlet", "Outlet", "Cylinder", "WallYMin", "WallYMax",
+                               "WallZMin", "WallZMax"}, "S6 BC_t 名单"
+finally:
+    shutil.rmtree(_s6dir, ignore_errors=True)
+assert "po instanceof GeometryPart" in _s1.MESH_CASE_MACRO, "S6 宏 Object→GeometryPart 过滤"
+assert "sim.getSolver(" not in _s1.MESH_CASE_MACRO, "S6 不得含未核对 API"
+assert _s1.MESH_CASE_MACRO.count("SAMEMESH_FAIL") >= 5, "S6 诚实失败路径"
+
+print("S 波 S6 同网格官方对照（离线：patch 分类不重不漏/CGNS ZoneBC 七边界往返/"
+      "宏仅核对 API + SAMEMESH 失败路径；官方实测 = 我方稳态解 vs official_mesh_case "
+      "同网格解的场级对比见 s6_samemesh.py 与 s6_samemesh/samemesh_report.json）全通过")
 
 print("ALL CHECKS PASSED")
 

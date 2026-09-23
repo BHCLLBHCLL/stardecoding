@@ -127,7 +127,8 @@ def sliding_interface(fv, motion_axis=None, sign=0.0, tol=1.0e-9,
     ref = np.asarray(reference_point if reference_point is not None
                      else DEFAULT_REFERENCE_POINT, float)
     fc = fv.face_centroid
-    coord = (fc - ref) @ ax
+    # BLAS-free：@ ax 走 cblas_dgemv，occ 环境 numpy 2.5.2 delay-load 崩溃
+    coord = ((fc - ref) * ax).sum(axis=1)
     mask = np.abs(coord - float(sign)) <= float(tol)
     return np.where(mask & fv.is_boundary)[0]
 
@@ -158,7 +159,8 @@ def mrf_source(centroids, u, v, w, omega, axis, rho, reference_point=None):
         return np.zeros((c.shape[0], 3), float)
     rel = c - ref
     # 离心：r_perp = rel - axis(axis·rel)，S_cent = ρ ω² r_perp
-    axis_proj = rel @ ax
+    # BLAS-free：rel @ ax 走 cblas_dgemv，occ 环境 numpy 2.5.2 delay-load 崩溃
+    axis_proj = (rel * ax).sum(axis=1)
     r_perp = rel - np.outer(axis_proj, ax)
     cent = rho[:, None] * (om * om) * r_perp
     # 科氏：-2 ρ Ω × u
@@ -375,7 +377,9 @@ def overset_interpolate(receptor_points, donor_centroids, donor_values, k=3,
     """
     W = overset_donor_weights(receptor_points, donor_centroids, k=k, power=power)
     vals = np.asarray(donor_values, float)
-    out = W @ vals
+    # BLAS-free：W @ vals 走 cblas_dgemv/dgemm，occ 环境 numpy 2.5.2 delay-load 崩溃；
+    # einsum（optimize=False）为纯 C 循环不调 BLAS
+    out = np.einsum("mn,n...->m...", W, vals)
     if vals.ndim == 1:
         return out
     return out

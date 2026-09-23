@@ -1426,69 +1426,181 @@ def write_ensight(out_dir, fv, fields=None, base_name="mesh"):
             "variables": [n for _, n, _ in entries]}
 
 
+CGNS_BCTYPES = frozenset((
+    "BCInflow", "BCOutflow", "BCWall", "BCWallViscous", "BCWallInviscid",
+    "BCSymmetryPlane", "BCSymmetryPolar", "BCFarfield", "BCExtrapolate",
+    "BCInflowSubsonic", "BCInflowSupersonic", "BCOutflowSubsonic",
+    "BCOutflowSupersonic", "BCNeumann", "BCDirichlet", "BCGeneral",
+    "BCTunnelInflow", "BCWallViscousHeatFlux", "BCWallViscousIsothermal",
+))
+
+
+def _cgns_dtype_code(data):
+    """按节点数据形态返回 CGNS ADF 数据类型码（C1/I4/I8/R4/R8）。
+
+    cgnslib 读取端（ADFH_Get_Data_Type）从节点 group 的 type 属性取数据
+    类型，属性缺失即报 "Error reading CGNS-Library-Version" 级失败。
+    """
+    dt = np.asarray(data).dtype
+    if dt == np.dtype(np.int8):
+        return "C1"
+    if dt == np.dtype(np.int32):
+        return "I4"
+    if dt == np.dtype(np.int64):
+        return "I8"
+    if dt == np.dtype(np.float32):
+        return "R4"
+    if dt == np.dtype(np.float64):
+        return "R8"
+    raise ValueError("write_cgns 不支持的节点数据类型: %r" % dt)
+
+
+def _cgns_attrs(g, name, label, type_code):
+    """按 cgnslib ADFH 属性格式写 name/label/type 三个字符串属性。
+
+    cgnslib 用 H5T_C_S1 定长属性（new_str_att：H5Tset_size(max+1)），读取
+    端 get_str_att 按属性原类型读入栈缓冲后 strcpy，依赖 NUL 终止——必须
+    写 NUL 填充的定长属性：name/label 为 33 字节（ADF_NAME_LENGTH=32，
+    ADFH_Get_Name 的栈缓冲无初始化，变长写法有越界读风险）、type 为 3
+    字节（ADFH_Get_Data_Type 读入 char[3]）。
+    """
+    if len(name) > 32 or len(label) > 32:
+        raise ValueError("CGNS 节点 name/label 不得超过 32 字符: %r/%r"
+                         % (name, label))
+    g.attrs.create("name", np.bytes_(name), dtype=np.dtype("S33"))
+    g.attrs.create("label", np.bytes_(label), dtype=np.dtype("S33"))
+    g.attrs.create("type", np.bytes_(type_code), dtype=np.dtype("S3"))
+
+
+def _cgns_node(parent, name, label, data=None):
+    """按 CGNS ADF/HDF5 映射创建节点并返回 group。
+
+    所有 CGNS 节点都是 HDF5 group（track_order=True 保留 link 创建序，
+    cgnslib 按 CRT_ORDER 遍历子节点），name/label/type 存定长字符串属性
+    （type 属性缺失曾导致 STAR-CCM+ 拒收我方 CGNS）；节点数据存于
+    名为 " data"（前导空格）的 dataset：str→C1(int8)、ndarray→原样、
+    None→MT（无数据）。
+    """
+    if isinstance(data, str):
+        type_code, data = "C1", np.frombuffer(data.encode("ascii"),
+                                              dtype=np.int8)
+    elif data is None:
+        type_code = "MT"
+    else:
+        type_code = _cgns_dtype_code(data)
+    g = parent.create_group(name, track_order=True)
+    _cgns_attrs(g, name, label, type_code)
+    if data is not None:
+        g.create_dataset(" data", data=data)
+    return g
+
+
+def _cgns_str(g):
+    """读 CGNS 节点的 C1 字符串数据（" data" dataset → bytes）。"""
+    a = np.asarray(g[" data"][()])
+    if a.dtype.kind in ("S", "a"):
+        return b"".join(a.ravel().tolist())
+    return a.astype(np.int8).tobytes()
+
+
 def write_cgns(path, fv, fields=None, base_name="Base", zone_name="Zone",
-               solution_name="FlowSolution"):
+               solution_name="FlowSolution", patches=None):
     """写 CGNS/HDF5 非结构四面体网格 + 单元中心解场（h5py 必需）。
 
-    采用 CGNS SIDS 的 HDF5 布局（CGNSBase_t / Zone_t / GridCoordinates_t /
-    Elements_t / FlowSolution_t，四面体元素类型 10），返回 path；
-    h5py 缺失时抛 RuntimeError（诚实降级）。
+    按 CGNS ADF/HDF5 官方映射（cgnslib ADFH 规范）落盘：所有节点为
+    group，数据存于 " data" dataset（CGNSLibraryVersion R4=3.4、
+    Elements_t data=[elementType,0]、GridLocation 为 C1 字符串等），
+    供 cgnslib 兼容读取器（含 STAR-CCM+ CGNS 导入）识别。
+
+    patches 为可选边界定义 [{"name":..., "type":"BCInflow"|"BCOutflow"|
+    "BCWall"|..., "faces": fv 边界面 0 基下标数组}, ...]：每个 patch 写成
+    一个 TRI_3 Elements_t（元素编号自 nc+1 续接、ElementRange 全局唯一）
+    并在 ZoneBC_t 下写 BC_t（PointList 引用面元素编号，
+    GridLocation=FaceCenter），官方导入器据此重建区域边界。
     """
     try:
         import h5py
     except Exception as exc:
         raise RuntimeError("write_cgns 需要 h5py: %s" % exc)
     V = np.asarray(fv.vertices, float)
-    C = np.asarray(fv.cells, np.int64) + 1
+    C = (np.asarray(fv.cells, np.int64) + 1).astype(np.int32).ravel()
     nv, nc = int(fv.n_vertices), int(fv.n_cells)
+    TETRA_4, TRI_3 = 10, 5
 
-    def tagged(obj, name, label, type_=None):
-        obj.attrs["name"] = np.bytes_(name)
-        obj.attrs["label"] = np.bytes_(label)
-        if type_ is not None:
-            obj.attrs["type"] = np.asarray(type_, np.int32)
-        return obj
+    isbnd = np.asarray(getattr(fv, "is_boundary", np.zeros(0, bool)), bool)
+    face_verts = np.asarray(getattr(fv, "face_vertices",
+                                    np.zeros((0, 3), np.int64)), np.int64)
+    used = np.zeros(len(isbnd), bool)
+    for p in patches or []:
+        idx = np.asarray(p["faces"], np.int64).ravel()
+        if p["type"] not in CGNS_BCTYPES:
+            raise ValueError("未知 CGNS BCType: %r" % p["type"])
+        if (len(idx) == 0 or idx.min() < 0 or idx.max() >= len(isbnd)
+                or not bool(isbnd[idx].all())):
+            raise ValueError("patch %r 的 faces 必须为边界面下标" % p.get("name"))
+        if bool(used[idx].any()):
+            raise ValueError("patch %r 与其他 patch 的面重叠" % p.get("name"))
+        used[idx] = True
 
-    with h5py.File(path, "w") as h:
-        d = h.create_dataset("CGNSLibraryVersion",
-                             data=np.array([4.0], np.float32))
-        tagged(d, "CGNSLibraryVersion", "CGNSLibraryVersion_t")
-        base = tagged(h.create_group(base_name), base_name, "CGNSBase_t",
-                      [3, 3])
-        zone = tagged(base.create_group(zone_name), zone_name, "Zone_t",
-                      [nv, nc, 0])
-        tagged(zone.create_dataset("ZoneType",
-                                   data=np.bytes_("Unstructured")),
-               "ZoneType", "ZoneType_t")
-        gc = tagged(zone.create_group("GridCoordinates"), "GridCoordinates",
-                    "GridCoordinates_t")
+    with h5py.File(path, "w", track_order=True) as h:
+        # 根节点（HDF5 MotherNode）与根级 " format"/" version" dataset
+        _cgns_attrs(h, "HDF5 MotherNode", "Root Node of HDF5 File", "MT")
+        h.create_dataset(" format",
+                         data=np.frombuffer(b"IEEE_LITTLE_32", np.int8))
+        h.create_dataset(" version",
+                         data=np.frombuffer(b"3.4.1", np.int8))
+        _cgns_node(h, "CGNSLibraryVersion", "CGNSLibraryVersion_t",
+                   np.array([3.4], np.float32))
+        base = _cgns_node(h, base_name, "CGNSBase_t", np.array([3, 3], np.int32))
+        zone = _cgns_node(base, zone_name, "Zone_t",
+                          np.array([[nv, nc, 0]], np.int32))
+        _cgns_node(zone, "ZoneType", "ZoneType_t", "Unstructured")
+        gc = _cgns_node(zone, "GridCoordinates", "GridCoordinates_t")
         for d_, nm in enumerate(("CoordinateX", "CoordinateY", "CoordinateZ")):
-            tagged(gc.create_dataset(nm, data=np.ascontiguousarray(V[:, d_])),
-                   nm, "DataArray_t")
-        el = tagged(zone.create_group("Elements"), "Elements", "Elements_t",
-                    [10, 0])
-        tagged(el.create_dataset("ElementRange",
-                                 data=np.array([1, nc], np.int32)),
-               "ElementRange", "IndexRange_t")
-        tagged(el.create_dataset("ElementConnectivity",
-                                 data=C.astype(np.int32)),
-               "ElementConnectivity", "DataArray_t")
+            _cgns_node(gc, nm, "DataArray_t",
+                       np.ascontiguousarray(V[:, d_], dtype=np.float64))
+        # 体单元 section：TETRA_4，编号 1..nc
+        el = _cgns_node(zone, "Elements", "Elements_t",
+                        np.array([TETRA_4, 0], np.int32))
+        _cgns_node(el, "ElementRange", "IndexRange_t",
+                   np.array([1, nc], np.int32))
+        _cgns_node(el, "ElementConnectivity", "DataArray_t", C)
+        # 边界 patch：每 patch 一个 TRI_3 section（编号自 nc+1 续接）
+        sec_start = nc
+        bcs = []
+        for p in patches or []:
+            idx = np.asarray(p["faces"], np.int64).ravel()
+            conn = (face_verts[idx] + 1).astype(np.int32).ravel()
+            sec_end = sec_start + len(idx)
+            node = _cgns_node(zone, str(p["name"]), "Elements_t",
+                              np.array([TRI_3, 0], np.int32))
+            _cgns_node(node, "ElementRange", "IndexRange_t",
+                       np.array([sec_start + 1, sec_end], np.int32))
+            _cgns_node(node, "ElementConnectivity", "DataArray_t", conn)
+            bcs.append((p, sec_start, sec_end))
+            sec_start = sec_end
         if fields:
-            fs = tagged(zone.create_group(solution_name), solution_name,
-                        "FlowSolution_t")
-            tagged(fs.create_dataset("GridLocation",
-                                     data=np.array([1], np.int32)),
-                   "GridLocation", "DataArray_t")
+            fs = _cgns_node(zone, solution_name, "FlowSolution_t")
+            _cgns_node(fs, "GridLocation", "GridLocation_t", "CellCenter")
             for nm, arr in fields.items():
                 a = np.asarray(arr, float)
                 if a.ndim == 1:
-                    tagged(fs.create_dataset(str(nm), data=a), str(nm),
-                           "DataArray_t")
+                    _cgns_node(fs, str(nm), "DataArray_t",
+                               np.ascontiguousarray(a, dtype=np.float64))
                 else:
                     for d_ in range(a.shape[1]):
                         vn = "%s%s" % (nm, "XYZ"[d_])
-                        tagged(fs.create_dataset(vn, data=a[:, d_]), vn,
-                               "DataArray_t")
+                        _cgns_node(fs, vn, "DataArray_t",
+                                   np.ascontiguousarray(a[:, d_],
+                                                         dtype=np.float64))
+        if patches:
+            zbc = _cgns_node(zone, "ZoneBC", "ZoneBC_t")
+            for p, lo, hi in bcs:
+                bc = _cgns_node(zbc, str(p["name"]), "BC_t", str(p["type"]))
+                _cgns_node(bc, "GridLocation", "GridLocation_t", "FaceCenter")
+                _cgns_node(bc, "PointList", "IndexArray_t",
+                           np.arange(lo + 1, hi + 1,
+                                     dtype=np.int32).reshape(1, -1))
     return path
 
 

@@ -558,19 +558,47 @@ def test_write_ensight_files():
 
 def test_write_cgns_roundtrip():
     h5py = pytest.importorskip("h5py")
-    from postprocess import write_cgns
+    from postprocess import _cgns_str, write_cgns
     fv = _fv(2)
     tmp = tempfile.mkdtemp(prefix="pp_v6_")
     try:
         path = os.path.join(tmp, "mesh.cgns")
         write_cgns(path, fv, fields={"speed": np.ones(fv.n_cells)})
         with h5py.File(path, "r") as f:
+            # ADFH 根级结构 + 数据全在 " data" dataset
+            assert f.attrs["name"] == b"HDF5 MotherNode"
+            assert " format" in f and " version" in f
+            # ADFH 字符串属性为 NUL 填充定长（type=3 字节、name/label=33），
+            # 变长/缺 type 会被 cgnslib 读取端（get_str_att + strcpy）误读
+            assert f.attrs["type"] == b"MT"
+            assert f.attrs.get_id("type").get_type().get_size() == 3
+            assert f.attrs.get_id("name").get_type().get_size() == 33
+            assert np.allclose(f["CGNSLibraryVersion"][" data"][()], [3.4])
+            assert f["CGNSLibraryVersion"].attrs["type"] == b"R4"
+            assert bytes(f["Base"][" data"][()]) == bytes(
+                np.array([3, 3], np.int32))
             zone = f["Base"]["Zone"]
-            assert bytes(np.asarray(zone["ZoneType"][()])) == b"Unstructured"
-            conn = zone["Elements"]["ElementConnectivity"]
-            assert conn.shape == (fv.n_cells, 4)
+            assert zone.attrs["label"] == b"Zone_t"
+            assert zone.attrs["type"] == b"I4"
+            assert _cgns_str(zone["ZoneType"]) == b"Unstructured"
+            assert zone["ZoneType"].attrs["type"] == b"C1"
+            # Zone_t 数据须为 2 维 [index_dim,3]（cgnslib cgi_read_zone 校验）
+            assert np.array_equal(zone[" data"][()],
+                                  np.array([[fv.n_vertices, fv.n_cells, 0]],
+                                           np.int32))
+            el = zone["Elements"]
+            assert np.array_equal(el[" data"][()], np.array([10, 0], np.int32))
+            conn = el["ElementConnectivity"][" data"]
+            assert conn.shape == (fv.n_cells * 4,)
             assert conn[()].min() == 1
+            assert np.array_equal(el["ElementRange"][" data"][()],
+                                  np.array([1, fv.n_cells], np.int32))
             assert "speed" in zone["FlowSolution"]
+            assert _cgns_str(zone["FlowSolution"]["GridLocation"]) == \
+                b"CellCenter"
+            # track_order：Zone 子节点按创建序
+            keys = list(zone.keys())
+            assert keys.index("Elements") > keys.index("GridCoordinates")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

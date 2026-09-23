@@ -490,6 +490,51 @@ def channel_tet_mesh_cartesian(D, length_D=16.0, height_D=8.0, thickness_D=0.5,
                               "mean_vol": float(np.abs(vol).mean())}}
 
 
+def channel_boundary_patches(fv, mesh, mesher="cartesian"):
+    """通道域圆柱绕流网格的边界面分类 → CGNS patches 列表（write_cgns 用）。
+
+    分类规则（与 run_case 的圆柱面识别同源）：min-x → Inlet(BCInflow)、
+    max-x → Outlet(BCOutflow)、距孔心 r ≤ hole_r(+h 阶梯 pad，仅
+    cartesian) → Cylinder(BCWall)、其余 y/z 外框面 → 四个壁面(BCWall)。
+    断言每张边界面恰好归一个 patch（不重不漏），否则 ValueError。
+    """
+    bnd = np.where(np.asarray(fv.is_boundary, bool))[0]
+    cent = np.asarray(fv.face_centroid, float)[bnd]
+    x0, x1 = cent[:, 0].min(), cent[:, 0].max()
+    y0, y1 = cent[:, 1].min(), cent[:, 1].max()
+    z0, z1 = cent[:, 2].min(), cent[:, 2].max()
+    hc = np.asarray(mesh["hole_center"], float)[:2]
+    h = float(mesh.get("h", 0.0) or 0.0)
+    cyl_r = float(mesh["hole_r"]) + (h if mesher == "cartesian" else 0.0)
+    tol = 1e-6 * max(x1 - x0, y1 - y0, z1 - z0, cyl_r) + 1e-12
+    rh = np.linalg.norm(cent[:, :2] - hc, axis=1)
+    is_zmin = np.abs(cent[:, 2] - z0) <= tol
+    is_zmax = np.abs(cent[:, 2] - z1) <= tol
+    # 圆柱洞穿透 z 向：其上下端面与 z 外框面重合，归 z 壁；
+    # Cylinder patch 只收侧表面（压力/摩擦主贡献面）。
+    is_cyl = (rh <= cyl_r + 1e-9) & ~is_zmin & ~is_zmax
+    flags = (is_cyl,
+             np.abs(cent[:, 0] - x0) <= tol, np.abs(cent[:, 0] - x1) <= tol,
+             np.abs(cent[:, 1] - y0) <= tol, np.abs(cent[:, 1] - y1) <= tol,
+             is_zmin, is_zmax)
+    counts = np.zeros(len(bnd), int)
+    for fl in flags:
+        counts += fl.astype(int)
+    if counts.min() < 1:
+        raise ValueError("边界面分类不完全：%d 张面未归属" % int((counts == 0).sum()))
+    if counts.max() > 1:
+        raise ValueError("边界面分类重叠：%d 张面命中多个 patch" % int((counts > 1).sum()))
+    return [
+        {"name": "Inlet", "type": "BCInflow", "faces": bnd[flags[1]]},
+        {"name": "Outlet", "type": "BCOutflow", "faces": bnd[flags[2]]},
+        {"name": "Cylinder", "type": "BCWall", "faces": bnd[flags[0]]},
+        {"name": "WallYMin", "type": "BCWall", "faces": bnd[flags[3]]},
+        {"name": "WallYMax", "type": "BCWall", "faces": bnd[flags[4]]},
+        {"name": "WallZMin", "type": "BCWall", "faces": bnd[flags[5]]},
+        {"name": "WallZMax", "type": "BCWall", "faces": bnd[flags[6]]},
+    ]
+
+
 def diff_metrics(ours, ref):
     """自研结果 ↔ 官方参考：St 比 / 振幅比 / 平均升力 + 误差带判定。"""
     out = {"ok": True, "items": {}}

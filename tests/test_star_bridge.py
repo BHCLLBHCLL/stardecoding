@@ -4,6 +4,7 @@
 默认只跑离线用例；官方集成用例需 STARDECODING_OFFICIAL=1（每次官方 -batch 约 1–3 分钟）。
 """
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,15 +55,49 @@ def test_find_star_exe_or_skip():
 # ---------------------------------------------------------------- 宏模板
 def test_macro_templates_only_use_known_apis():
     for name, macro in (("smoke", sb.SMOKE_MACRO), ("stats", sb.OPEN_STATS_MACRO),
-                        ("resave", sb.RESAVE_MACRO)):
+                        ("resave", sb.RESAVE_MACRO), ("run_case", sb.RUN_CASE_MACRO),
+                        ("mesh_case", sb.MESH_CASE_MACRO)):
         assert "package macro;" in macro and "extends StarMacro" in macro, name
         assert "getActiveSimulation()" in macro, name
         assert "sim.println(" in macro, name
         # 之前踩过的自造 API 必须不出现
-        for bad in ("getStarVersion", "sim.getVersion(", "createCoSimulation("):
+        for bad in ("getStarVersion", "sim.getVersion(", "createCoSimulation(",
+                    "sim.getSolver("):
             assert bad not in macro, (name, bad)
     for label in ("Part", "Region", "Scene", "Continuum", "Report", "Plot", "Monitor"):
         assert ("dump(sim, \"%s\"" % label) in sb.OPEN_STATS_MACRO
+
+
+def test_mesh_case_macro_uses_only_verified_apis():
+    """S6 同网格官方算例宏：模板只含 VERIFIED_APIS 已核对的调用链。"""
+    text = sb.MESH_CASE_MACRO % {"cgns": "D:/tmp/m.cgns", "out": "D:/tmp/o.sim",
+                                 "target": 300, "rho": "1.0", "mu": "1e-05",
+                                 "u_in": "0.05", "poll": 50}
+    assert 'String cgns = "D:/tmp/m.cgns";' in text
+    assert 'String out = "D:/tmp/o.sim";' in text
+    assert "long target = 300;" in text
+    assert "double mu = 1e-05;" in text and "double rho = 1.0;" in text
+    for api in ("importFile(", "newRegionsFromParts(", "createContinuum(",
+                "setBoundaryType(", "setPhysicsContinuum(", "getSimulationIterator()",
+                "getMaterialProperties().getMaterialProperty("):
+        assert api in text, api
+    # 诚实失败路径：任何一步失败都要打印 SAMEMESH_FAIL（绝不静默吞掉）
+    assert text.count("SAMEMESH_FAIL") >= 5 and "SAMEMESH_DONE" in text
+    # getObjects() 逐 Object 迭代 + instanceof GeometryPart 过滤后
+    # 才能喂 newRegionsFromParts(Collection<GeometryPart>, ...)
+    # （Part 与 GeometryPart 是无关类型，直接 for(Part) + cast 编译不过）
+    assert "po instanceof GeometryPart" in text
+
+
+def test_mesh_case_wrapper_offline_guards(monkeypatch):
+    """无 exe / 无 CGNS：诚实跳过或失败，不碰官方批。"""
+    monkeypatch.delenv("STARCCM_HOME", raising=False)
+    monkeypatch.setattr(sb, "ROOT_HINTS", (r"Z:\\definitely_not_here",))
+    r = sb.official_mesh_case(SMALL, "Z:/no/such.cgns", "Z:/o.sim")
+    assert r["ok"] is False and "CGNS" in r["reason"]
+    # 模板占位符与封装一一对应（少一个 %s 就会 KeyError/漏注入）
+    keys = set(re.findall(r"%\((\w+)\)[sd]", sb.MESH_CASE_MACRO))
+    assert keys == {"cgns", "out", "target", "rho", "mu", "u_in", "poll"}, keys
 
 
 def test_resave_macro_formatting_uses_forward_slashes():

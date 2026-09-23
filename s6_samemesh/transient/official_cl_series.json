@@ -1,0 +1,326 @@
+{
+ "dt": 0.01,
+ "sample_dt": 0.5,
+ "series": [
+  {
+   "sample": 1,
+   "t": 0.0,
+   "cl": -0.0033606419967842976,
+   "cd": 0.0385439571749581,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_1.sim"
+  },
+  {
+   "sample": 2,
+   "t": 0.5,
+   "cl": -0.00305573732761792,
+   "cd": 0.037802660158803174,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_2.sim"
+  },
+  {
+   "sample": 3,
+   "t": 1.0,
+   "cl": -0.0019276936204753283,
+   "cd": 0.037433740852030224,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_3.sim"
+  },
+  {
+   "sample": 4,
+   "t": 1.5,
+   "cl": -0.00015358814355263361,
+   "cd": 0.03669249284054821,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_4.sim"
+  },
+  {
+   "sample": 5,
+   "t": 2.0,
+   "cl": 0.0020984662629175274,
+   "cd": 0.03605524986787623,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_5.sim"
+  },
+  {
+   "sample": 6,
+   "t": 2.5,
+   "cl": 0.004378118139393945,
+   "cd": 0.03564876582301248,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_6.sim"
+  },
+  {
+   "sample": 7,
+   "t": 3.0,
+   "cl": 0.00603601436207035,
+   "cd": 0.03519191071837244,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_7.sim"
+  },
+  {
+   "sample": 8,
+   "t": 3.5,
+   "cl": 0.006669982546906193,
+   "cd": 0.034721943116604745,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_8.sim"
+  },
+  {
+   "sample": 9,
+   "t": 4.0,
+   "cl": 0.006078237885789213,
+   "cd": 0.03430435920925439,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_9.sim"
+  },
+  {
+   "sample": 10,
+   "t": 4.5,
+   "cl": 0.004334118410885422,
+   "cd": 0.0338447196298622,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_10.sim"
+  },
+  {
+   "sample": 11,
+   "t": 5.0,
+   "cl": 0.0017990542385996208,
+   "cd": 0.03356722432453649,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_11.sim"
+  },
+  {
+   "sample": 12,
+   "t": 5.5,
+   "cl": -0.000769549071808371,
+   "cd": 0.033443441756543034,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_12.sim"
+  },
+  {
+   "sample": 13,
+   "t": 6.0,
+   "cl": -0.0025996928420726076,
+   "cd": 0.03350535016803441,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_13.sim"
+  },
+  {
+   "sample": 14,
+   "t": 6.5,
+   "cl": -0.0030946139700492323,
+   "cd": 0.033687922222408205,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_14.sim"
+  },
+  {
+   "sample": 15,
+   "t": 7.0,
+   "cl": -0.0019215119750504478,
+   "cd": 0.03385647643274488,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_15.sim"
+  },
+  {
+   "sample": 16,
+   "t": 7.5,
+   "cl": 0.0007192171856579626,
+   "cd": 0.033961965297590685,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_16.sim"
+  },
+  {
+   "sample": 17,
+   "t": 8.0,
+   "cl": 0.0040796646568318435,
+   "cd": 0.03407561953847972,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_17.sim"
+  },
+  {
+   "sample": 18,
+   "t": 8.5,
+   "cl": 0.006817239558158135,
+   "cd": 0.03430604130240826,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_18.sim"
+  },
+  {
+   "sample": 19,
+   "t": 9.0,
+   "cl": 0.007851025299954358,
+   "cd": 0.03454323068316264,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_19.sim"
+  },
+  {
+   "sample": 20,
+   "t": 9.5,
+   "cl": 0.006575702053783136,
+   "cd": 0.034691248343028336,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_20.sim"
+  },
+  {
+   "sample": 21,
+   "t": 10.0,
+   "cl": 0.003254647464117916,
+   "cd": 0.03462659580576837,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_21.sim"
+  },
+  {
+   "sample": 22,
+   "t": 10.5,
+   "cl": -0.0008753308387480476,
+   "cd": 0.03464964331169735,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_22.sim"
+  },
+  {
+   "sample": 23,
+   "t": 11.0,
+   "cl": -0.003836998780358997,
+   "cd": 0.03512194956375944,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_23.sim"
+  },
+  {
+   "sample": 24,
+   "t": 11.5,
+   "cl": -0.003960856868925246,
+   "cd": 0.03584779516450792,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_24.sim"
+  },
+  {
+   "sample": 25,
+   "t": 12.0,
+   "cl": -0.0010626554711967262,
+   "cd": 0.036067938227257464,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_25.sim"
+  },
+  {
+   "sample": 26,
+   "t": 12.5,
+   "cl": 0.0033377664561032045,
+   "cd": 0.036003061372536234,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_26.sim"
+  },
+  {
+   "sample": 27,
+   "t": 13.0,
+   "cl": 0.007011098999415133,
+   "cd": 0.036033449790403474,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_27.sim"
+  },
+  {
+   "sample": 28,
+   "t": 13.5,
+   "cl": 0.008263534058534432,
+   "cd": 0.03604947383792705,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_28.sim"
+  },
+  {
+   "sample": 29,
+   "t": 14.0,
+   "cl": 0.006633516900940623,
+   "cd": 0.035822142690672285,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_29.sim"
+  },
+  {
+   "sample": 30,
+   "t": 14.5,
+   "cl": 0.003045529522409033,
+   "cd": 0.03538250318291464,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_30.sim"
+  },
+  {
+   "sample": 31,
+   "t": 15.0,
+   "cl": -0.0009508280512133972,
+   "cd": 0.035147730877279716,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_31.sim"
+  },
+  {
+   "sample": 32,
+   "t": 15.5,
+   "cl": -0.003403936329136233,
+   "cd": 0.03539086776712163,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_32.sim"
+  },
+  {
+   "sample": 33,
+   "t": 16.0,
+   "cl": -0.003075170164181767,
+   "cd": 0.03578849761540062,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_33.sim"
+  },
+  {
+   "sample": 34,
+   "t": 16.5,
+   "cl": -0.0001678153365136186,
+   "cd": 0.03581980228906738,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_34.sim"
+  },
+  {
+   "sample": 35,
+   "t": 17.0,
+   "cl": 0.003928395847446986,
+   "cd": 0.035714310374684144,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_35.sim"
+  },
+  {
+   "sample": 36,
+   "t": 17.5,
+   "cl": 0.007212413517786969,
+   "cd": 0.03574460371903632,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_36.sim"
+  },
+  {
+   "sample": 37,
+   "t": 18.0,
+   "cl": 0.008176049511895421,
+   "cd": 0.035777723396859785,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_37.sim"
+  },
+  {
+   "sample": 38,
+   "t": 18.5,
+   "cl": 0.006465669029886618,
+   "cd": 0.03558448819517521,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_38.sim"
+  },
+  {
+   "sample": 39,
+   "t": 19.0,
+   "cl": 0.002801138300289982,
+   "cd": 0.03518644191874918,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_39.sim"
+  },
+  {
+   "sample": 40,
+   "t": 19.5,
+   "cl": -0.0012582596834468988,
+   "cd": 0.03502619173207533,
+   "note": "单元中心场由 force_coefficients 按面插值（与我方同码）",
+   "sim": "D:\\training\\caedecoder\\stardecoding\\s6_samemesh\\transient\\official_t_40.sim"
+  }
+ ]
+}
