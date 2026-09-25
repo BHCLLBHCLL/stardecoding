@@ -29,6 +29,37 @@ import numpy as np
 from fvm_core import FVM
 from solver_run import _safe_norm
 
+# ---------------------------------------------------------------------------
+# S4 诊断遥测（零行为改动）：线性求解「路线 + 规模 + 耗时」有界记录。
+# 用途：定位「某配置下静默变慢」的病态路径（例：24k 单元算例每一步都在做稀疏 LU，
+# 而 AMG 路线因为 direct_max=50000 永远到不了）。
+# ---------------------------------------------------------------------------
+import time as _time
+import collections as _collections
+
+SOLVE_LOG = _collections.deque(maxlen=600)
+
+
+def _log_solve(route, n, system, t0):
+    SOLVE_LOG.append({"route": route, "n": int(n), "system": system,
+                      "seconds": float(_time.perf_counter() - t0)})
+
+
+def solve_log_clear():
+    SOLVE_LOG.clear()
+
+
+def solve_log_summary():
+    """按 (系统, 路线) 汇总求解计数/总耗时/最慢一次。"""
+    agg = {}
+    for e in SOLVE_LOG:
+        key = "%s/%s" % (e["system"], e["route"])
+        a = agg.setdefault(key, {"count": 0, "seconds": 0.0, "max": 0.0, "n": e["n"]})
+        a["count"] += 1
+        a["seconds"] += e["seconds"]
+        a["max"] = max(a["max"], e["seconds"])
+    return agg
+
 
 # ---------------------------------------------------------------------------
 # 稀疏线性求解（COO → scipy / 纯 numpy 双路径）
@@ -188,29 +219,54 @@ def solve_linear_legacy(row, col, data, b, n, tol=1e-9, maxit=8000,
 
 
 def _solve_scipy(row, col, data, b, n, tol, maxit, x0, system="auto"):
-    """S4 第四轮：按系统类型分流（小规模直接 LU；动量 ILU+BiCGSTAB；泊松 AMG）。"""
+    """S4 第四轮：按系统类型分流（小规模直接 LU；动量 ILU+BiCGSTAB；泊松 AMG）。
+
+    S4 第七轮（本轮）修复：`direct_max` 只是**规模**阈值，对泊松系统却意味着
+    「n ≤ 50000 一律直接 LU」—— 于是 S2 同网格算例（24,432 单元）的**每次压力修正
+    都做一次稀疏 LU**，AMG 路线永远到不了（实测该配置单步 >1 小时且无输出）。
+    新增 `STARDECODING_POISSON_AMG_MIN`（默认 4000）：泊松系统规模 ≥ 它就先试 AMG，
+    失败再回落直接 LU/legacy；置 0 可恢复旧行为（A/B 对照用）。动量系统不受影响。
+    """
     import os as _os
     import scipy.sparse as sp
     import scipy.sparse.linalg as spla
     A = sp.csr_matrix((data, (row, col)), shape=(n, n))
     rtol = max(float(tol), 1e-6)
-    direct_max = int(_os.environ.get("STARDECODING_DIRECT_MAX", "50000"))
-    if n <= direct_max:
+    direct_max = int(_os.environ.get("STARDECODING_DIRECT_MAX", "3000"))
+    amg_min = int(_os.environ.get("STARDECODING_POISSON_AMG_MIN", "4000"))
+    # S4 第七轮实测（24,432 单元阶梯网格 = S2 同网格）：直接 LU 200 s/次（动量）/71 s（泊松），
+    # Krylov 阶梯 0.585 s、AMG 4.59 s（解相对差 1e-7）⇒ 旧默认 50,000 在该网格上等于「全部走
+    # 直接 LU」，整步 319.9 s vs 9.75 s（**33×**）。默认下调到 3,000：小系统仍走稳定直接解，
+    # 真实网格一律先走实测最快的 Krylov/AMG 路线（残差校验不过才回落直接解）。
+    prefer_amg = (system == "poisson" and amg_min > 0 and n >= amg_min)
+    if n <= direct_max and not prefer_amg:
+        t0 = _time.perf_counter()
         try:
-            return np.asarray(spla.spsolve(A.tocsc(), b), float).ravel()
+            x = np.asarray(spla.spsolve(A.tocsc(), b), float).ravel()
+            _log_solve("direct", n, system, t0)
+            return x
         except Exception:
-            pass
+            _log_solve("direct-fail", n, system, t0)
     if system == "convection":
+        t0 = _time.perf_counter()
         x = _bicgstab_ladder(A, row, col, data, b, rtol, maxit)   # 先无预条件（最便宜）
+        _log_solve("ladder" if x is not None else "ladder-fail", n, system, t0)
         if x is None:
+            t0 = _time.perf_counter()
             x = _ilu_bicgstab(A, row, col, data, b, rtol, maxit)  # 再 ILU(0)
+            _log_solve("ilu" if x is not None else "ilu-fail", n, system, t0)
         if x is not None:
             return x
     elif system == "poisson":
+        t0 = _time.perf_counter()
         x = _amg_solve(A, row, col, data, b, x0, rtol, maxit)
+        _log_solve("amg" if x is not None else "amg-fail", n, system, t0)
         if x is not None:
             return x
-    return _solve_scipy_legacy(row, col, data, b, n, tol, maxit, x0, A=A)
+    t0 = _time.perf_counter()
+    x = _solve_scipy_legacy(row, col, data, b, n, tol, maxit, x0, A=A)
+    _log_solve("legacy", n, system, t0)
+    return x
 
 
 def _solve_scipy_legacy(row, col, data, b, n, tol, maxit, x0, A=None):
@@ -219,10 +275,10 @@ def _solve_scipy_legacy(row, col, data, b, n, tol, maxit, x0, A=None):
     import scipy.sparse.linalg as spla
     if A is None:
         A = sp.csr_matrix((data, (row, col)), shape=(n, n))
-    # S4 选路：中小规模（默认 ≤15 万未知量）直接稀疏 LU 最快且最稳 —— 实测 24,432 未知量
-    # spsolve 0.22s/次；ILU+bicgstab 收敛时 0.17s、不收敛时白花一次因式分解（旧代码每次
-    # 都先做 spilu 再因 TypeError/不收敛回退，等于 2.7s/步里有 1.2s 是纯浪费）。
-    direct_max = int(_os.environ.get("STARDECODING_DIRECT_MAX", "50000"))
+    # S4 选路：小规模直接稀疏 LU 最稳（默认 ≤3,000 未知量，测试与小算例）；更大规模先走
+    # Krylov/ILU/AMG —— S4 第七轮在 S2 同网格（24,432 单元）实测：spsolve 200 s/次 vs
+    # Krylov 阶梯 0.585 s（347×），解相对差 1e-7。旧的 50,000 阈值等于把真实网格全推给直接解。
+    direct_max = int(_os.environ.get("STARDECODING_DIRECT_MAX", "3000"))
     if n <= direct_max:
         try:
             return np.asarray(spla.spsolve(A.tocsc(), b), float).ravel()

@@ -153,6 +153,12 @@ def test_amg_uses_cg_with_amg_preconditioner():
 
 
 def test_direct_threshold_default_now_below_100k():
-    """回归护栏：默认直接 LU 阈值必须低于 10 万（否则 10 万级又回到 5s/次的直接 LU）。"""
+    """回归护栏：默认直接 LU 阈值必须足够低（否则真实网格回到慢 347× 的直接 LU）。
+
+    S4 第七轮在 S2 同网格（24,432 单元阶梯）实测：spsolve 200 s/次（动量）/71 s（泊松），
+    Krylov 阶梯 0.585 s、AMG 4.59 s，解相对差 1e-7 ⇒ 整步 319.9 s vs 9.75 s。阈值 50,000
+    时该网格全部走直接 LU，故默认下调到 3,000，并同时护栏泊松 AMG 阈值存在。
+    """
     src = open(os.path.join(ROOT, "pressure_solver.py"), encoding="utf-8").read()
-    assert 'STARDECODING_DIRECT_MAX", "50000"' in src
+    assert 'STARDECODING_DIRECT_MAX", "3000"' in src
+    assert 'STARDECODING_POISSON_AMG_MIN", "4000"' in src

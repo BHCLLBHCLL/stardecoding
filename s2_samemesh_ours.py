@@ -26,7 +26,9 @@ ALPHA_P = float(sys.argv[5]) if len(sys.argv) > 5 else 0.3
 ALPHA_M = float(sys.argv[6]) if len(sys.argv) > 6 else 0.7
 NOC = (sys.argv[7] if len(sys.argv) > 7 else "0") not in ("0", "", "false", "no")
 CORR = float(sys.argv[8]) if len(sys.argv) > 8 else 1.0
+PISO = int(sys.argv[9]) if len(sys.argv) > 9 else 1
 DT = 0.01
+PROFILE = os.environ.get('S2_PROFILE', '') not in ('', '0')  # S2_PROFILE=1 → 逐步计时+求解路线遥测
 OUT = 'ours_cl_series%s.json' % (("_" + TAG) if TAG else "")
 
 mesh = channel_tet_mesh_cartesian(D, **MESH_KW)
@@ -35,7 +37,7 @@ C = np.asarray(mesh['cells'], np.int64)
 solver = PressureSolver(V, C, rho=RHO, mu=NU, inlet_axis=0, inlet_side='min',
                         inlet_velocity=(U, 0.0, 0.0), outlet_side='max',
                         convection=CONV, wall_slip_axes=(1, 2),
-                        piso_correctors=1, alpha_pressure=ALPHA_P,
+                        piso_correctors=PISO, alpha_pressure=ALPHA_P,
                         alpha_momentum=ALPHA_M,
                         nonorth_corrected=NOC, corr_limit=CORR)
 cc = np.asarray(solver.fvm.centroids, float)[:, :2]
@@ -69,6 +71,11 @@ for k in range(STEPS):
     if not np.isfinite(cls[-1]) or abs(cls[-1]) > 50:
         print('ours: DIVERGED at step %d cl=%s' % (k, cls[-1]), flush=True)
         break
+    if PROFILE and k < 3:
+        from pressure_solver import solve_log_summary, solve_log_clear
+        print('  [prof] step %d 累计 %.2fs  %s'
+              % (k, time.time() - t0, solve_log_summary()), flush=True)
+        solve_log_clear()
     if k % 100 == 0:
         json.dump({'dt': DT, 'n_inner': NI, 'steps_done': k, 't': ts, 'cl': cls,
                    'cd': cds, 'done': False},

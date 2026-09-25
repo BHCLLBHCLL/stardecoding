@@ -21,6 +21,7 @@ NOC = (sys.argv[8] if len(sys.argv) > 8 else "0") not in ("0", "", "false", "no"
 CORR = float(sys.argv[9]) if len(sys.argv) > 9 else 1.0
 PISO = int(sys.argv[6]) if len(sys.argv) > 6 else 1
 AM = float(sys.argv[7]) if len(sys.argv) > 7 else 0.7
+M = int(sys.argv[10]) if len(sys.argv) > 10 else 1   # 本征模阶数：u=A·sin(Mπy)，λ=ν(Mπ)²
 A = 0.05
 
 V, C = cube_tet_mesh(nx=4, ny=NY, nz=1)
@@ -30,20 +31,28 @@ s = PressureSolver(V, C, rho=1.0, mu=NU, inlet_axis=0, inlet_side='min',
                    convection='upwind', piso_correctors=PISO,
                    alpha_momentum=AM, nonorth_corrected=NOC, corr_limit=CORR)
 y = np.asarray(s.fvm.centroids, float)[:, 1]
-u0 = A * np.sin(np.pi * y)
+u0 = A * np.sin(M * np.pi * y)   # M 阶本征模（M=1 与历史数据可比）
 s._u = u0.copy(); s._v = np.zeros_like(u0); s._w = np.zeros_like(u0)
 s._p = np.zeros_like(u0)
 mid = int(np.argmin(np.abs(y - 0.5)))
-print('cells=%d ni=%d piso=%d a_m=%.2f nonorth=%s corr=%.2f  y=%.4f u0=%.6f'
-      % (C.shape[0], NI, PISO, AM, NOC, CORR, y[mid], s._u[mid]))
+_vol = np.asarray(s.fvm.volumes, float)
+_base = np.sin(M * np.pi * y)
+_den = float(np.sum(_vol * _base ** 2))
+
+
+def amp(u):
+    """体积加权模态投影振幅（M≥2 时单点采样会落在节点上，必须用投影）。"""
+    return float(np.sum(_vol * np.asarray(u, float) * _base) / max(_den, 1e-300))
+print('cells=%d ni=%d piso=%d a_m=%.2f nonorth=%s corr=%.2f M=%d  y=%.4f u0=%.6f'
+      % (C.shape[0], NI, PISO, AM, NOC, CORR, M, y[mid], s._u[mid]))
 s.enable_transient(DT, snapshot=True)
-lam = NU * np.pi ** 2
-print('精确衰减率 νπ² = %.5f /s（理论 u(t)/u(0) = exp(−%.5f t)）' % (lam, lam))
-ts, us = [0.0], [float(s._u[mid])]
+lam = NU * (M * np.pi) ** 2
+print('精确衰减率 ν(Mπ)² = %.5f /s（理论 u(t)/u(0) = exp(−%.5f t)）' % (lam, lam))
+ts, us = [0.0], [amp(s._u)]   # 振幅用模态投影（点采样在 M≥2 会踩节点）
 t0 = time.time()
 for k in range(STEPS):
     s.advance(dt=DT, n_inner=NI)
-    ts.append(float(s.time)); us.append(float(s._u[mid]))
+    ts.append(float(s.time)); us.append(amp(s._u))
     if not np.isfinite(us[-1]):
         print('DIVERGED at step %d' % k); break
 ts = np.asarray(ts); us = np.asarray(us)
