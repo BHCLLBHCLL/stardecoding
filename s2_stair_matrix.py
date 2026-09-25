@@ -12,18 +12,19 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 
 STEPS = 2000          # 20 s @ dt=0.01
 CONFIGS = [
-    # tag, ni, conv, alpha_p, alpha_m
-    ("stair_am1", 3, "central", 0.3, 1.0),      # 动量欠松弛放开（已验证稳定）
-    ("stair_ni8", 8, "central", 0.3, 0.7),      # 步内迭代加码
-    ("stair_sou", 1, "upwind2", 0.3, 0.7),      # 隐式二阶上风
-    ("stair_am1ni8", 8, "central", 0.3, 1.0),   # 组合
+    # tag, ni, conv, alpha_p, alpha_m, nonorth(0/1), corr_limit
+    ("stair_am1noc", 3, "central", 0.3, 1.0, "1", 1.0),   # 第十六/十七步结论：瞬态不欠松弛 + 满额非正交修正
+    ("stair_am1", 3, "central", 0.3, 1.0, "0", 1.0),       # 只放开欠松弛
+    ("stair_noc", 3, "central", 0.3, 0.7, "1", 1.0),       # 只开修正
+    ("stair_ni8", 8, "central", 0.3, 0.7, "0", 1.0),       # 步内迭代加码
+    ("stair_sou", 1, "upwind2", 0.3, 0.7, "0", 1.0),       # 隐式二阶上风
 ]
 only = sys.argv[1] if len(sys.argv) > 1 else None
-for tag, ni, conv, ap, am in CONFIGS:
+for tag, ni, conv, ap, am, noc, corr in CONFIGS:
     if only and only not in tag:
         continue
     cmd = [sys.executable, "-u", "s2_samemesh_ours.py", str(STEPS), str(ni),
-           tag, conv, str(ap), str(am)]
+           tag, conv, str(ap), str(am), str(noc), str(corr)]
     print("[matrix] %s" % " ".join(cmd), flush=True)
     rc = subprocess.call(cmd)
     print("[matrix] %s 退出码 %d" % (tag, rc), flush=True)

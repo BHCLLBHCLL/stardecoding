@@ -675,17 +675,6 @@ class PressureSolver:
             un = (self._u[oo] * n[:, 0] + self._v[oo] * n[:, 1]
                   + self._w[oo] * n[:, 2])
             self._mdot[self._outlet_faces] = self._face_rho()[self._outlet_faces] * un * A
-        if self.inlet_zero_gradient:
-            # 封闭域（两端零梯度）没有可缩放的"唯一出口" → 用边界通量的全局平衡修正：
-            # 把净不平衡按面积权重摊回所有边界面，保证 Σmdot=0（否则净质量漂移会驱动
-            # 虚假均匀加速 —— 实测该基准在 t≈0.4 s 后由衰减转为发散）。
-            fb = np.where(fv.is_boundary)[0]
-            if fb.size:
-                net = float(self._mdot[fb].sum())
-                A_all = fv.face_area[fb]
-                tot = float(A_all.sum())
-                if abs(net) > 1e-30 and tot > 0.0:
-                    self._mdot[fb] -= net * A_all / tot
             # 全局质量守恒对标：出口面为压力 Neumann（∂p'/∂n=0），不进泊松矩阵，
             # 其通量仅由单元速度外推，可能与入口不闭合 → 统一的出口单元残差平台。
             # 对出口通量做全局缩放，使 sum(mdot)=0（入口固定、壁面=0，出口为唯一可调边界面）。
@@ -693,6 +682,19 @@ class PressureSolver:
             outflow = self._mdot[self._outlet_faces].sum()
             if abs(outflow) > 1e-30:
                 self._mdot[self._outlet_faces] *= -inflow / outflow
+        if self.inlet_zero_gradient:
+            # 封闭域（两端零梯度）没有可缩放的"唯一出口" → 用边界通量的全局平衡修正：
+            # 把净不平衡按面积权重摊回所有边界面，保证 Σmdot=0（否则净质量漂移会驱动
+            # 虚假均匀加速 —— 实测该基准在 t≈0.4 s 后由衰减转为发散）。
+            # 注意：本块必须**独立于**上面的出口分支（早期误把它并进出口分支，导致默认
+            # 路径丢失出口缩放 → 9 项质量守恒/残差测试失败）。
+            fb = np.where(fv.is_boundary)[0]
+            if fb.size:
+                net = float(self._mdot[fb].sum())
+                A_all = fv.face_area[fb]
+                tot = float(A_all.sum())
+                if abs(net) > 1e-30 and tot > 0.0:
+                    self._mdot[fb] -= net * A_all / tot
 
     # -- 边界值（速度分量，返回面长数组） ---------------------------
     def _boundary_u(self, comp):

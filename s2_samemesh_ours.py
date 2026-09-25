@@ -24,6 +24,8 @@ TAG = sys.argv[3] if len(sys.argv) > 3 else ""
 CONV = sys.argv[4] if len(sys.argv) > 4 else "central"
 ALPHA_P = float(sys.argv[5]) if len(sys.argv) > 5 else 0.3
 ALPHA_M = float(sys.argv[6]) if len(sys.argv) > 6 else 0.7
+NOC = (sys.argv[7] if len(sys.argv) > 7 else "0") not in ("0", "", "false", "no")
+CORR = float(sys.argv[8]) if len(sys.argv) > 8 else 1.0
 DT = 0.01
 OUT = 'ours_cl_series%s.json' % (("_" + TAG) if TAG else "")
 
@@ -34,7 +36,8 @@ solver = PressureSolver(V, C, rho=RHO, mu=NU, inlet_axis=0, inlet_side='min',
                         inlet_velocity=(U, 0.0, 0.0), outlet_side='max',
                         convection=CONV, wall_slip_axes=(1, 2),
                         piso_correctors=1, alpha_pressure=ALPHA_P,
-                        alpha_momentum=ALPHA_M)
+                        alpha_momentum=ALPHA_M,
+                        nonorth_corrected=NOC, corr_limit=CORR)
 cc = np.asarray(solver.fvm.centroids, float)[:, :2]
 cx0, cy0 = float(mesh['hole_center'][0]), float(mesh['hole_center'][1])
 blob = np.exp(-(((cc[:, 0] - cx0) / D) ** 2
@@ -46,8 +49,9 @@ hc = np.asarray(mesh['hole_center'], float)[:2]
 rh = np.linalg.norm(np.asarray(fv.face_centroid, float)[:, :2] - hc, axis=1)
 cyl_r = float(mesh['hole_r']) + float(mesh.get('h', 0.0) or 0.0)
 cyl = np.where(np.asarray(fv.is_boundary, bool) & (rh <= cyl_r + 1e-9))[0]
-print('ours: cells=%d cyl_faces=%d steps=%d ni=%d conv=%s a_m=%s a_p=%s dt=%s'
-      % (C.shape[0], cyl.size, STEPS, NI, CONV, ALPHA_M, ALPHA_P, DT), flush=True)
+print('ours: cells=%d cyl=%d steps=%d ni=%d conv=%s a_m=%s a_p=%s nonorth=%s corr=%.2f dt=%s'
+      % (C.shape[0], cyl.size, STEPS, NI, CONV, ALPHA_M, ALPHA_P, NOC, CORR, DT),
+      flush=True)
 out_dir = os.path.join(ROOT, 's6_samemesh', 'transient')
 os.makedirs(out_dir, exist_ok=True)
 ts, cls, cds = [], [], []
