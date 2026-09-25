@@ -29,7 +29,8 @@ DT = float(sys.argv[7]) if len(sys.argv) > 7 else 0.01
 NU = float(sys.argv[8]) if len(sys.argv) > 8 else 1e-5
 NWAVE = int(sys.argv[9]) if len(sys.argv) > 9 else 4
 U = float(sys.argv[10]) if len(sys.argv) > 10 else 0.05   # U=0 时无对流（配 ν=0 即纯投影实验）
-A, RHO = 0.002, 1.0
+A = float(sys.argv[11]) if len(sys.argv) > 11 else 0.002  # 振幅扫描：非线性自相互作用 ∝A，数值耗散与 A 无关
+RHO = 1.0
 
 V, C = cube_tet_mesh(nx=NX, ny=NX, nz=1)
 s = PressureSolver(V, C, rho=RHO, mu=NU, inlet_axis=0, inlet_side='min',
