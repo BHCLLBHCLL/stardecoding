@@ -17,6 +17,8 @@ DT = float(sys.argv[2]) if len(sys.argv) > 2 else 0.005
 NU = float(sys.argv[3]) if len(sys.argv) > 3 else 0.05
 NY = int(sys.argv[4]) if len(sys.argv) > 4 else 16
 NI = int(sys.argv[5]) if len(sys.argv) > 5 else 1
+NOC = (sys.argv[8] if len(sys.argv) > 8 else "0") not in ("0", "", "false", "no")
+CORR = float(sys.argv[9]) if len(sys.argv) > 9 else 1.0
 PISO = int(sys.argv[6]) if len(sys.argv) > 6 else 1
 AM = float(sys.argv[7]) if len(sys.argv) > 7 else 0.7
 A = 0.05
@@ -26,14 +28,14 @@ s = PressureSolver(V, C, rho=1.0, mu=NU, inlet_axis=0, inlet_side='min',
                    inlet_velocity=(0.0, 0.0, 0.0), outlet_side='max',
                    inlet_zero_gradient=True, wall_slip_axes=(2,),
                    convection='upwind', piso_correctors=PISO,
-                   alpha_momentum=AM)
+                   alpha_momentum=AM, nonorth_corrected=NOC, corr_limit=CORR)
 y = np.asarray(s.fvm.centroids, float)[:, 1]
 u0 = A * np.sin(np.pi * y)
 s._u = u0.copy(); s._v = np.zeros_like(u0); s._w = np.zeros_like(u0)
 s._p = np.zeros_like(u0)
 mid = int(np.argmin(np.abs(y - 0.5)))
-print('cells=%d  ni=%d piso=%d a_m=%.2f  监测单元 y=%.4f  u0=%.6f'
-      % (C.shape[0], NI, PISO, AM, y[mid], s._u[mid]))
+print('cells=%d ni=%d piso=%d a_m=%.2f nonorth=%s corr=%.2f  y=%.4f u0=%.6f'
+      % (C.shape[0], NI, PISO, AM, NOC, CORR, y[mid], s._u[mid]))
 s.enable_transient(DT, snapshot=True)
 lam = NU * np.pi ** 2
 print('精确衰减率 νπ² = %.5f /s（理论 u(t)/u(0) = exp(−%.5f t)）' % (lam, lam))
