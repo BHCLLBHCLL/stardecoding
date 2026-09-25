@@ -355,6 +355,7 @@ class PressureSolver:
                  compressible_t_ref=300.0, compressible_dt=1.0e-3,
                  compressible_relax=0.5, unsteady=False, dt=None,
                  convection="upwind", wall_slip_axes=(), piso_correctors=0,
+                 inlet_zero_gradient=False,
                  skew_corrected=False, nonorth_corrected=False,
                  corr_limit=1.0, pc_inner=1, planar_2d=False):
         # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
@@ -384,6 +385,11 @@ class PressureSolver:
         # 而不是像 central/limited 那样留在显式延迟修正里（后者依赖内迭代把二阶信息
         # 迭代出来，实测耗散随 ni 只在 1→2 有改善后饱和）。默认仍为 upwind（零回归）。
         self._uu_tables = None
+        # S2 第十六步：**零梯度入口**（默认关，零回归）。开启后入口面与出口同样按零梯度
+        # 外推（速度取 owner 值、通量由单元速度重构、不做全局缩放的入流闭合）——
+        # 用于构造「两端零梯度」的封闭域，从而能跑**解析瞬态基准**（如 Poiseuille 剖面
+        # 的纯扩散衰减：对流项恒为零，可精确分离时间推进 + 投影的数值阻尼）。
+        self.inlet_zero_gradient = bool(inlet_zero_gradient)
         self.nonorth_corrected = bool(nonorth_corrected)
         self.corr_limit = float(corr_limit)
         # 压力修正的**内迭代**次数（仅 nonorth_corrected 生效）：非正交延迟修正项依赖
@@ -551,8 +557,19 @@ class PressureSolver:
 
     def _abs_inlet_mdot(self):
         fv = self._fv
-        if len(self._inlet_faces) == 0:
+        if len(self._inlet_faces) == 0 and not self.inlet_zero_gradient:
             return 1.0
+        if self.inlet_zero_gradient:
+            # 零梯度入口没有固定入流量：用边界面上的动量通量量级做残差归一化基准
+            if self._u is None:
+                return 1.0
+            fb = np.where(self._fv.is_boundary)[0]
+            ob = self._fv.owner[fb]
+            nn = self._fv.face_normal[fb]
+            un_b = (self._u[ob] * nn[:, 0] + self._v[ob] * nn[:, 1]
+                    + self._w[ob] * nn[:, 2])
+            return max(float(np.sum(self._face_rho()[fb] * np.abs(un_b)
+                                    * self._fv.face_area[fb])), 1e-12)
         vel = np.asarray(self.inlet_velocity, float)
         n = fv.face_normal[self._inlet_faces]
         A = fv.face_area[self._inlet_faces]
@@ -636,20 +653,39 @@ class PressureSolver:
         if len(self._inlet_faces):
             n = fv.face_normal[self._inlet_faces]
             A = fv.face_area[self._inlet_faces]
-            un = vel[0] * n[:, 0] + vel[1] * n[:, 1] + vel[2] * n[:, 2]
+            if self.inlet_zero_gradient and self._u is not None:
+                # 零梯度入口：与出口同法，由修正后单元速度外推（不再用 Dirichlet 入流速度）
+                oi = fv.owner[self._inlet_faces]
+                un = (self._u[oi] * n[:, 0] + self._v[oi] * n[:, 1]
+                      + self._w[oi] * n[:, 2])
+            else:
+                un = vel[0] * n[:, 0] + vel[1] * n[:, 1] + vel[2] * n[:, 2]
             self._mdot[self._inlet_faces] = self._face_rho()[self._inlet_faces] * un * A
         if len(self._wall_faces):
             self._mdot[self._wall_faces] = 0.0
         if len(self._slip_faces):
             self._mdot[self._slip_faces] = 0.0
         # 出口零梯度外推：由修正后单元速度重构（保证全局质量守恒一致）
-        if len(self._outlet_faces) and self._u is not None:
+        if len(self._outlet_faces) and self._u is not None \
+                and not self.inlet_zero_gradient:
+            # 全局缩放只在「入口为固定入流」时有意义（两端都外推时质量闭合由压力方程保证）
             oo = fv.owner[self._outlet_faces]
             n = fv.face_normal[self._outlet_faces]
             A = fv.face_area[self._outlet_faces]
             un = (self._u[oo] * n[:, 0] + self._v[oo] * n[:, 1]
                   + self._w[oo] * n[:, 2])
             self._mdot[self._outlet_faces] = self._face_rho()[self._outlet_faces] * un * A
+        if self.inlet_zero_gradient:
+            # 封闭域（两端零梯度）没有可缩放的"唯一出口" → 用边界通量的全局平衡修正：
+            # 把净不平衡按面积权重摊回所有边界面，保证 Σmdot=0（否则净质量漂移会驱动
+            # 虚假均匀加速 —— 实测该基准在 t≈0.4 s 后由衰减转为发散）。
+            fb = np.where(fv.is_boundary)[0]
+            if fb.size:
+                net = float(self._mdot[fb].sum())
+                A_all = fv.face_area[fb]
+                tot = float(A_all.sum())
+                if abs(net) > 1e-30 and tot > 0.0:
+                    self._mdot[fb] -= net * A_all / tot
             # 全局质量守恒对标：出口面为压力 Neumann（∂p'/∂n=0），不进泊松矩阵，
             # 其通量仅由单元速度外推，可能与入口不闭合 → 统一的出口单元残差平台。
             # 对出口通量做全局缩放，使 sum(mdot)=0（入口固定、壁面=0，出口为唯一可调边界面）。
@@ -669,6 +705,9 @@ class PressureSolver:
         b = np.zeros(fv.n_faces, float)
         vel = self.inlet_velocity
         b[self._inlet_faces] = vel[comp]
+        if self.inlet_zero_gradient and self._u is not None:
+            comp_arr0 = {0: self._u, 1: self._v, 2: self._w}[comp]
+            b[self._inlet_faces] = comp_arr0[fv.owner[self._inlet_faces]]
         if self._u is not None:
             comp_arr = {0: self._u, 1: self._v, 2: self._w}[comp]
             b[self._outlet_faces] = comp_arr[fv.owner[self._outlet_faces]]
@@ -1336,8 +1375,13 @@ class PressureSolver:
         # 出口零梯度面：速度外推 φ_face=φ_owner → 对流对角 += m（m>0 出流）
         # 扩散零梯度 → 无贡献。其余边界面（入口/壁面 Dirichlet）走已知边界值。
         outlet_mask = np.isin(bnd_face, self._outlet_faces, assume_unique=False)
+        # S2 第十六步：零梯度入口与出口同法（速度零梯度、无扩散贡献）
+        zg_mask = outlet_mask
+        if self.inlet_zero_gradient and len(self._inlet_faces):
+            zg_mask = outlet_mask | np.isin(bnd_face, self._inlet_faces,
+                                            assume_unique=False)
         # 零梯度出流且 m>0：对流对角 += mb
-        out_conv = outlet_mask & (mb >= 0.0)
+        out_conv = zg_mask & (mb >= 0.0)
         rows_blk.append(bo[out_conv])
         cols_blk.append(bo[out_conv])
         vals_blk.append(mb[out_conv].astype(float))
@@ -1350,7 +1394,7 @@ class PressureSolver:
         # 出口零梯度：不贡献扩散
         slip_mask = (np.isin(bnd_face, self._slip_faces, assume_unique=False)
                      if len(self._slip_faces) else np.zeros(len(bo), dtype=bool))
-        diff_b = ~outlet_mask & ~slip_mask
+        diff_b = ~zg_mask & ~slip_mask
         rows_blk.append(bo[diff_b])
         cols_blk.append(bo[diff_b])
         vals_blk.append(Db[diff_b])
