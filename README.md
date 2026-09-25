@@ -18,6 +18,7 @@
 | `mesh_benchmark.py` | 教程尺度网格对标（R5：官方 .sim 网格尺度 ↔ 自研重网格化，面数/面积/边尺度/质量） |
 | `official_diff.py` | 官方解差分（R4：官方参考量 St/D/Re + 同工况环形域几何 + 误差带判定；真实瞬态跑门控 STARDECODING_LONG；--mesher hybrid 混合网格 + 非正交修正旋钮） |
 | `build_exe.py` | S5 真实打包（PyInstaller：生成 `dist/stardecoding-cli.exe` onefile 二进制 + 真实 .sim 冒烟；只收 numpy、显式排除 15 个重依赖） |
+| `tests/test_convection_sou.py` | S2 第十一步：隐式二阶上风（`convection="upwind2"`）验证 —— UU 表 argmin 性质/退化分支/矩阵适定性/小网格瞬态稳定性 |
 | `solver_bench.py` | 线性求解路线基准（S4 第四轮：直接 LU / AMG / ILU+BiCGSTAB 的可复现对照，按系统类型分流实测 10 万单元 32.6→5.6 s/步） |
 | `mesh_hybrid.py` | 方形 O 型环带 + 张量积外围**协调混合网格**（S2 ③(a)：贴体圆柱 + 近笛卡尔尾迹，解析恒等式保证逐点拼接，解析体积核对到 1e-9） |
 | `star_bridge.py` | 官方 STAR-CCM+ 桥（S1：安装探测 / 宏模板 / 工作副本运行 / 视图对照 / 官方重存 / 名字键差分；官方集成门控 STARDECODING_OFFICIAL） |

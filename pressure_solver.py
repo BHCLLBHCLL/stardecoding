@@ -366,8 +366,9 @@ class PressureSolver:
         if int(piso_correctors or 0) < 0:
             raise ValueError("piso_correctors 不能为负（0=纯 SIMPLE）")
         self.piso_correctors = int(piso_correctors or 0)
-        if convection not in ("upwind", "central", "limited"):
-            raise ValueError("未知对流格式 %r（可选 upwind/central/limited）" % (convection,))
+        if convection not in ("upwind", "central", "limited", "upwind2"):
+            raise ValueError("未知对流格式 %r（可选 upwind/central/limited/upwind2）"
+                             % (convection,))
         # S2：对流格式。upwind=一阶上风（默认，隐式矩阵对角占优，零回归）；
         # central/limited=二阶（延迟修正：隐式仍上风，高阶差值作为显式源进 RHS）。
         self.convection = convection
@@ -379,6 +380,10 @@ class PressureSolver:
         #     分解（Jasak 最小修正，k = n̂ − ê），corr_limit 可取 0.33 换稳定。
         # 实测（剪切 0.6 网格）：面值误差 2e-1 → 1e-12、扩散通量 4.2e-1 → 1e-10。
         self.skew_corrected = bool(skew_corrected)
+        # S2 第十一步：`upwind2` = **隐式二阶上风（SOU）** —— 把二阶信息真正放进隐式矩阵，
+        # 而不是像 central/limited 那样留在显式延迟修正里（后者依赖内迭代把二阶信息
+        # 迭代出来，实测耗散随 ni 只在 1→2 有改善后饱和）。默认仍为 upwind（零回归）。
+        self._uu_tables = None
         self.nonorth_corrected = bool(nonorth_corrected)
         self.corr_limit = float(corr_limit)
         # 压力修正的**内迭代**次数（仅 nonorth_corrected 生效）：非正交延迟修正项依赖
@@ -1197,6 +1202,71 @@ class PressureSolver:
                            minlength=fv.n_cells)
         return src
 
+    def _second_upwind_tables(self):
+        """二阶上风单元表（每内部面按流向两支各一个 UU；无合格邻居 → −1 退化一阶上风）。
+
+        UU 定义：上风单元 U 的邻居（不含下游单元 D）中，沿流向投影最小者 —— 即"更靠上游"
+        的那个。表只依赖网格拓扑与质心，**只算一次并缓存**（流向两支分别缓存，因为 m 的
+        符号随时间变化：uu_pos 对应 o→nb 流、uu_neg 对应 nb→o 流）。
+
+        实现：固定宽度邻居表 `nbr[cell, K]`（一次性由内部面双向边构建，无逐面 Python 循环）
+        + 分块向量化 argmin（控制峰值内存）。边界面/单邻居单元 → −1。
+        返回 (fidx, uu_pos, uu_neg)。
+        """
+        if self._uu_tables is not None:
+            return self._uu_tables
+        fv = self._fv
+        n = fv.n_cells
+        is_int = fv.neighbor >= 0
+        fidx = np.where(is_int)[0]
+        o = fv.owner[fidx]
+        nb = fv.neighbor[fidx]
+        # ① 固定宽度邻居表：把内部面的双向邻接排序后按单元连续填充
+        cells_all = np.concatenate([o, nb])
+        others_all = np.concatenate([nb, o])
+        order = np.argsort(cells_all, kind="stable")
+        cs = cells_all[order]
+        os_ = others_all[order]
+        starts = np.searchsorted(cs, np.arange(n), side="left")
+        deg = np.bincount(cs, minlength=n)
+        K = int(deg.max()) if deg.size else 0
+        nbr = np.full((n, max(K, 1)), -1, np.int64)
+        if K:
+            pos_in_row = np.arange(cs.size) - starts[cs]
+            nbr[cs, pos_in_row] = os_
+        cen = np.asarray(fv.centroids, float)
+        dvec = cen[nb] - cen[o]
+        dlen = np.linalg.norm(dvec, axis=1)
+        dhat = dvec / np.where(dlen > 0.0, dlen, 1.0)[:, None]
+
+        def _uu(anchor, other, direction):
+            """anchor 的邻居中（排除下游 other）**严格位于上游**（投影 < 0）且最靠后者。
+
+            收紧语义的必要性（实测）：只取"投影最小"会把**横向邻居**（投影 ≈ 0）当成
+            二阶上风，于是入口附近的上风单元也会配一个横向 UU —— 面值 1.5φ_U − 0.5φ_横向
+            没有上游意义、且引入横向耦合。故要求 proj < 0；没有合格候选 → −1（该面退化
+            为一阶上风）。
+            """
+            cand = nbr[anchor]
+            valid = (cand >= 0) & (cand != other[:, None])
+            safe = np.where(valid, cand, 0)
+            out = np.full(anchor.size, -1, np.int64)
+            step = max(int(200000 // max(cand.shape[1], 1)), 1)
+            for a in range(0, anchor.size, step):
+                b = min(a + step, anchor.size)
+                rel = cen[safe[a:b]] - cen[anchor[a:b]][:, None, :]
+                proj = np.einsum("fkj,fj->fk", rel, direction[a:b])
+                proj = np.where(valid[a:b] & (proj < 0.0), proj, np.inf)
+                k = np.argmin(proj, axis=1)
+                has = np.isfinite(proj).any(axis=1)
+                out[a:b] = np.where(has, cand[a:b][np.arange(b - a), k], -1)
+            return out
+
+        uu_pos = _uu(o, nb, dhat)          # o→nb 流：上风=o，更上游 = o 的"后面"邻居
+        uu_neg = _uu(nb, o, -dhat)         # nb→o 流：上风=nb，方向取反
+        self._uu_tables = (fidx, uu_pos, uu_neg)
+        return self._uu_tables
+
     def _assemble_momentum(self, comp):
         fv = self._fv
         mdot = self._mdot
@@ -1239,6 +1309,20 @@ class PressureSolver:
         rows_blk += [o[pos], nb[pos], o[neg], nb[neg], o, nb, o, nb]
         cols_blk += [o[pos], o[pos], nb[neg], nb[neg], o, nb, nb, o]
         vals_blk += [mf[pos], -mf[pos], mf[neg], -mf[neg], D, D, -D, -D]
+        # S2 第十一步：`upwind2` = 隐式二阶上风。面值 φ_f = 1.5φ_U − 0.5φ_UU，相对一阶上风
+        # 的增量（row U: +0.5m@U, −0.5m@UU；row D: −0.5m@U, +0.5m@UU）直接进隐式矩阵 ——
+        # 不依赖内迭代把二阶信息迭代出来。对角占优保持：下游行 |off| 合计 = m。
+        if self.convection == "upwind2":
+            _fidx, uu_pos, uu_neg = self._second_upwind_tables()
+            Uu = np.where(pos, o, nb)          # 上风单元
+            Dd = np.where(pos, nb, o)          # 下游单元
+            UU = np.where(pos, uu_pos, uu_neg)  # 二阶上风（-1 = 退化一阶）
+            has = UU >= 0
+            if has.any():
+                mh = m[has].astype(float)
+                rows_blk += [Uu[has], Uu[has], Dd[has], Dd[has]]
+                cols_blk += [Uu[has], UU[has], Uu[has], UU[has]]
+                vals_blk += [0.5 * mh, -0.5 * mh, -0.5 * mh, 0.5 * mh]
         # S2 延迟修正：把「高阶面值 − 上风面值」的差值作为显式源（隐式矩阵不变，稳定）
         if self.convection in ("central", "limited"):
             ho_src = self._deferred_convection_source(comp, is_int, o, nb, m)
