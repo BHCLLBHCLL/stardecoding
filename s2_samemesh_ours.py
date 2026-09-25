@@ -76,7 +76,8 @@ for k in range(STEPS):
         print('  [prof] step %d 累计 %.2fs  %s'
               % (k, time.time() - t0, solve_log_summary()), flush=True)
         solve_log_clear()
-    if k % 100 == 0:
+    every = 20 if STEPS <= 200 else 100
+    if k % every == 0:
         json.dump({'dt': DT, 'n_inner': NI, 'steps_done': k, 't': ts, 'cl': cls,
                    'cd': cds, 'done': False},
                   open(os.path.join(out_dir, OUT), 'w', encoding='utf-8'))

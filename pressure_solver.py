@@ -437,9 +437,9 @@ class PressureSolver:
         #     分解（Jasak 最小修正，k = n̂ − ê），corr_limit 可取 0.33 换稳定。
         # 实测（剪切 0.6 网格）：面值误差 2e-1 → 1e-12、扩散通量 4.2e-1 → 1e-10。
         self.skew_corrected = bool(skew_corrected)
-        # S2 第十一步：`upwind2` = **隐式二阶上风（SOU）** —— 把二阶信息真正放进隐式矩阵，
-        # 而不是像 central/limited 那样留在显式延迟修正里（后者依赖内迭代把二阶信息
-        # 迭代出来，实测耗散随 ni 只在 1→2 有改善后饱和）。默认仍为 upwind（零回归）。
+        # `upwind2` = 二阶上风，与 central 一样走延迟修正（隐式矩阵保持一阶上风）。
+        # 曾把 1.5φ_U−0.5φ_UU 直接写入矩阵，下游对 UU 的 +0.5|m| 是正非对角，
+        # 封闭盒输运在 t≈3 s 发散。默认仍为 upwind（零回归）。
         self._uu_tables = None
         # S2 第十六步：**零梯度入口**（默认关，零回归）。开启后入口面与出口同样按零梯度
         # 外推（速度取 owner 值、通量由单元速度重构、不做全局缩放的入流闭合）——
@@ -738,14 +738,26 @@ class PressureSolver:
             outflow = self._mdot[self._outlet_faces].sum()
             if abs(outflow) > 1e-30:
                 self._mdot[self._outlet_faces] *= -inflow / outflow
-        if self.inlet_zero_gradient:
-            # 封闭域（两端零梯度）没有可缩放的"唯一出口" → 用边界通量的全局平衡修正：
-            # 把净不平衡按面积权重摊回所有边界面，保证 Σmdot=0（否则净质量漂移会驱动
-            # 虚假均匀加速 —— 实测该基准在 t≈0.4 s 后由衰减转为发散）。
-            # 注意：本块必须**独立于**上面的出口分支（早期误把它并进出口分支，导致默认
-            # 路径丢失出口缩放 → 9 项质量守恒/残差测试失败）。
-            fb = np.where(fv.is_boundary)[0]
-            if fb.size:
+        if self.inlet_zero_gradient and self._u is not None:
+            # 封闭域：出口与入口一样由单元速度外推（上面的出口分支在零梯度入口时不跑）。
+            # 质量闭合只摊在两端开口面上，壁面/滑移面保持 0。
+            # 旧实现把净不平衡按面积摊到**全部**边界面，壁面因此得到非零质量通量，
+            # 动量装配把这些面当成「流入 0 速度」，封闭盒输运模态被额外吃掉。
+            if len(self._outlet_faces):
+                oo = fv.owner[self._outlet_faces]
+                n = fv.face_normal[self._outlet_faces]
+                A = fv.face_area[self._outlet_faces]
+                un = (self._u[oo] * n[:, 0] + self._v[oo] * n[:, 1]
+                      + self._w[oo] * n[:, 2])
+                self._mdot[self._outlet_faces] = (
+                    self._face_rho()[self._outlet_faces] * un * A)
+            parts = []
+            if len(self._inlet_faces):
+                parts.append(self._inlet_faces)
+            if len(self._outlet_faces):
+                parts.append(self._outlet_faces)
+            if parts:
+                fb = np.concatenate(parts)
                 net = float(self._mdot[fb].sum())
                 A_all = fv.face_area[fb]
                 tot = float(A_all.sum())
@@ -1274,8 +1286,12 @@ class PressureSolver:
         """S2：高阶对流延迟修正源（仅内部面；隐式矩阵保持上风 → 稳定）。
 
         φ_f^HO：central = 反距离线性插值；limited = φ_up + ψ_up·(φ_central − φ_up)
-        （ψ 为 Barth-Jespersen TVD 限制器，逐单元）。
-        源项：RHS[owner] -= m(φ_HO − φ_up,owner 侧)，RHS[neighbor] += m(φ_HO − φ_up,nb 侧)。
+        （ψ 为 Barth-Jespersen TVD 限制器，逐单元）；
+        upwind2 = 1.5φ_U − 0.5φ_UU（无合格上游邻居时退回 φ_U）。
+        隐式矩阵两侧都用同一个 φ_U。修正必须成对：
+        RHS[owner] -= m(φ_HO − φ_U)，RHS[neighbor] += m(φ_HO − φ_U)。
+        下游若改用 (φ_HO − φ_D)，两格净源 = m(φ_U − φ_D) ≠ 0，通量不守恒，
+        封闭盒里只要对流打开就会吃掉输运模态。
         """
         fv = self._fv
         phi = np.asarray((self._u, self._v, self._w)[comp], float)
@@ -1283,20 +1299,24 @@ class PressureSolver:
             return None
         central = fv.face_value(phi)[is_int]
         up_o = np.where(m >= 0.0, phi[o], phi[nb])
-        up_n = np.where(m >= 0.0, phi[nb], phi[o])
         if self.convection == "limited":
             grad = fv.grad_gauss(phi)
             psi = fv.limiter(phi, grad)
             psi_up = np.where(m >= 0.0, psi[o], psi[nb])
             phi_ho = up_o + psi_up * (central - up_o)
+        elif self.convection == "upwind2":
+            _fidx, uu_pos, uu_neg = self._second_upwind_tables()
+            # _second_upwind_tables 的面序 = 内部面序，与 o/nb/m 一致
+            UU = np.where(m >= 0.0, uu_pos, uu_neg)
+            phi_uu = np.where(UU >= 0, phi[np.maximum(UU, 0)], up_o)
+            phi_ho = np.where(UU >= 0, 1.5 * up_o - 0.5 * phi_uu, up_o)
         else:
             phi_ho = central
         blend = float(getattr(self, "convection_blend", 1.0))
+        delta = phi_ho - up_o
         # S4：bincount 取代 np.add.at（同语义，快数倍）
-        src = np.bincount(o, weights=-blend * m * (phi_ho - up_o),
-                          minlength=fv.n_cells)
-        src += np.bincount(nb, weights=blend * m * (phi_ho - up_n),
-                           minlength=fv.n_cells)
+        src = np.bincount(o, weights=-blend * m * delta, minlength=fv.n_cells)
+        src += np.bincount(nb, weights=blend * m * delta, minlength=fv.n_cells)
         return src
 
     def _second_upwind_tables(self):
@@ -1406,22 +1426,10 @@ class PressureSolver:
         rows_blk += [o[pos], nb[pos], o[neg], nb[neg], o, nb, o, nb]
         cols_blk += [o[pos], o[pos], nb[neg], nb[neg], o, nb, nb, o]
         vals_blk += [mf[pos], -mf[pos], mf[neg], -mf[neg], D, D, -D, -D]
-        # S2 第十一步：`upwind2` = 隐式二阶上风。面值 φ_f = 1.5φ_U − 0.5φ_UU，相对一阶上风
-        # 的增量（row U: +0.5m@U, −0.5m@UU；row D: −0.5m@U, +0.5m@UU）直接进隐式矩阵 ——
-        # 不依赖内迭代把二阶信息迭代出来。对角占优保持：下游行 |off| 合计 = m。
-        if self.convection == "upwind2":
-            _fidx, uu_pos, uu_neg = self._second_upwind_tables()
-            Uu = np.where(pos, o, nb)          # 上风单元
-            Dd = np.where(pos, nb, o)          # 下游单元
-            UU = np.where(pos, uu_pos, uu_neg)  # 二阶上风（-1 = 退化一阶）
-            has = UU >= 0
-            if has.any():
-                mh = m[has].astype(float)
-                rows_blk += [Uu[has], Uu[has], Dd[has], Dd[has]]
-                cols_blk += [Uu[has], UU[has], Uu[has], UU[has]]
-                vals_blk += [0.5 * mh, -0.5 * mh, -0.5 * mh, 0.5 * mh]
-        # S2 延迟修正：把「高阶面值 − 上风面值」的差值作为显式源（隐式矩阵不变，稳定）
-        if self.convection in ("central", "limited"):
+        # S2 延迟修正：高阶面值 − 上风面值作为显式源。隐式矩阵保持一阶上风
+        # （M 矩阵）。`upwind2` 同样走延迟修正：φ_f = 1.5φ_U − 0.5φ_UU。
+        # 把 +0.5|m| 放在下游对 UU 的隐式元上会得到正非对角（反扩散，封闭盒 t≈3 s 发散）。
+        if self.convection in ("central", "limited", "upwind2"):
             ho_src = self._deferred_convection_source(comp, is_int, o, nb, m)
         # 边界面（np.where(~is_int)[0] 给出边界面全局索引，与 bo/mb/Db 同序）
         bo = fv.owner[~is_int]

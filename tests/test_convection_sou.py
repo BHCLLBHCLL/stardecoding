@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
-"""S2 第十一步：隐式二阶上风（`convection="upwind2"`）的验证。
+"""S2 第十一步起：二阶上风（`convection="upwind2"`）。
 
-动机（第八/九/十步实测）：二阶信息若只作**显式延迟修正**（central/limited），其有效性依赖
-内迭代把二阶项迭代出来 —— 实测耗散随 ni 只在 1→2 有改善（−1.71→−0.88/s）后饱和（−0.77/−0.95），
-而官方求解器在同一张网格上不衰减（St=0.1689）。故把二阶上风做成**真正的隐式矩阵**：
-面值 φ_f = 1.5φ_U − 0.5φ_UU（U=上风、UU=二阶上风），系数直接进矩阵。
-
-本文件验证：① UU 表满足定义（上风单元邻居中排除下游、**严格位于上游**且最靠前者）；
-② 入口侧无合格候选 → 退化 −1（该面回到一阶上风）；③ 选项确实改变矩阵且装配系统适定可解；
-④ 小网格瞬态可跑不发散。（大算例 S2 验证待机器空闲 —— 见 s_wave_plan 待执行清单。）
+第十九步起隐式矩阵退回一阶上风（M 矩阵），二阶增量只进 RHS。
+原先把 φ_f = 1.5φ_U − 0.5φ_UU 写入矩阵，下游对 UU 出现正非对角，封闭盒输运发散。
 """
 import os
 import sys
@@ -98,15 +92,21 @@ def test_second_upwind_falls_back_when_no_upstream_candidate():
 
 
 def test_upwind2_changes_matrix_and_is_well_posed():
-    """选项必须真正改矩阵；对角为正；装配出的系统可解且残差小。"""
+    """隐式矩阵保持一阶上风（M 矩阵，非对角 ≤ 0）；非均匀场上 RHS 必须不同于纯上风。"""
     mesh = _mesh()
     s1 = _solver(mesh, "upwind")
     s2 = _solver(mesh, "upwind2")
-    r1, c1, v1, _b1, ap1 = s1._assemble_momentum(0)
+    cen = s2.fvm.centroids
+    wave = np.sin(2.0 * np.pi * cen[:, 0] / max(float(cen[:, 0].max()), 1e-9))
+    for s in (s1, s2):
+        s._u = 0.05 + 0.01 * wave
+        s._rebuild_mdot()
+    r1, c1, v1, b1, ap1 = s1._assemble_momentum(0)
     r2, c2, v2, b2, ap2 = s2._assemble_momentum(0)
     n = s1.fvm.n_cells
-    assert (r1.size != r2.size) or not np.allclose(np.sort(v1), np.sort(v2)), \
-        "upwind2 未改变矩阵"
+    off = v2[r2 != c2]
+    assert off.size and float(off.max()) <= 1e-8, "upwind2 隐式矩阵出现正非对角"
+    assert not np.allclose(b1, b2), "非均匀场上 upwind2 延迟修正未进入 RHS"
     diag = np.bincount(r2[r2 == c2], weights=v2[r2 == c2], minlength=n)
     assert (diag > 0).all(), "存在非正对角"
     assert np.isfinite(ap1).all() and np.isfinite(ap2).all()

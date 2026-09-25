@@ -77,6 +77,51 @@ def test_deferred_source_is_zero_for_linear_field_uniform_flow():
     assert float(np.max(np.abs(diff))) < 0.5
 
 
+def test_deferred_source_is_conservative():
+    """同一面的延迟修正必须等量反向：全场源之和为 0。
+
+    下游若用 (φ_HO − φ_D) 而不是 (φ_HO − φ_U)，两格净源 = m(φ_U − φ_D) ≠ 0。
+    """
+    V, C = cube_tet_mesh(4)
+    s = PressureSolver(V, C, rho=1.0, mu=1e-5, inlet_axis=0, inlet_side="min",
+                       inlet_velocity=(0.05, 0.0, 0.0), outlet_side="max",
+                       convection="central")
+    s._u = np.sin(2.0 * np.pi * s.fvm.centroids[:, 0])
+    s._v = np.zeros_like(s._u)
+    s._w = np.zeros_like(s._u)
+    fv = s.fvm
+    is_int = fv.neighbor >= 0
+    o, nb = fv.owner[is_int], fv.neighbor[is_int]
+    m = np.where(np.arange(o.size) % 2 == 0, 0.2, -0.15)
+    src = s._deferred_convection_source(0, is_int, o, nb, m)
+    assert src is not None
+    assert abs(float(src.sum())) < 1e-12
+    face = -m * (s.fvm.face_value(s._u)[is_int] - np.where(m >= 0.0, s._u[o], s._u[nb]))
+    # owner 得到 -m*δ，neighbor 得到 +m*δ，两者之和为 0（上面已断言全局和）
+    assert abs(float(np.sum(face) + float(np.sum(-face)))) < 1e-12
+
+
+def test_closed_zero_gradient_does_not_leak_wall_mass():
+    """封闭域质量闭合只改两端开口面，壁面质量通量保持 0。"""
+    V, C = cube_tet_mesh(4)
+    s = PressureSolver(V, C, rho=1.0, mu=1e-5, inlet_axis=0, inlet_side="min",
+                       inlet_velocity=(0.05, 0.0, 0.0), outlet_side="max",
+                       inlet_zero_gradient=True, wall_slip_axes=(2,),
+                       convection="central")
+    cen = s.fvm.centroids
+    s._u = 0.05 + 0.01 * np.sin(8.0 * np.pi * cen[:, 0]) * np.sin(2.0 * np.pi * cen[:, 1])
+    s._v = 0.002 * np.cos(8.0 * np.pi * cen[:, 0])
+    s._w = np.zeros_like(s._u)
+    s._rebuild_mdot()
+    md = s.mass_flux()
+    assert np.allclose(md[s._wall_faces], 0.0)
+    assert np.allclose(md[s._slip_faces], 0.0)
+    open_faces = np.concatenate([s._inlet_faces, s._outlet_faces])
+    assert abs(float(md[open_faces].sum())) < 1e-9
+    bnd = s.fvm.neighbor < 0
+    assert abs(float(md[bnd].sum())) < 1e-9
+
+
 # ---------------------------------------------------------------- S2 滑移壁
 def _solver_slip(scheme=None, axes=(1, 2)):
     V, C = cube_tet_mesh(4)
