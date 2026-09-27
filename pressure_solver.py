@@ -413,7 +413,8 @@ class PressureSolver:
                  convection="upwind", wall_slip_axes=(), piso_correctors=0,
                  inlet_zero_gradient=False,
                  skew_corrected=False, nonorth_corrected=False,
-                 corr_limit=1.0, pc_inner=1, planar_2d=False):
+                 corr_limit=1.0, pc_inner=1, planar_2d=False,
+                 time_order=1):
         # S2：滑移壁（对称/自由滑移）。给定轴索引（0/1/2）表示该轴的极值平面为滑移壁
         # （法向速度=0、切向自由 → 动量装配对流与扩散均无贡献，面通量恒 0）：
         # 典型用法 wall_slip_axes=(1,2) 得到准二维绕流，消除薄板侧壁摩擦耗散。
@@ -447,6 +448,16 @@ class PressureSolver:
         # 的纯扩散衰减：对流项恒为零，可精确分离时间推进 + 投影的数值阻尼）。
         self.inlet_zero_gradient = bool(inlet_zero_gradient)
         self.nonorth_corrected = bool(nonorth_corrected)
+        # S2 第二十步：二阶时间推进（BDF2）。1 = 后向欧拉（默认，零回归）；
+        # 2 = (3φⁿ⁺¹ − 4φⁿ + φⁿ⁻¹)/(2Δt)，首步自动退回 BDF1（φⁿ⁻¹ 尚不存在）。
+        # 一阶时间推进的截断误差 ~0.5·Δt·φ̈ 是人工粘性，dt=0.01 时对脱落频率
+        # 的模态给出 O(Δt·ω²) 量级的阻尼 —— 频率进带后振幅封顶的主要嫌疑。
+        if int(time_order) not in (1, 2):
+            raise ValueError("time_order 只支持 1（BDF1）或 2（BDF2）")
+        self.time_order = int(time_order)
+        self._u_old2 = None
+        self._v_old2 = None
+        self._w_old2 = None
         self.corr_limit = float(corr_limit)
         # 压力修正的**内迭代**次数（仅 nonorth_corrected 生效）：非正交延迟修正项依赖
         # p' 的梯度，而 p' 正是待解量 —— 用上一次的 p' 作参考会在瞬态下不断注入误差。
@@ -513,6 +524,9 @@ class PressureSolver:
         self._u_old = None
         self._v_old = None
         self._w_old = None
+        self._u_old2 = None
+        self._v_old2 = None
+        self._w_old2 = None
         self.turb_model = turb_model
         self.energy_model = energy_model
         self.inlet_temp = float(inlet_temp) if inlet_temp is not None else None
@@ -662,6 +676,9 @@ class PressureSolver:
         self._u_old = None
         self._v_old = None
         self._w_old = None
+        self._u_old2 = None
+        self._v_old2 = None
+        self._w_old2 = None
         self._last_residual = float("nan")
         self._last_cont_ratio = float("nan")
         self._pc_last = None          # 换网格/重置后 p' 延迟修正状态失效
@@ -676,6 +693,9 @@ class PressureSolver:
         self._u_old = None
         self._v_old = None
         self._w_old = None
+        self._u_old2 = None
+        self._v_old2 = None
+        self._w_old2 = None
         if self.initializer is not None and self.initializer.source_field is not None:
             self.initializer.apply_initial(self)
             self.iteration = 0
@@ -1507,11 +1527,20 @@ class PressureSolver:
             old = {0: self._u_old, 1: self._v_old, 2: self._w_old}[comp]
             if old is None:
                 old = {0: self._u, 1: self._v, 2: self._w}[comp]
+            old = np.asarray(old, float)
+            old2 = {0: self._u_old2, 1: self._v_old2, 2: self._w_old2}[comp]
+            use_bdf2 = (self.time_order == 2 and old2 is not None)
             idx = np.arange(n, dtype=np.int64)
             rows_blk.append(idx)
             cols_blk.append(idx)
-            vals_blk.append(coeff)
-            rhs = rhs + coeff * np.asarray(old, float)
+            if use_bdf2:
+                # BDF2：ρV/Δt · (1.5φⁿ⁺¹ − 2φⁿ + 0.5φⁿ⁻¹)
+                vals_blk.append(1.5 * coeff)
+                rhs = rhs + coeff * (2.0 * old - 0.5 * np.asarray(old2, float))
+            else:
+                # BDF1：ρV/Δt · (φⁿ⁺¹ − φⁿ)
+                vals_blk.append(coeff)
+                rhs = rhs + coeff * old
         # S4 第 2 步：非正交扩散的**显式（延迟）修正**。
         # 精确面通量 F = -μ A [(u_N-u_O)/|d| + ∇u·k]（k = n̂ − ê）；隐式矩阵只含第一项，
         # 第二项作为显式源：owner 侧流出 → rhs[o] -= F_corr，neighbor 侧流入 → rhs[nb] += F_corr。
@@ -1759,12 +1788,23 @@ class PressureSolver:
         self._u_old = None
         self._v_old = None
         self._w_old = None
+        self._u_old2 = None
+        self._v_old2 = None
+        self._w_old2 = None
         return self
 
     def _snapshot_old(self):
-        """把当前场冻结为上一时刻场 φⁿ（瞬态项参考）。"""
+        """把当前场冻结为上一时刻场 φⁿ（瞬态项参考）。
+
+        BDF2 时先把现有 φⁿ 存入 φⁿ⁻¹（旧档只保留一层，第二层为 None 即首步，
+        动量装配自动退回 BDF1）。
+        """
         if self._u is None:
             return
+        if self.time_order == 2:
+            self._u_old2 = None if self._u_old is None else self._u_old.copy()
+            self._v_old2 = None if self._v_old is None else self._v_old.copy()
+            self._w_old2 = None if self._w_old is None else self._w_old.copy()
         self._u_old = self._u.copy()
         self._v_old = self._v.copy()
         self._w_old = self._w.copy()
