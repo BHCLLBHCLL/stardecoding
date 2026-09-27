@@ -427,21 +427,64 @@ def channel_tet_mesh(D, length_D=20.0, height_D=10.0, thickness=None, n_theta=96
             "thickness": T, "length": L, "height": H}
 
 
+def _graded_axis(a, b, h, h_fine, lo, hi):
+    """从 a 到 b 的节点坐标。[lo, hi] 内步长 h_fine，之外 h。终点精确为 b。"""
+    a, b = float(a), float(b)
+    h, h_fine = float(h), float(h_fine)
+    lo, hi = float(lo), float(hi)
+    xs = [a]
+    x = a
+    span = max(abs(b), 1.0)
+    for _ in range(100000):
+        if x >= b - 1e-9 * span:
+            break
+        inside = (x >= lo - 1e-12) and (x < hi - 1e-12)
+        step = h_fine if inside else h
+        if x < lo - 1e-12 and x + step > lo + 1e-12:
+            step = lo - x
+        if x + step >= b - 1e-12:
+            x = b
+        else:
+            x = x + step
+        xs.append(x)
+    else:
+        raise RuntimeError("graded axis did not reach the end")
+    if abs(xs[-1] - b) > 1e-8:
+        xs.append(b)
+    return np.asarray(xs, float)
+
+
 def channel_tet_mesh_cartesian(D, length_D=16.0, height_D=8.0, thickness_D=0.5,
-                               h_factor=4.0, center_x_D=4.0):
+                               h_factor=4.0, center_x_D=4.0, grade=None):
     """通道域**笛卡尔阶梯**四面体网格（鲁棒：单元全为直角六面体 → 6 tet）。
 
     圆柱用阶梯近似（偏差 ≤ h/2），换来确定性与良态矩阵 —— 用于自研瞬态算例；
     有效堵塞比与阶梯偏差如实返回（`blockage`、`stair_deviation`），不假装贴体。
+
+    `grade` 缺省（None / ≤1）时与原来的均匀网格逐点相同。`grade>1` 时在圆柱
+    及近尾迹（上游 2D、下游 8D、垂向 ±2D）把步长收到 h/grade，远处仍是 h。
+    z 向层数仍按名义 h 取，避免展向再加密一倍。
     """
     D = float(D)
     L, H = float(length_D) * D, float(height_D) * D
     T = float(thickness_D) * D
     h = D / float(h_factor)
     nx, ny, nz = max(int(round(L / h)), 4), max(int(round(H / h)), 4), max(int(round(T / h)), 1)
-    xs = np.linspace(0.0, L, nx + 1)
-    ys = np.linspace(0.0, H, ny + 1)
+    h_near = h
+    if grade is not None and float(grade) > 1.0 + 1e-12:
+        g = float(grade)
+        h_fine = h / g
+        cx0 = float(center_x_D) * D
+        cy0 = 0.5 * H
+        xs = _graded_axis(0.0, L, h, h_fine, cx0 - 2.0 * D, cx0 + 8.0 * D)
+        ys = _graded_axis(0.0, H, h, h_fine, cy0 - 2.0 * D, cy0 + 2.0 * D)
+        h_near = h_fine
+    else:
+        xs = np.linspace(0.0, L, nx + 1)
+        ys = np.linspace(0.0, H, ny + 1)
     zs = np.linspace(0.0, T, nz + 1)
+    nx = len(xs) - 1
+    ny = len(ys) - 1
     cx, cy = float(center_x_D) * D, 0.5 * H
     r0 = 0.5 * D
     pts, vid = [], {}
@@ -483,9 +526,9 @@ def channel_tet_mesh_cartesian(D, length_D=16.0, height_D=8.0, thickness_D=0.5,
     return {"ok": True, "vertices": V, "cells": C, "n_cells": int(C.shape[0]),
             "n_points": int(V.shape[0]), "n_hex": len(hexes), "n_blocked": blocked,
             "volume": float(np.abs(vol).sum()), "volume_exact": analytic,
-            "h": h, "n_negative": 0, "hole_center": (cx, cy), "hole_r": r0, "D": D,
+            "h": h, "h_near": h_near, "n_negative": 0, "hole_center": (cx, cy), "hole_r": r0, "D": D,
             "thickness": T, "length": L, "height": H,
-            "blockage": D / H, "stair_deviation": 0.5 * h,
+            "blockage": D / H, "stair_deviation": 0.5 * h_near,
             "quality_proxy": {"min_vol": float(np.abs(vol).min()),
                               "mean_vol": float(np.abs(vol).mean())}}
 

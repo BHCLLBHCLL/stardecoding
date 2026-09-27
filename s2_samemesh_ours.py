@@ -28,11 +28,12 @@ NOC = (sys.argv[7] if len(sys.argv) > 7 else "0") not in ("0", "", "false", "no"
 CORR = float(sys.argv[8]) if len(sys.argv) > 8 else 1.0
 PISO = int(sys.argv[9]) if len(sys.argv) > 9 else 1
 TORD = int(sys.argv[10]) if len(sys.argv) > 10 else 1
+GRADE = float(sys.argv[11]) if len(sys.argv) > 11 else 0.0
 DT = 0.01
 PROFILE = os.environ.get('S2_PROFILE', '') not in ('', '0')  # S2_PROFILE=1 → 逐步计时+求解路线遥测
 OUT = 'ours_cl_series%s.json' % (("_" + TAG) if TAG else "")
 
-mesh = channel_tet_mesh_cartesian(D, **MESH_KW)
+mesh = channel_tet_mesh_cartesian(D, grade=(GRADE if GRADE > 1.0 else None), **MESH_KW)
 V = np.asarray(mesh['vertices'], float)
 C = np.asarray(mesh['cells'], np.int64)
 solver = PressureSolver(V, C, rho=RHO, mu=NU, inlet_axis=0, inlet_side='min',
@@ -51,10 +52,10 @@ solver.enable_transient(DT, snapshot=True)
 fv = solver.fvm
 hc = np.asarray(mesh['hole_center'], float)[:2]
 rh = np.linalg.norm(np.asarray(fv.face_centroid, float)[:, :2] - hc, axis=1)
-cyl_r = float(mesh['hole_r']) + float(mesh.get('h', 0.0) or 0.0)
+cyl_r = float(mesh['hole_r']) + float(mesh.get('h_near', mesh.get('h', 0.0)) or 0.0)
 cyl = np.where(np.asarray(fv.is_boundary, bool) & (rh <= cyl_r + 1e-9))[0]
-print('ours: cells=%d cyl=%d steps=%d ni=%d conv=%s a_m=%s a_p=%s nonorth=%s corr=%.2f dt=%s tord=%d'
-      % (C.shape[0], cyl.size, STEPS, NI, CONV, ALPHA_M, ALPHA_P, NOC, CORR, DT, TORD),
+print('ours: cells=%d cyl=%d steps=%d ni=%d conv=%s a_m=%s a_p=%s nonorth=%s corr=%.2f dt=%s tord=%d grade=%s'
+      % (C.shape[0], cyl.size, STEPS, NI, CONV, ALPHA_M, ALPHA_P, NOC, CORR, DT, TORD, GRADE),
       flush=True)
 out_dir = os.path.join(ROOT, 's6_samemesh', 'transient')
 os.makedirs(out_dir, exist_ok=True)
